@@ -338,6 +338,46 @@ def test_check_does_not_inline_while_the_job_is_still_running(jm, monkeypatch):
     assert "result" not in got
 
 
+def test_check_waits_up_to_wait_s_for_a_running_job(jm, monkeypatch):
+    """One call with wait_s stands in for a poll loop: it returns as soon as the
+    job leaves `running`, and the exited response carries the inlined result."""
+    import time as _t
+    (jm.jobs_dir / "freeze.x.ffff.status.json").write_text(json.dumps({
+        "state": "running", "pid": 999999, "start_time": 0.0, "command": "x"}))
+    jm.args_path("freeze.x.ffff").write_text("{}")
+    jm.result_path("freeze.x.ffff").write_text(json.dumps({"success": True}))
+    alive = {"n": 3}
+
+    def _alive(*a, **k):
+        alive["n"] -= 1
+        return alive["n"] > 0
+    monkeypatch.setattr(type(jm), "_is_pid_alive", staticmethod(_alive))
+    monkeypatch.setattr("agent.skills.job_manager._WAIT_POLL_S", 0.01)
+    t0 = _t.time()
+    got = jm.check("freeze.x.ffff", wait_s=5)
+    assert got["state"] == "exited" and got["result"] == {"success": True}
+    assert _t.time() - t0 < 2, "the wait must end when the job does, not at the deadline"
+
+
+def test_check_wait_is_capped_under_the_watchdog(jm, monkeypatch):
+    from agent.skills import job_manager as _jm
+    (jm.jobs_dir / "freeze.x.gggg.status.json").write_text(json.dumps({
+        "state": "running", "pid": 999999, "start_time": 0.0, "command": "x"}))
+    monkeypatch.setattr(type(jm), "_is_pid_alive", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(_jm, "WAIT_S_MAX", 0.05)
+    monkeypatch.setattr(_jm, "_WAIT_POLL_S", 0.01)
+    got = jm.check("freeze.x.gggg", wait_s=10_000)
+    assert got["state"] == "running"
+    assert _jm.WAIT_S_MAX < 600, "a wait longer than the stream watchdog would be killed as silent"
+
+
+def test_check_job_publishes_wait_s_on_the_mcp_surface():
+    import inspect
+    from agent.mcp_tools import jobs_tools
+    fn = getattr(jobs_tools.check_job, "fn", jobs_tools.check_job)
+    assert "wait_s" in inspect.signature(fn).parameters
+
+
 # --------------------------------------------------------------------------
 # import-time guards — a misuse of the decorator is a startup error
 # --------------------------------------------------------------------------

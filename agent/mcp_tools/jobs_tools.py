@@ -67,32 +67,25 @@ def run_in_background(
 
 
 @mcp.tool()
-def check_job(job_id: str, log_tail_lines: int = 30) -> dict:
-    """Return the current state of a background job. Non-blocking; ~50 ms.
+def check_job(job_id: str, log_tail_lines: int = 30, wait_s: int = 0) -> dict:
+    """Return the state of a background job: running | exited | cancelled.
 
-    States: running | exited | cancelled
-    Always includes a `log_tail` (last N lines of combined stdout+stderr) so you
-    can monitor progress (e.g. curl's progress bar) without reading the full log
-    file. `bytes_logged` is the size of the log so far — a download's progress
-    can be inferred from this.
+    `wait_s` blocks up to that many seconds (capped at 540, under the stream
+    watchdog) until the job leaves `running`, so ONE call replaces a poll loop.
+    Prefer `wait_s=300` over calling this repeatedly. Never end your turn to
+    wait on a job: a headless session ends with the turn and the result is
+    never read.
 
-    `elapsed_seconds` is measured to THIS OBSERVATION, not to the exit: state
-    flips on the first check after the subprocess died, so a job left unpolled
-    for an hour reports an hour. Read a detached tool's true runtime off the
-    runner's own `returned in Ns` line in `log_tail`, or poll on a tight cadence.
+    Always includes `log_tail` (last N lines of stdout+stderr) and
+    `bytes_logged`. `elapsed_seconds` is measured to this observation, not to
+    the exit: the state flips on the first check after the process died.
 
-    For a job that has just exited, this is also where you learn it terminated —
-    the state flips from "running" to "exited" on the first check after the
-    subprocess died.
-
-    For a job spawned by a primitive's `background=True`, an exited job ALSO
-    carries that tool's real return value inline under `result` — this is the one
-    place a detached outcome is read, so there is no second file to open. If the
-    tool died before writing one, `result` is None and `result_missing` says so;
-    the hole is stated rather than rounded up to a pass. A plain
+    For a job spawned by a primitive's `background=True`, an exited job carries
+    that tool's real return value inline under `result`; if the tool died before
+    writing one, `result` is None and `result_missing` says so. A plain
     `run_in_background` shell job never owed a result and claims neither key.
     """
-    return _ms._job_manager.check(job_id, log_tail_lines=log_tail_lines)
+    return _ms._job_manager.check(job_id, log_tail_lines=log_tail_lines, wait_s=wait_s)
 
 
 @mcp.tool()

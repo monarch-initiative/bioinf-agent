@@ -669,7 +669,9 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 "pipeline.script_not_carried",
                 f"{p.name} names the authored artifact {p.default}, but the sealed record does not carry "
                 f"its full text (size {art.get('size_bytes')} bytes)",
-                "stage scripts under 64 KiB in content mode so the seal carries them verbatim")
+                "stage scripts under 64 KiB in content mode so the seal carries them verbatim; "
+                "a data file (an annotation, an index, a reference subset) is not a script — "
+                "record it as a reference_database instead")
         bn = Path(p.default).name
         if any(sc.name == bn for sc in scripts):
             raise PipelineDerivationError(

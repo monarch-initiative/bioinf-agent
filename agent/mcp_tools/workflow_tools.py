@@ -116,7 +116,7 @@ class _ImageUsageRunner:
             platform=self.platform, timeout=timeout)
 
 
-def _local_trial_mounts(draft: dict):
+def _local_trial_mounts(draft: dict, missing: list | None = None):
     """THE one precondition for "can the I4 self-test run at THIS locus at all?".
 
     Walks the exact substitutions `self_test_usage` will use (declared trials, else
@@ -170,6 +170,8 @@ def _local_trial_mounts(draft: dict):
             elif p.parent.is_dir() and any(p.parent.glob(p.name + ".*")):
                 d = str(p.parent)              # a prefix naming an on-disk family
             else:
+                if missing is not None:
+                    missing.append(s)
                 return None                    # cluster-locus / missing input
             if d == "/":
                 continue                       # never bind-mount the host root
@@ -223,13 +225,7 @@ def _image_usage_runner(fr: dict, draft: dict):
     except Exception:
         resolved = None
     if not resolved:
-        # A daemon TAG can rot while the pinned bytes remain: in the S7 sea
-        # trial, containerd GC dropped `s2_align:latest`'s tag mapping —
-        # `docker images` listed it, inspect-by-tag said "No such image" — and
-        # this probe concluded no runner existed while the digest resolved the
-        # whole time. The record carries that digest in the field beside the
-        # tag: one identity, two spellings, and only one was consulted. Running
-        # by sha256: ref is exactly as pinned as running by tag.
+        # A tag can rot while the pinned bytes remain; the digest is the same identity.
         digest = (fr.get("image_digest") or "").strip()
         if digest and digest != image:
             try:
@@ -239,8 +235,23 @@ def _image_usage_runner(fr: dict, draft: dict):
                 pass
     if not resolved:
         return None                        # not resolvable locally (adopted, or no daemon)
-    platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(fr.get("platform", ""), "linux/amd64")
-    return _ImageUsageRunner(image, platform, mounts)
+    return _ImageUsageRunner(image, _ms.docker_platform(fr.get("platform", "")), mounts)
+
+
+def _no_image_runner_reason(fr: dict, draft: dict) -> str:
+    """Why `_image_usage_runner` returned None, as one stated fact for the seal record."""
+    image = (fr.get("image") or "").strip()
+    if not image:
+        return "the frozen record names no image"
+    from agent.models.core_data import usage_commands
+    if not "\n".join(usage_commands(draft.get("usage") or {})):
+        return "usage.command_template is empty"
+    missing: list[str] = []
+    if _local_trial_mounts(draft, missing) is None:
+        return (f"trial input {missing[0]!r} does not exist on this host (it may live at "
+                "another locus)")
+    return (f"the pinned image {image!r} (digest {fr.get('image_digest') or 'unrecorded'}) "
+            "does not resolve in the local Docker daemon")
 
 
 #: Bounds on what a proven-trial record may carry onto disk. The self-test's own
@@ -564,26 +575,9 @@ def seal_workflow(
                                           self_test_usage, verify_test_data,
                                           write_workflow_spec)
 
-    # A WorkflowSpec's stated premise is THE VALIDATED RUN. It must contain one.
-    #
-    # Every step-side clause in the Layer-2 roster (agent/skills/invariants.py) iterates
-    # `pipeline_steps`, so a draft with none makes them all go silent AT ONCE and the walk
-    # returns [] — the failure is not one clause missing a case, it is every clause that
-    # reads the run having no run to read. The model does
-    # not catch it either: `derive_pipeline_status([])` returns "in_progress", a valid
-    # PipelineStatus, so the artifact validates and gets written with a green seal over a
-    # workflow that ran nothing. Layer 1 makes the analogous record a hard
-    # VALIDATED_IN_IMAGE.no_evidence violation; Layer 2 said nothing at all.
-    #
-    # This REFUSES rather than degrading, and the distinction is deliberate: a degrade
-    # says "this artifact proves less than it looks like it does", which is true of a
-    # thin run. Here there is no run, so there is nothing for the artifact to be a record
-    # OF — it should not exist. Measured impact on the five sealed specs on disk: zero
-    # (all carry >= 1 rc=0 step).
-    #
-    # It lives in seal_workflow, not in check_invariants, on purpose: the walk is the
-    # ssh-capable path (a locus:cluster I5 dials out), and this question is answerable
-    # from the draft alone, so asking it FIRST also spares a doomed draft that round trip.
+    # A WorkflowSpec is the record of a validated run, so a draft with no rc=0 step is
+    # refused here: every run-side invariant iterates pipeline_steps and passes
+    # vacuously over none, and derive_pipeline_status([]) is a valid "in_progress".
     _ran = [s for s in (draft.get("pipeline_steps") or [])
             if isinstance(s, dict) and s.get("returncode") in (None, 0)]
     if not _ran:
@@ -655,33 +649,23 @@ def seal_workflow(
                               "image_digest": d})
     _spans_images = len(seen_dig) > 1
 
-    # The usage.command_template IS the workflow's run contract — establish
-    # usage_verified honestly by self-testing it (I4), since the draft doesn't
-    # persist the field (it's derived only at validate/finalize). A verified
-    # template is what the guide shows as the runnable form.
-    #
-    # I4 GATES THE SEAL: if the draft declares a usage block, its
-    # command_template MUST self-test green against every declared trial —
-    # otherwise the guide would publish a runnable form that doesn't actually
-    # run. A `usage_verified` that is computed but not gated on is cosmetic:
-    # it lets a broken usage template ship with a "verified" badge.
-    #
-    # THE RUNNER IS LOCUS-AWARE. self_test_usage needs a runner, and gating on a
-    # HOST conda env would silently skip the gate on every container-native env
-    # (the primary path has no host env). Prefer the FROZEN IMAGE as the runner
-    # (validated == shipped: the how-to is tested against the exact bytes the
-    # user runs), fall back to the host env for the pre-freeze path, and when
-    # neither can run it record not_attempted + WHY rather than fabricating a
-    # False.
-    #
-    # AND THE PRODUCER ALWAYS STATES THE OUTCOME, even when no `usage` block was
-    # authored: `usage_detail` is always a stated dict. A None here would make
-    # `usage_verification` None, which `to_yaml(exclude_none=True)` DROPS — the
-    # sealed spec would carry no I4 record at all and every reader would fall
-    # back to the bare `usage_verified: False`, two states in one bool again,
-    # by absence instead of by value. Absence must never render as a verdict.
+    # I4 gates the seal: a declared usage.command_template must self-test green against
+    # every trial, run in the frozen image when there is one (host env otherwise), and
+    # when neither can run it the record says not_attempted and why. `usage_detail` is
+    # always a stated dict so the sealed spec never drops the I4 record by absence.
     usage_ok = False
     usage_detail: dict
+    if draft.get("usage"):
+        from agent.skills.pipeline_state import USAGE_SHAPE, usage_block_problems
+        problems = usage_block_problems(draft["usage"])
+        if problems:
+            return refused(
+                "seal.usage_block_invalid", success=False, stage="usage_shape",
+                error=("the draft's `usage` block does not fit the WorkflowSpec schema, so "
+                       "the seal would fail after the self-test: " + "; ".join(problems)
+                       + ". Fix it with patch_pipeline(usage=…) and re-seal."),
+                problems=problems, usage_shape=USAGE_SHAPE,
+            )
     if not draft.get("usage"):
         usage_detail = {
             "ok": False, "status": "not_attempted",
@@ -716,7 +700,9 @@ def seal_workflow(
         if runner is None and draft.get("conda_env") and _local_trial_mounts(draft) is not None:
             runner = _ms._env_mgr
         try:
-            usage_detail = self_test_usage(draft, runner, validator=_ms._validator)
+            usage_detail = self_test_usage(
+                draft, runner, validator=_ms._validator,
+                no_runner_reason=_no_image_runner_reason(fr, draft) if runner is None else "")
             usage_ok = bool(usage_detail.get("ok"))
         except Exception as e:
             usage_ok = False
@@ -1210,6 +1196,12 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     conda_env, created_at, python_version, reference_free, runtime_environment,
     runtime_configs, reference_databases, service_dependencies, usage.
 
+    `usage` is validated against the WorkflowSpec schema on every patch and
+    refused with the exact problems: {description, command_template, inputs:
+    [{name, format?, description?}], outputs: [{name, files, description?}],
+    trials: [{name, substitutions}]} — `description` and each `outputs[*].name`
+    are required.
+
     Patches to runtime-captured or finalize-derived fields (pipeline_steps,
     install_steps, packages, verifications, test_data, authored_artifacts,
     docker, env_status, pipeline_status, docker_status, usage_verified,
@@ -1328,6 +1320,14 @@ def stage_authored_artifact(
             return refused(
                 "stage_artifact.source_missing",
                 error=f"generated_by mode requires the file to already exist on disk: {path}",
+            )
+        if p.is_dir():
+            return refused(
+                "stage_artifact.path_is_directory",
+                error=f"an artifact is one file and this is a directory: {path}",
+                remedy="stage each file inside it (one generated_by call per file); a step "
+                       "whose input is the directory then traces through them, because I8 "
+                       "accepts a directory input when a declared file sits directly in it",
             )
         try:
             idx, artifact = record_generated_artifact(

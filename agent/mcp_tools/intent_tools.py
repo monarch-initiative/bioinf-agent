@@ -24,102 +24,43 @@ from agent.mcp_server import mcp
 
 @mcp.tool()
 def interpret_request(intent_json: str) -> dict:
-    """THE FRONT DOOR — turn your reading of the user's request into a routed decision.
+    """THE FRONT DOOR — validate and route your reading of the user's request.
 
-    Call this FIRST, before any resolve / install / freeze primitive, whenever you are
-    starting to act on a user request. You pass a `RequestIntent` as a JSON string —
-    YOUR interpretation of the prompt — and this validates it and routes it.
+    Call this first, before any resolve / install / freeze primitive. Pass a `RequestIntent`
+    as a JSON string; it is validated and routed. "unknown" is a value you STATE (`null`
+    plus an `unknowns[]` entry), never a default you invent.
 
-    THE ONE RULE: "unknown" is a value you must STATE, never a default you invent. If
-    the user did not give a version, `version` is `null` AND you add an entry to
-    `unknowns[]` — do NOT silently fill "latest". A gap is a fact to write down; a
-    fabricated default authors an intent the user never expressed (the reason this
-    validates instead of trusting a dict).
+    RequestIntent (every field required; `null` for what the user did not give):
 
-    RequestIntent JSON (EVERY field required — state `null` explicitly for anything the
-    user did not give):
+        {"kind": install_env | add_to_env | run_step | transfer_data | reproduce |
+                 out_of_scope | ambiguous,
+         "raw_prompt": the user's words verbatim,
+         "tools": [{"name": the user's word verbatim, "version": str|null,
+                    "source_hint": {"kind": github_repo|release_url|channel|image|recipe,
+                                    "value": str} | null,
+                    "purpose": str|null,
+                    "resolution": {"package": str, "version": str|null, "why": str} | null}],
+         "target_env": str|null, "compute": local | cluster | unspecified,
+         "data_ops": [{"direction": upload|download, "source": str|null, "dest": str|null}] | null,
+         "unknowns": [{"field": "talos.version", "findable": bool, "reason": str}],
+         "out_of_scope_reason": str|null}
 
-        {
-          "kind": one of install_env | add_to_env | run_step | transfer_data |
-                  reproduce | out_of_scope | ambiguous,
-          "raw_prompt": the user's words, verbatim,
-          "tools": [ { "name": str,                 // the USER'S word, verbatim
-                       "version": str|null,        // the user's version, verbatim
-                       "source_hint": {"kind": github_repo|release_url|channel|image|recipe,
-                                       "value": str} | null,
-                       "purpose": str|null,
-                       // YOUR judgment about which package this actually means. See below.
-                       "resolution": {"package": str, "version": str|null,
-                                      "why": str} | null } ],   // [] when there are no tools
-          "target_env": str|null,                 // an existing env, for add/run/reproduce
-          "compute": local | cluster | unspecified,
-          "data_ops": [ { "direction": upload|download,
-                          "source": str|null, "dest": str|null } ] | null,  // null unless transfer
-          "unknowns": [ { "field": str,           // dotted: "talos.version", "tool_name"
-                          "findable": bool,        // can WE look it up? true→INVESTIGATE, false→ASK
-                          "reason": str } ],
-          "out_of_scope_reason": str|null          // required non-null iff kind==out_of_scope
-        }
+    `resolution` is which PACKAGE you believe `name` means, and why ("gatk" → gatk4, because
+    the bare `gatk` package is GATK3 from 2017). It is required to proceed; `null` routes to
+    INVESTIGATE: call resolve_tool with the raw name, read `package_family` and
+    `identity.self_description`, then re-interpret. A tool with a `source_hint` is exempt.
+    Then call `resolve_tool(tool=resolution.package, user_said=name)`, which verifies the
+    two are one package family and refuses a substitution.
 
-    THE GATE (what comes back in `outcome`):
-      - decline     → out of scope. Explain the boundary; do nothing.
-      - ask         → the intent is ambiguous, or a required detail is un-findable
-                      (`findable: false`). Ask ONE targeted question, then re-interpret.
-      - investigate → intent is clear but a mechanical detail is missing AND findable
-                      (`findable: true`). Look it up (resolve_tool / discovery / a
-                      near-miss resolve), RECORD how, then re-interpret to PROCEED.
-      - proceed     → every required field is known. Run the rail named in `rail`.
+    `findable` is the ask/investigate split: an omitted version is findable (INVESTIGATE);
+    two versions the user may have transposed are not (ASK).
 
-    ⭐ `resolution` — WHERE YOUR KNOWLEDGE GOES, AND IT IS REQUIRED TO PROCEED.
-
-    `name` stays the user's verbatim word; `resolution` is which PACKAGE you believe that
-    word means, and why. They are separate fields so the record can show a human "you asked
-    for X, we installed Y, because Z" — which is what lets them disagree with you.
-
-        "install the latest gatk"
-          name: "gatk"
-          resolution: {"package": "gatk4", "version": null,
-                       "why": "GATK4 is the current major line; bioconda ships it as
-                               `gatk4`, while the bare `gatk` package is GATK3 (3.8, 2017)"}
-
-    This exists because it was MISSING, and the cost was concrete: with only the raw word to
-    go on, the resolver returned `gatk=3.8` — a 2017 release — and every mechanical check
-    passed, because this field VERSIONS TOOLS BY RENAMING THE PACKAGE and both packages are
-    real, correct and well-described. You identify that instantly. Nothing else here can.
-
-    Most of the time `resolution.package` equals `name` and the `why` is one clause ("the
-    bioconda package name is the tool name; no rename"). Write it anyway — a claim with no
-    stated basis is indistinguishable from a guess.
-
-    `null` is a STATED "I have no prior knowledge of this tool" and routes to INVESTIGATE:
-    call `resolve_tool` with the raw name, read `package_family` and
-    `identity.self_description`, then re-interpret WITH a resolution. Nothing installs on a
-    belief nobody wrote down. Exempt: a tool with a `source_hint` — the user pinned the
-    artifact themselves, so there is nothing for you to normalize.
-
-    Then pass it on: `resolve_tool(tool=resolution.package, user_said=name)`. That call
-    VERIFIES your claim — the two must be one package family — and refuses a substitution
-    (answering 'bwa' with 'bowtie2') rather than installing a different tool silently.
-
-    `findable` is the whole ask/investigate split: a version omitted is findable
-    (INVESTIGATE — find latest); two versions transposed by accident (scenario 4) are
-    NOT findable (ASK — do not silently 'correct' them). You decide `findable`; the gate
-    routes on it.
-
-    Returns on success:
-        { "ok": true, "gate_outcome": ..., "rail": ...,
-          "blocking": [ <the unknowns driving ask/investigate> ],
-          "intent": { <the normalized, validated intent> } }
-
-    (The key is `gate_outcome`, not `outcome`, on purpose: `outcome` is the honesty
-    contract's namespace — proven/refused/broke — and the gate's verdict is a
-    DIFFERENT axis. Not overloading one key with two meanings is the ShippedBinary
-    lesson applied here.)
-
-    Returns on a malformed intake (bad JSON, missing/extra field, a DECLINE with no
-    reason): { "ok": false, "error": <the validation error> }. A fabricated or
-    ill-formed interpretation fails HERE, loudly, instead of routing downstream — the
-    input-side analog of the honesty contract refusing a malformed record.
+    Returns `{"ok": true, "gate_outcome": decline | ask | investigate | proceed, "rail": …,
+    "blocking": [the unknowns driving ask/investigate], "intent": {the validated intent}}`.
+    decline → out of scope, do nothing. ask → one targeted question, then re-interpret.
+    investigate → look the gap up, record how, re-interpret. proceed → run `rail`.
+    A malformed intake (bad JSON, a missing or extra field, a decline with no reason)
+    returns `{"ok": false, "error": …}` instead of routing anything.
     """
     try:
         raw = json.loads(intent_json)

@@ -342,90 +342,44 @@ def submit_workflow_job(project_name: str,
                         apptainer_module: str,
                         nextflow_module: str,
                         slurm: dict) -> dict:
-    """Production cluster submission — render → upload → sbatch → emit
-    a local manifest, return job_id. NO POLLING.
+    """Production cluster submission: render → upload → sbatch → local manifest → return
+    `job_id`. No polling: the agent may be gone before a production job ends. Poll later
+    with `cluster_job_status`, fetch with `download`. For validation/seal runs use
+    `run_step_on_cluster`. Not a composite: freeze the env and stage the .sif
+    (`stage_apptainer_image`) first.
 
-    For runs that land in user-declared project workspace paths. The
-    agent may be cut off long before a real production job finishes,
-    so this primitive returns immediately after sbatch and writes a
-    local manifest the user (or a future agent invocation) can use to
-    find the job. For validation/seal runs (short, in the agent's
-    scratch sandbox), use `run_step_on_cluster` instead.
-
-    Composition discipline: NOT a composite — the caller still calls
-    freeze() to build the env, stage_apptainer_image to push the .sif,
-    cluster_job_status to poll AT THEIR OWN PACE, and `download` to
-    fetch outputs.
-
-    Authorization (Phase-1 explicit, dir-by-dir):
-      - project must have a `compute_env_access` entry for the env
-      - the project's `directories[]` under that env must contain
-        `workflow_dir` (longest-prefix match) with `permissions:`
-        including BOTH `upload` (for the file pushes) AND `exec` (so
-        the SLURM job may write outputs in-place during execution)
+    Authorization: the project needs `compute_env_access` for the env, and `workflow_dir`
+    must fall under a `directories[]` entry (longest prefix) whose permissions include
+    both `upload` and `exec`.
 
     Inputs:
-      workflow_dir       absolute remote path under a `directories[]`
-                         entry; the per-run dir on the compute env.
-                         No-overwrite contract means a second submit
-                         to the same dir fails — pick a fresh per-run
-                         subdir per submission.
-      workflow_name      safe-token, ≤64 chars. Used for `sbatch
-                         --job-name`, render_workflow's tag, AND the
-                         local manifest filename.
-      tool_name          safe-token; identifies the tool in
-                         process_name + comments.
-      command            single-line shell command with `${name}`
-                         placeholders bound to inputs/outputs. Every `$`
-                         must open a declared placeholder, and single
-                         quotes / backslashes / triple-double-quotes are
-                         REFUSED: main.nf would rewrite them in transit
-                         and the cluster would run a different command.
-                         Put awk/sed programs in a script baked into the
-                         image (see workflow_render
-                         `_check_command_renders_faithfully`).
-      inputs             {placeholder_name: remote_abs_path} — what
-                         the running process will read.
-      outputs            {placeholder_name: bare_filename} — what the
-                         process writes (to the working dir).
-      apptainer_sif      absolute remote path to the frozen .sif.
-                         Caller stages via stage_apptainer_image
-                         first; pass the resolved sif_path here.
-      apptainer_module   Lmod token, e.g. "apptainer/1.4.1".
-      nextflow_module    Lmod token, e.g. "nextflow/25.04.7".
-      slurm              the per-job REQUEST — closed-key, typos refused.
-                         `time` + `mem` required; `cpus` / `ntasks` / `gpus`
-                         / `partition` / `qos` / `account` optional.
+      workflow_dir      absolute remote per-run dir under a `directories[]` grant. A second
+                        submit to the same dir is refused (no overwrite): use a fresh subdir.
+      workflow_name     safe token ≤64 chars: the sbatch job name, the render tag and the
+                        manifest name.
+      tool_name         safe token for process_name and comments.
+      command           ONE line with `${name}` placeholders bound to inputs/outputs. Every
+                        `$` must open a declared placeholder; single quotes, backslashes and
+                        triple double quotes are refused (main.nf would rewrite them). Put
+                        awk/sed programs in a script baked into the image.
+      inputs            {placeholder: remote absolute path}.
+      outputs           {placeholder: bare filename}, written to the working dir.
+      apptainer_sif     absolute remote path of the staged .sif.
+      apptainer_module / nextflow_module   Lmod tokens, e.g. "apptainer/1.4.1".
+      slurm             the per-job request, closed keys: `time` + `mem` required; `cpus`,
+                        `ntasks`, `gpus`, `partition`, `qos`, `account` optional.
 
-    GPU placement is a STATE, not a requirement
-    -------------------------------------------
-    `gpus: N` renders `--gres=gpu:N` and runs the container with `--nv`.
-    The `--partition` / `--qos` that decide WHERE it lands come from the
-    job's own `slurm` first, then the env's `slurm.gpu` convention, then
-    neither — and neither is allowed. The result is reported as
-    `gpu_placement: {state, partition, partition_source, qos, qos_source}`
-    in both the return and the durable manifest, with `state` one of:
+    `gpus: N` renders `--gres=gpu:N` and runs with `--nv`. Partition and QoS come from the
+    job's `slurm`, else the env's `slurm.gpu` convention, else neither; the result is
+    reported as `gpu_placement: {state: not_applicable | declared | partially_declared |
+    undeclared, partition, partition_source, qos, qos_source}` and noted in the launcher,
+    never guessed. `cluster_partitions` names a real pair.
 
-      not_applicable      gpus == 0
-      declared            both resolved
-      partially_declared  one resolved
-      undeclared          a GPU job with neither — the scheduler chooses
-
-    `undeclared` is a legitimate submission on a cluster that routes gres
-    requests itself (naming a partition there only narrows the search and
-    slows placement), and a bad one where GPU nodes sit in a dedicated
-    partition — which is why it is stated in the record and noted in the
-    rendered launcher rather than refused or guessed at. Run
-    `cluster_partitions` when you want to name a real pair.
-
-    Returns on success:
-      {success: True, compute_env, job_id, workflow_dir,
-       files_uploaded: [...], submitted_at, upload_started, gpu_placement,
-       manifest_path:
-         "job_submissions/<project>/<workflow_name>_<job_id>.submission.json"}
-    Returns {"error": "...", ...} on any refusal/failure. If sbatch
-    fails after files have been uploaded, files_uploaded is
-    included so the caller can clean up."""
+    Returns `{success, compute_env, job_id, workflow_dir, files_uploaded, submitted_at,
+    upload_started, gpu_placement, manifest_path:
+    "job_submissions/<project>/<workflow_name>_<job_id>.submission.json"}`; on any refusal
+    or failure `{"error": …}`, with `files_uploaded` when sbatch failed after the upload.
+    """
     from agent.skills import submit_workflow
     return submit_workflow.submit_workflow_job(
         project_name=project_name,
@@ -457,70 +411,45 @@ def run_production_pipeline(project_name: str,
                            resources: dict = {},
                            sealed_workflow: str = "",
                            platform: str = "linux/amd64") -> dict:
-    """Run a frozen env's workflow in PRODUCTION on WHICHEVER compute env you
-    name — local laptop OR ssh cluster. The SAME call, swap `compute_env_name`.
-    Plug-and-play: what differs between loci (scheduler, container runtime,
-    module names) is an ENV PROPERTY in projects_access.yaml, never an argument.
+    """Run a frozen env's workflow in PRODUCTION on whichever compute env you name, the
+    local laptop or an ssh cluster: one call, swap `compute_env_name`. What differs between
+    loci (scheduler, container runtime, modules) is an env property in projects_access.yaml.
 
-    Dispatches on the env's type:
-      • local → renders a re-runnable `run.sh` that `docker run`s the frozen
-        image against `workflow_dir` (same-path bind mount), launches it in the
-        BACKGROUND, writes a submission manifest. Poll with check_job.
-      • ssh   → delegates to the proven nextflow+slurm+apptainer submission,
-        sourcing apptainer/nextflow modules + slurm policy from the env config
-        and deriving the staged .sif path from freeze_request_key.
+      local → renders a re-runnable `run.sh` that `docker run`s the frozen image against
+              `workflow_dir` (same-path bind mount), launches it in the background and
+              writes a submission manifest. Poll with check_job.
+      ssh   → the nextflow + slurm + apptainer submission, with modules and slurm policy
+              from the env config and the staged .sif derived from `freeze_request_key`.
 
-    NOT a composite. The caller still freezes the env; for the cluster locus the
-    caller also stages the .sif (stage_apptainer_image) first — this verb REFUSES
-    if the .sif isn't already staged. This is the PRODUCTION verb; it documents
-    the run (a manifest, findable later) but does NOT seal a WorkflowSpec — the
-    validation verbs (run_step_in_container / run_step_on_cluster) do that.
+    Not a composite: freeze first; on the cluster also `stage_apptainer_image` first
+    (refused otherwise). This documents the run in a manifest; it does not seal a
+    WorkflowSpec — `run_step_in_container` / `run_step_on_cluster` do.
 
-    Authorization: `workflow_dir` must be a `directories[]` path on the project
-    with BOTH `upload` and `exec` (same wall as submit_workflow_job).
+    Authorization: `workflow_dir` must be a `directories[]` path with `upload` and `exec`.
 
     Inputs:
-      command            single-line shell command with ${PLACEHOLDER} slots —
-                         the SAME syntax on both loci (one command, swap the env).
-                         The CLUSTER branch is stricter about the command's
-                         CONTENT: every `$` must open a declared placeholder, and
-                         single quotes / backslashes / triple-double-quotes are
-                         refused because main.nf's Groovy script block would
-                         rewrite them. The local branch accepts them (it shell-
-                         quotes straight into run.sh, no Groovy in between), so a
-                         command that runs locally may still be refused on ssh —
-                         keep it inside the cluster subset to stay portable.
-      inputs             {PLACEHOLDER: absolute_path} — a real path on the
-                         compute env. Every ${placeholder} must be declared.
-      outputs            {PLACEHOLDER: bare_filename} — written into workflow_dir
-                         (same convention as submit_workflow_job).
-      freeze_request_key the frozen env handle (from freeze()); the uniform
-                         env reference for BOTH loci.
-      workflow_dir       absolute path under a `directories[]` grant.
-      resources          {mem_gb, cpus, time, gpus?, partition?, qos?} — the
-                         uniform per-run sizing knob. Optional locally (docker
-                         --memory/--cpus); REQUIRED on the cluster (SLURM needs
-                         mem + time). `partition`/`qos` are cluster-only and
-                         optional there: name a pair from `cluster_partitions`
-                         to place a GPU job yourself, or omit both and take the
-                         env's `slurm.gpu` convention — or, with neither, the
-                         scheduler's own choice. What resolved comes back as
-                         `gpu_placement` (see submit_workflow_job).
-      sealed_workflow    OPTIONAL name of a sealed `{name}.workflow.yaml` to
-                         check this run's DATA against. The env is pinned by
-                         digest; without this NOTHING pins the references, so a
-                         pipeline validated on gencode.v44 can be production-run
-                         on v39 with no disclosure. Name it EXPLICITLY — it is
-                         deliberately not inferred from workflow_name, because
-                         the two genuinely differ in practice (a run named
-                         `samtools_flagstat_prod007` against sealed workflow
-                         `samtools_cluster_rung3`). Omitted ⇒ the result carries
-                         `reference_check.status = "not_attempted"`, a stated
-                         third state rather than a silent pass; a divergence
-                         comes back `degraded`, never a bare success.
+      command             ONE line with `${PLACEHOLDER}` slots, the same on both loci. The
+                          cluster branch refuses single quotes, backslashes and triple
+                          double quotes (main.nf would rewrite them); keep to that subset
+                          to stay portable.
+      inputs              {PLACEHOLDER: absolute path on the compute env}; every slot declared.
+      outputs             {PLACEHOLDER: bare filename}, written into workflow_dir.
+      freeze_request_key  the frozen env, the same handle on both loci.
+      workflow_dir        absolute path under a `directories[]` grant.
+      resources           {mem_gb, cpus, time, gpus?, partition?, qos?}: optional locally
+                          (docker --memory/--cpus), REQUIRED on the cluster (mem + time).
+                          partition/qos are cluster-only; omit both to take the env's
+                          `slurm.gpu` convention or the scheduler's choice; `gpu_placement`
+                          reports what resolved (as in submit_workflow_job).
+      sealed_workflow     OPTIONAL `{name}.workflow.yaml` to check this run's DATA against:
+                          the env is pinned by digest, only this pins the references. Name
+                          it explicitly, never inferred from workflow_name. Omitted ⇒
+                          `reference_check.status = "not_attempted"`; a divergence returns
+                          `degraded`, never a bare success.
 
-    Returns {success, locus, compute_env, job_id, workflow_dir, manifest_path,
-    ...} on success; {"error": ..., ...} on any refusal/failure."""
+    Returns `{success, locus, compute_env, job_id, workflow_dir, manifest_path, …}`; on any
+    refusal or failure `{"error": …}`.
+    """
     from agent.skills import run_production
     return run_production.run_production_pipeline(
         project_name=project_name,
@@ -614,71 +543,37 @@ def run_step_on_cluster(pipeline_id: str,
                         poll_interval: int = 15,
                         max_polls: int = 240,
                         output_types: dict = {}) -> dict:
-    """Path-4 keystone — run a workflow step ON CLUSTER IN SCRATCH and
-    record cluster-locus evidence as a pipeline_step in the draft.
+    """Run a workflow step ON THE CLUSTER, in the agent's scratch sandbox, and record
+    cluster-locus evidence as a pipeline_step in the draft.
 
-    The wall: scratch-only
-    ----------------------
-    workflow_dir is computed internally as
-      `<env.agent_scratch_target.path>/<project_name>/<workflow_name>/`
-    There is NO knob to point it elsewhere. The scratch sandbox is
-    what keeps the agent inside its own walls: it can mess around
-    freely in scratch to prove a build works on cluster. Production
-    runs (against user project workspaces) go through
-    `submit_workflow_job` with directories[] auth.
+    Scratch only: workflow_dir is `<env.agent_scratch_target.path>/<project>/<workflow_name>/`
+    and there is no knob to point elsewhere; production runs against project workspaces go
+    through `submit_workflow_job`. The env must declare `agent_scratch_target` with `exec`.
 
-    Auth: env must declare `agent_scratch_target` with `exec` perm
-    (the schema validator enforces this on every scratch target).
-    Hard-fails if no scratch target — no graceful fallback.
+    Composes: `stage_apptainer_image` (idempotent) → render + upload the three workflow
+    files (main.nf, nextflow.config, launcher.sh) → `sbatch --parsable` → poll
+    `cluster_job_status` to a terminal state (validation jobs are bounded) →
+    `cluster_job_resources` (sacct MaxRSS, I7) → `download` each output (sha256
+    round-trip) → type-aware validation. The step records `validation_locus: "cluster"`.
+    Then: `seal_workflow`, another step with a FRESH workflow_name, or
+    `discard_pipeline_draft`.
 
-    Composes: `stage_apptainer_image` (idempotent) → render +
-    `upload` × 3 (scratch zone) → `sbatch --parsable` →
-    `cluster_job_status` (poll to terminal — viable here because
-    validation jobs are bounded) → `cluster_job_resources` (sacct
-    MaxRSS for I7) → `download` × N (sha256 round-trip) → type-aware
-    validation. The pipeline_step records `validation_locus: "cluster"`
-    so a future reader sees the evidence came from sacct.
+    `command`: ONE line with `${name}` placeholders bound to inputs/outputs; every `$` must
+    open a declared placeholder, and single quotes, backslashes and triple double quotes
+    are refused before any ssh (main.nf would rewrite them). Put awk/sed programs in a
+    script baked into the image.
 
-    After this returns successfully, three legitimate next moves:
-      (a) `seal_workflow(pipeline_id, freeze_request_key)` — produce
-          a sealed WorkflowSpec with cluster-locus evidence
-      (b) Call again with a different command — multi-step workflows
-      (c) `discard_pipeline_draft(pipeline_id)` — run-and-go
+    `inputs` are REMOTE absolute paths that must already exist on the cluster (they become
+    `${params.x}` verbatim). This primitive uploads no input data: `upload(...)` it into
+    scratch first, or point at data already there. `outputs`: `{placeholder: bare
+    filename}`. `download_local_dir`: where fetched outputs land (created if absent).
+    `output_types`: optional `{basename|ext: validator_type}`, as in run_step_in_container.
 
-    `command`: single-line, with `${name}` placeholders bound to
-    inputs/outputs. Every `$` must open a declared placeholder, and single
-    quotes / backslashes / triple-double-quotes are REFUSED before any ssh —
-    main.nf's Groovy script block would rewrite them and the compute node
-    would run a different command (see workflow_render
-    `_check_command_renders_faithfully`). Put awk/sed programs in a script
-    baked into the image, where they become part of the frozen artifact.
-
-    INPUT SEMANTICS — read this (differs from run_step_in_container):
-    `inputs` values are REMOTE absolute paths that must ALREADY EXIST on
-    the cluster (they become `${params.x}` in main.nf verbatim). This
-    primitive uploads ONLY the 3 rendered workflow files (main.nf /
-    nextflow.config / launcher.sh) to scratch — it does NOT stage input
-    DATA. Its local analog `run_step_in_container` bind-mounts LOCAL
-    paths; this one does not. So `upload(...)` your input data into
-    scratch (or point at data already on the cluster) BEFORE calling —
-    an input path that isn't present on the cluster makes the Nextflow
-    process fail at runtime, not here. (Auto-staging local inputs is a
-    planned Wave-2 improvement; today the precondition is on the caller.)
-
-    `outputs`: `{placeholder_name: bare_filename}` — the file the
-    process writes (Nextflow's publishDir lands it in the scratch
-    workflow_dir).
-    `download_local_dir`: where to materialize the fetched outputs
-    locally (created if absent).
-    `output_types`: optional `{basename|ext: validator_type}` overrides
-    for type-aware validation (same shape as run_step_in_container).
-
-    Returns {success, returncode, job_id, sif_path, workflow_dir,
-    resource_usage, detected_outputs, output_sha256, validations,
-    validation_count, download_errors, pipeline_merge, final_status}
-    on success; {"error": ..., stage_result/last_poll?}
-    on any phase's refusal/failure. The prior phases' results are
-    preserved on the error dict for diagnosis."""
+    Returns `{success, returncode, job_id, sif_path, workflow_dir, resource_usage,
+    detected_outputs, output_sha256, validations, validation_count, download_errors,
+    pipeline_merge, final_status}`; on a phase's refusal or failure `{"error": …}` with the
+    prior phases' results kept for diagnosis.
+    """
     from agent.skills import run_cluster_step
     return run_cluster_step.run_step_on_cluster(
         pipeline_id=pipeline_id,

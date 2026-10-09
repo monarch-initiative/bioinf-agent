@@ -22,6 +22,7 @@ cannot leave a half-written draft.
 
 from __future__ import annotations
 
+import copy
 import os
 import tempfile
 from pathlib import Path
@@ -33,6 +34,30 @@ from agent.skills import store_lock as _store_lock
 from agent.skills import typed_nouns
 from agent.skills.outcomes import refused
 from agent.skills import workspace
+
+
+#: The shape `patch_pipeline(usage=…)` and the seal both require.
+USAGE_SHAPE = {
+    "description": "str (required)",
+    "command_template": "str | list[str] (required)",
+    "inputs": [{"name": "str (required)", "format": "str?", "description": "str?"}],
+    "outputs": [{"name": "str (required)", "files": ["pattern"], "description": "str?"}],
+    "trials": [{"name": "str", "substitutions": {"PLACEHOLDER": "value"}, "description": "str?"}],
+}
+
+
+def usage_block_problems(usage) -> list[str]:
+    """Validate a draft's `usage` block against the WorkflowSpec model; one line per
+    problem, empty when it fits."""
+    from pydantic import ValidationError
+    from agent.models.core_data import UsageTemplate
+    if not isinstance(usage, dict):
+        return ["usage must be a mapping"]
+    try:
+        UsageTemplate.model_validate(usage)
+    except ValidationError as e:
+        return [f"{'.'.join(str(x) for x in err['loc']) or 'usage'}: {err['msg']}" for err in e.errors()]
+    return []
 
 
 def validation_key(path: str) -> str:
@@ -211,24 +236,11 @@ class PipelineState:
         return self._drafts.pop(pipeline_id, None)
 
     def _mutate(self, pipeline_id: str, apply, default=None):
-        """THE ONE WRITE PATH. Lock, re-read from disk, apply, write, refresh the cache.
+        """The one write path: lock, re-read from disk, apply, write, refresh the cache.
 
-        Returns `(ok, result)` — `ok=False` when there is no draft to mutate, in which
-        case `result` is `default` and NOTHING was written. Every mutator on this class
-        goes through here, which is what makes "did I remember to re-read?" un-askable
-        rather than merely answered correctly thirteen times.
-
-        WHY NOT `_persist`: the old path read `self._drafts` (a cache filled once at
-        `__init__`), mutated it, and wrote the whole copy back under the lock. The lock
-        stopped the write from INTERLEAVING; it did nothing about the copy being stale.
-        A parent and a detached child mutating one draft therefore lost one side's edits
-        entirely — the child's install_step written, then erased by the parent's next
-        write of a draft it had read before the child ran.
-
-        A FAILED RE-READ REFUSES; it does not fall back to the cached copy. That fallback
-        is precisely how a stale write gets laundered into a durable one: if the file is
-        gone the draft is gone, and if it is unreadable we must not overwrite it with a
-        guess. Refusing is recoverable; clobbering is not."""
+        Returns `(ok, result)`; `ok=False` when there is no draft to mutate, in which
+        case `result` is `default` and nothing was written. A failed re-read refuses
+        rather than falling back to the cached copy, which could be stale."""
         with _store_lock.locked(self._draft_path(pipeline_id)):
             draft = self._read_draft_file(pipeline_id)
             if draft is None:
@@ -609,6 +621,23 @@ class PipelineState:
                 patchable_keys=sorted(self.PATCHABLE_KEYS),
             )
 
+        if "usage" in patches:
+            current = self.get_draft(pipeline_id)
+            if current is None:
+                return refused("pipeline_state.unknown_pipeline",
+                               error=f"unknown pipeline_id: {pipeline_id}")
+            merged = copy.deepcopy(current)
+            _deep_merge(merged, {"usage": patches["usage"]})
+            problems = usage_block_problems(merged.get("usage"))
+            if problems:
+                return refused(
+                    "pipeline_state.usage_invalid",
+                    error=("patch refused — the merged `usage` block does not fit the "
+                           "WorkflowSpec schema (the seal would refuse it): " + "; ".join(problems)),
+                    problems=problems,
+                    usage_shape=USAGE_SHAPE,
+                )
+
         ok, _ = self._mutate(pipeline_id, lambda draft: _deep_merge(draft, patches))
         if not ok:
             return refused("pipeline_state.unknown_pipeline",
@@ -624,12 +653,6 @@ class PipelineState:
 
     def _draft_path(self, pipeline_id: str) -> Path:
         return self.drafts_dir / f"{pipeline_id}.draft.yaml"
-
-    # `_persist` IS DELETED, DELIBERATELY. It wrote `self._drafts[pipeline_id]` — the
-    # cached copy — under the lock, which stopped writes interleaving but not stale
-    # writes winning. Every mutator now goes through `_mutate`, and the way to guarantee
-    # a future mutator does too is that the unsafe door no longer exists. A comment
-    # saying "don't use _persist" would have been a rule; removing it is a property.
 
     def _write_draft_file(self, pipeline_id: str, draft: dict) -> None:
         """The atomic write itself — assumes the caller holds the lock."""

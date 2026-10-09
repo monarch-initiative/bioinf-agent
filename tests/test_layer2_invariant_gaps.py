@@ -204,6 +204,40 @@ def test_step_records_the_observed_digest_not_the_one_it_was_handed(monkeypatch,
         "a divergence must be RECORDED, not merely absent — absence reads as 'not checked'"
 
 
+def test_the_step_runs_the_image_as_the_records_own_platform(monkeypatch, tmp_path):
+    """The record knows its platform; a parameter defaulting to amd64 ran every arm64
+    image under the wrong architecture, which docker reports as an image it cannot find."""
+    from agent import mcp_server as m
+
+    rec = {"image": "env:latest", "image_digest": "sha256:X", "platform": "linux/arm64"}
+    monkeypatch.setattr(m._env_cache, "lookup_verified", lambda k: (rec, []))
+    monkeypatch.setattr(m, "_check_docker_available", lambda: None)
+    monkeypatch.setattr(m._locus, "daemon_is_remote", lambda: False)
+    monkeypatch.setattr(m._docker, "_run", lambda *a, **k: {"returncode": 0, "stdout": "", "stderr": ""})
+    monkeypatch.setattr(m._docker, "image_digest", lambda img: "sha256:X")
+    seen: dict = {}
+
+    def run_in_container(image, command, mounts=None, workdir=None, platform=None, timeout=None):
+        seen["platform"] = platform
+        return {"returncode": 0, "stdout": "", "stderr": "",
+                "resource_usage": {"wall_seconds": 1.0, "peak_rss_mb": 5.0, "max_cpu_percent": 10.0}}
+    monkeypatch.setattr(m._docker, "run_in_container", run_in_container)
+    monkeypatch.setattr(m._env_mgr, "hash_outputs", lambda outs: {})
+    monkeypatch.setattr(m._pipeline_state, "add_step", lambda pid, data, replace_step=None: 1)
+    monkeypatch.setattr(m._pipeline_state, "get_draft", lambda pid: {"pipeline_steps": [{}]})
+
+    m.run_step_in_container(freeze_request_key="k", command="echo hi", pipeline_id="p",
+                            inputs=[], data_dir=str(tmp_path))
+    assert seen["platform"] == "linux/arm64"
+    rec["platform"] = "linux-64"                      # the conda spelling resolves too
+    m.run_step_in_container(freeze_request_key="k", command="echo hi", pipeline_id="p",
+                            inputs=[], data_dir=str(tmp_path))
+    assert seen["platform"] == "linux/amd64"
+    m.run_step_in_container(freeze_request_key="k", command="echo hi", pipeline_id="p",
+                            inputs=[], data_dir=str(tmp_path), platform="linux/arm64")
+    assert seen["platform"] == "linux/arm64"          # an explicit override still wins
+
+
 def test_an_unobservable_digest_is_recorded_as_absent_not_as_the_nominal_one(monkeypatch, tmp_path):
     """Falling back to the nominal digest when the inspect fails would restore exactly
     the tautology being removed: the badge would be earned again by copying."""

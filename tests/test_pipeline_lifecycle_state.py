@@ -201,3 +201,53 @@ def test_lifecycle_pointers_are_blocked_from_patch(tmp_path):
     out = ps.patch("p1", {"frozen_as": "rk-forged"})
     assert out.get("code") == "pipeline_state.blocked_keys"
     assert "frozen_as" not in (ps.get_draft("p1") or {})
+
+
+# ---------------------------------------------------------------------------
+# the usage block is validated when it is patched, not discovered at the seal
+# ---------------------------------------------------------------------------
+
+_GOOD_USAGE = {"description": "count reads", "command_template": "t {IN} > {OUTPUT_DIR}/o.tsv",
+               "inputs": [{"name": "IN", "format": "fastq"}],
+               "outputs": [{"name": "OUTPUT_DIR", "files": ["o.tsv"]}]}
+
+
+def test_a_usage_patch_missing_required_fields_is_refused_with_the_problems(tmp_path):
+    ps = _ps(tmp_path)
+    ps.start("p1", "desc")
+    bad = {"command_template": "t {IN} > {OUTPUT_DIR}/o.tsv",
+           "outputs": [{"files": ["o.tsv"]}]}
+    out = ps.patch("p1", {"usage": bad})
+    assert out.get("code") == "pipeline_state.usage_invalid"
+    joined = " ".join(out["problems"])
+    assert "description" in joined and "outputs.0.name" in joined
+    assert "usage_shape" in out
+    assert "usage" not in (ps.get_draft("p1") or {}), "a refused patch must not land"
+
+
+def test_a_complete_usage_patch_lands(tmp_path):
+    ps = _ps(tmp_path)
+    ps.start("p1", "desc")
+    out = ps.patch("p1", {"usage": _GOOD_USAGE})
+    assert "code" not in out and ps.get_draft("p1")["usage"]["description"] == "count reads"
+
+
+def test_a_partial_usage_patch_is_validated_against_the_merged_block(tmp_path):
+    ps = _ps(tmp_path)
+    ps.start("p1", "desc")
+    ps.patch("p1", {"usage": _GOOD_USAGE})
+    out = ps.patch("p1", {"usage": {"trials": [{"name": "t1", "substitutions": {"IN": "/x"}}]}})
+    assert "code" not in out
+    assert ps.get_draft("p1")["usage"]["trials"][0]["name"] == "t1"
+    out = ps.patch("p1", {"usage": {"trials": [{"substitutions": {"IN": "/x"}}]}})
+    assert out.get("code") == "pipeline_state.usage_invalid"
+    assert any("trials.0.name" in x for x in out["problems"])
+
+
+def test_usage_block_problems_is_empty_for_a_valid_block_and_names_each_fault():
+    from agent.skills.pipeline_state import usage_block_problems
+    assert usage_block_problems(_GOOD_USAGE) == []
+    assert usage_block_problems("nope") == ["usage must be a mapping"]
+    probs = usage_block_problems({"command_template": 3})
+    assert any(x.startswith("description") for x in probs)
+    assert any(x.startswith("command_template") for x in probs)

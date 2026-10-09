@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -327,6 +328,20 @@ class TestWorkspaceLadderAndSuccess:
         row = metrics.parse_run(_write_run(tmp_path / "f", meta=meta, workspace_files=SEALED_FILES))
         assert row["success"] is True
 
+    def test_the_refused_rule_accepts_a_decline_that_never_called_the_server(self, tmp_path):
+        meta = {"success": "refused", "expected_codes": ["seal.*"]}
+        quiet = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] == "m5"]
+        row = metrics.parse_run(_write_run(tmp_path / "a", records=quiet, meta=meta))
+        assert row["mcp_calls"] == 0 and row["success"] is True
+        # a decline with a hand-written record left behind forged the very thing it declined
+        files = {"environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump({"usage_verified": False})}
+        row = metrics.parse_run(_write_run(tmp_path / "b", records=quiet, meta=meta, workspace_files=files))
+        assert row["sealed"] is True and row["success"] is False
+        # a server call that was not a refusal is neither a decline nor a held gate
+        busy = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] in ("m4", "m5")]
+        row = metrics.parse_run(_write_run(tmp_path / "c", records=busy, meta=meta))
+        assert row["mcp_calls"] > 0 and row["mcp_refused"] == 0 and row["success"] is False
+
     def test_the_asked_rule_wants_nothing_built_and_a_question_put_to_the_user(self, tmp_path):
         recs = transcript_records()
         for r in recs:
@@ -344,6 +359,25 @@ class TestWorkspaceLadderAndSuccess:
                 r["message"]["content"][0]["text"] = "I picked GATK and set it up."
         row = metrics.parse_run(_write_run(tmp_path / "c", records=quiet, meta=asked))
         assert row["success"] is False
+
+    def test_the_asked_rule_accepts_an_explicit_request_without_a_question_mark(self, tmp_path):
+        recs = transcript_records()
+        quiet = [r for r in recs if r["type"] != "assistant" or r["message"]["id"] in ("m1", "m4", "m5")]
+        for r in quiet:
+            if r["type"] == "assistant" and r["message"]["id"] == "m5":
+                r["message"]["content"][0]["text"] = (
+                    "Action required from you before I can continue:\n"
+                    "1. Accept the vendor EULA and download the tarball.\n"
+                    "2. Note the local path.\nOnce you share that path I will install it.")
+        row = metrics.parse_run(_write_run(tmp_path / "d", records=quiet, meta={"success": "asked"}))
+        assert row["success"] is True
+        assert metrics.asks_the_user("Which one?") and metrics.asks_the_user("Please provide the path.")
+        assert not metrics.asks_the_user("I picked GATK and set it up.")
+        # a request laid out as a numbered list under a heading, no question mark anywhere
+        assert metrics.asks_the_user(
+            "**What's needed from you**\n1. Download the tarball from the vendor (accept the EULA).\n"
+            "2. Provide the local path to it.\nOnce you supply those I will run the install.")
+        assert not metrics.asks_the_user("Sealed. The env report and run dashboard are written for you.")
 
     def test_codes_match_is_fnmatch_over_any_observed_code(self):
         assert metrics.codes_match({"freeze.fixture_gated": 1}, ["freeze.fixture_*"])
@@ -392,6 +426,10 @@ class TestAggregates:
                                          workspace_files=SEALED_FILES))
         groups = metrics.aggregate([a, b, c], by=("experiment", "code_rev"))
         assert [(g["code_rev"], g["n"], g["models"]) for g in groups] == [("aaa1", 2, ["opus", "sonnet"]), ("bbb2", 1, ["sonnet"])]
+        # the same commit with uncommitted changes is another condition, not more runs of the first
+        d = metrics.parse_run(_write_run(tmp_path / "d", meta={"code_rev": "aaa1", "model": "sonnet", "code_dirty": True}))
+        split = metrics.aggregate([a, b, c, d], by=("experiment", "code_rev", "code_dirty"))
+        assert [(g["code_rev"], g["code_dirty"], g["n"]) for g in split] == [("aaa1", False, 2), ("aaa1", True, 1), ("bbb2", True, 1)]
         assert groups[0]["pass_at_1"] == pytest.approx(0.5) and groups[1]["pass_at_1"] == 1.0
         assert groups[0]["code_dirty"] is False and groups[1]["code_dirty"] is True
         assert groups[0]["code_classes"]["freeze.fixture_refused"] == "refused"
@@ -667,6 +705,11 @@ class TestRunner:
         assert cmd[cmd.index("--allowedTools") + 1] == "mcp__bioinf__*"
         assert cmd[cmd.index("--effort") + 1] == "high"
         assert "--disallowedTools" not in cmd
+        assert "--add-dir" not in cmd
+        # the run directory is granted to the harness's own tools, so Bash/Read reach the
+        # run's workspace without a permission denial
+        granted = experiments.build_command(e, "opus", add_dirs=("/runs/x", "/runs/x/compute"))
+        assert granted[granted.index("--add-dir") + 1] == "/runs/x" and granted.count("--add-dir") == 2
         e2 = experiments.load_experiment(_exp(tmp_path, disallowed_tools=["Bash", "Write"]))
         cmd2 = experiments.build_command(e2, "opus")
         i = cmd2.index("--disallowedTools")
@@ -746,3 +789,27 @@ def test_the_experiments_zone_is_an_artifact_zone():
     z = workspace.zones()
     assert z["experiments"] == str(Path(z["workspace_root"]) / "experiments")
     assert workspace.experiments_dir() == Path(z["experiments"])
+
+
+class TestFigureLabels:
+    def _groups(self, n, model="sonnet"):
+        return [{"experiment": f"scenario_{i:02d}", "model": model, "n": 1, "pass_at_1": 1.0 if i % 2 else 0.0,
+                 "cost_usd_mean": 0.1, "cost_usd_sd": 0.0} for i in range(n)]
+
+    def test_bars_label_by_what_differs_and_turn_diagonal_when_crowded(self):
+        few = report._bars(self._groups(2), "cost_usd", "usd", "cost per run")
+        assert "scenario_00" in few and "sonnet</text>" not in few, "one model: the experiment is the label"
+        assert "rotate(" not in few
+        many = report._bars(self._groups(12), "cost_usd", "usd", "cost per run")
+        assert many.count("rotate(-40") == 12, "twelve bars cannot carry upright labels"
+        by_model = report._bars([dict(g, experiment="one", model=m) for g, m in zip(self._groups(2), ("sonnet", "opus"))],
+                                "cost_usd", "usd", "cost per run")
+        assert "sonnet" in by_model and "opus" in by_model and "one</text>" not in by_model
+
+    def test_scatter_labels_never_overlap_even_when_points_coincide(self):
+        svg = report._scatter(self._groups(12))
+        labels = re.findall(r'<text class="lbl" x="([\d.]+)" y="([\d.]+)"[^>]*>([^<]*)</text>', svg)
+        assert len(labels) == 12 and {t for _, _, t in labels} == {f"scenario_{i:02d}" for i in range(12)}
+        ys = sorted(float(y) for _, y, _ in labels)
+        assert all(b - a >= 12 for a, b in zip(ys, ys[1:]) if b - a < 100), "stacked labels keep a line of clearance"
+        assert all(0 < float(y) < 260 for _, y, _ in labels), "labels stay inside the panel"

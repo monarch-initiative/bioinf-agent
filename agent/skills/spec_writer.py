@@ -313,7 +313,8 @@ def select_pipeline_step(spec: Any, step_number: int) -> Any:
         f"recorded step numbers are {available or '(none)'}")
 
 
-def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = None) -> dict:
+def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = None,
+                    no_runner_reason: str = "") -> dict:
     """Execute usage.command_template with real test inputs and verify outputs.
 
     Keystone honesty check (I4): for each declared input shape, substitute the
@@ -376,14 +377,13 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
     # what silently disabled I4 for every container-native env.
     env_name = spec.get("conda_env")
     if env_manager is None:
-        # Say only what is KNOWN here: the seal was handed no runner. Never
-        # assert probes ("neither image nor host env could execute") that this
-        # function cannot see. Causes are named as candidates.
-        return _not_attempted("no runner available — the seal could not build an in-image "
-                              "runner (the pinned image did not resolve in the local "
-                              "daemon, or a trial input exists only at another locus) and "
-                              "the spec names no conda_env for a host-env fallback, so "
-                              "nothing here executed the how-to")
+        # Say only what is known here: the caller's reason when it gave one, else the
+        # candidates — this function cannot see the daemon or the trial inputs itself.
+        why = no_runner_reason or ("the pinned image did not resolve in the local daemon, "
+                                   "or a trial input exists only at another locus")
+        return _not_attempted(f"no runner available — {why}; and the spec names no "
+                              "conda_env for a host-env fallback, so nothing here executed "
+                              "the how-to")
     if getattr(env_manager, "is_image_runner", False):
         env_name = env_name or "<frozen image>"
     elif not env_name:

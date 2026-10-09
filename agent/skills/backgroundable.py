@@ -59,9 +59,11 @@ _DOC = """
     `background=True` DETACHES this call. The arguments are handed to a fresh
     subprocess and the tool returns immediately with a `job_id` — no result, and
     nothing has been produced yet. Use it whenever the work could plausibly run
-    silently past the agent's ~600 s stream-watchdog. Poll `check_job(job_id)`;
-    once `state` is `'exited'`, that same response carries this tool's real
-    return value inline under `result`. There is no second file to read."""
+    silently past the agent's ~600 s stream-watchdog. Then call
+    `check_job(job_id, wait_s=300)` — it blocks until the job exits or the wait
+    runs out, and once `state` is `'exited'` that same response carries this
+    tool's real return value inline under `result`. Never end your turn to wait
+    for the job; a headless session ends with the turn."""
 
 
 def backgroundable(*name_from: str,
@@ -185,12 +187,11 @@ def spawn_detached(tool: str, kwargs: dict, name_from: tuple[str, ...] = ()) -> 
         "log_path":    job.get("log_path", ""),
         "done_marker": str(jm.done_path(job_id)),
         "note": (f"{tool} is running detached — NOTHING has been produced yet and "
-                 f"this receipt is not a result. Poll check_job('{job_id}'); when "
-                 f"state=='exited' that response carries {tool}'s real return value "
-                 f"inline under `result`. `log_tail` shows progress meanwhile. "
-                 f"`done_marker` is a file the job itself creates when it finishes, "
-                 f"so waiting on it in a shell is safe — but it only says FINISHED: "
-                 f"you still need one check_job call to get the result."),
+                 f"this receipt is not a result. Call check_job('{job_id}', wait_s=300) "
+                 f"(it blocks until the job exits or the wait runs out; repeat while "
+                 f"state=='running'); the response with state=='exited' carries "
+                 f"{tool}'s real return value inline under `result`. Do not end your "
+                 f"turn to wait: a headless session ends with the turn."),
     }
 
 

@@ -5,8 +5,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:664",
-    "end_line": 664,
+    "where": "agent/mcp_tools/env_tools.py:597",
+    "end_line": 597,
     "named_in_test": false
   },
   {
@@ -55,8 +55,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:294",
-    "end_line": 295,
+    "where": "agent/mcp_tools/run_tools.py:296",
+    "end_line": 297,
     "named_in_test": false
   },
   {
@@ -65,8 +65,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:390",
-    "end_line": 390,
+    "where": "agent/mcp_tools/run_tools.py:392",
+    "end_line": 392,
     "named_in_test": false
   },
   {
@@ -75,8 +75,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:1073",
-    "end_line": 1073,
+    "where": "agent/mcp_tools/workflow_tools.py:1059",
+    "end_line": 1059,
     "named_in_test": false
   },
   {
@@ -115,8 +115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:877",
-    "end_line": 877,
+    "where": "agent/mcp_tools/workflow_tools.py:863",
+    "end_line": 863,
     "named_in_test": false
   },
   {
@@ -185,8 +185,8 @@
     "source": "helper",
     "tagged": true,
     "func": "spawn_detached",
-    "where": "agent/skills/backgroundable.py:173",
-    "end_line": 175,
+    "where": "agent/skills/backgroundable.py:175",
+    "end_line": 177,
     "named_in_test": false
   },
   {
@@ -295,8 +295,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_in_image",
-    "where": "agent/skills/container_build.py:1079",
-    "end_line": 1079,
+    "where": "agent/skills/container_build.py:1081",
+    "end_line": 1081,
     "named_in_test": true
   },
   {
@@ -405,8 +405,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/container_build.py:735",
-    "end_line": 735,
+    "where": "agent/skills/container_build.py:737",
+    "end_line": 737,
     "named_in_test": false
   },
   {
@@ -415,8 +415,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/container_build.py:755",
-    "end_line": 755,
+    "where": "agent/skills/container_build.py:757",
+    "end_line": 757,
     "named_in_test": false
   },
   {
@@ -425,8 +425,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare",
-    "where": "agent/skills/container_build.py:777",
-    "end_line": 778,
+    "where": "agent/skills/container_build.py:779",
+    "end_line": 780,
     "named_in_test": false
   },
   {
@@ -435,8 +435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare",
-    "where": "agent/skills/container_build.py:781",
-    "end_line": 781,
+    "where": "agent/skills/container_build.py:783",
+    "end_line": 783,
     "named_in_test": false
   },
   {
@@ -445,8 +445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_locked",
-    "where": "agent/skills/container_build.py:801",
-    "end_line": 802,
+    "where": "agent/skills/container_build.py:803",
+    "end_line": 804,
     "named_in_test": false
   },
   {
@@ -455,8 +455,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_pypi",
-    "where": "agent/skills/container_build.py:823",
-    "end_line": 823,
+    "where": "agent/skills/container_build.py:825",
+    "end_line": 825,
     "named_in_test": false
   },
   {
@@ -465,8 +465,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_pypi",
-    "where": "agent/skills/container_build.py:826",
-    "end_line": 826,
+    "where": "agent/skills/container_build.py:828",
+    "end_line": 828,
     "named_in_test": false
   },
   {
@@ -475,8 +475,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run",
-    "where": "agent/skills/container_build.py:866",
-    "end_line": 866,
+    "where": "agent/skills/container_build.py:868",
+    "end_line": 868,
     "named_in_test": false
   },
   {
@@ -485,8 +485,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run",
-    "where": "agent/skills/container_build.py:875",
-    "end_line": 876,
+    "where": "agent/skills/container_build.py:877",
+    "end_line": 878,
     "named_in_test": false
   },
   {
@@ -495,8 +495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_artifact",
-    "where": "agent/skills/container_build.py:908",
-    "end_line": 909,
+    "where": "agent/skills/container_build.py:910",
+    "end_line": 911,
     "named_in_test": false
   },
   {
@@ -505,8 +505,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_artifact",
-    "where": "agent/skills/container_build.py:919",
-    "end_line": 921,
+    "where": "agent/skills/container_build.py:921",
+    "end_line": 923,
     "named_in_test": false
   },
   {
@@ -515,8 +515,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/skills/container_build.py:969",
-    "end_line": 969,
+    "where": "agent/skills/container_build.py:971",
+    "end_line": 971,
     "named_in_test": false
   },
   {
@@ -525,8 +525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/skills/container_build.py:983",
-    "end_line": 985,
+    "where": "agent/skills/container_build.py:985",
+    "end_line": 987,
     "named_in_test": false
   },
   {
@@ -535,8 +535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/skills/container_build.py:996",
-    "end_line": 997,
+    "where": "agent/skills/container_build.py:998",
+    "end_line": 999,
     "named_in_test": false
   },
   {
@@ -735,8 +735,8 @@
     "source": "helper",
     "tagged": true,
     "func": "clone_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1000",
-    "end_line": 1002,
+    "where": "agent/skills/env_manager.py:1018",
+    "end_line": 1020,
     "named_in_test": false
   },
   {
@@ -745,32 +745,12 @@
     "source": "helper",
     "tagged": true,
     "func": "clone_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1007",
-    "end_line": 1009,
+    "where": "agent/skills/env_manager.py:1025",
+    "end_line": 1027,
     "named_in_test": false
   },
   {
     "code": "env_manager.fetch_download_failed",
-    "outcome": "broke",
-    "source": "helper",
-    "tagged": true,
-    "func": "download_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1064",
-    "end_line": 1065,
-    "named_in_test": false
-  },
-  {
-    "code": "env_manager.fetch_not_an_archive",
-    "outcome": "broke",
-    "source": "helper",
-    "tagged": true,
-    "func": "download_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1078",
-    "end_line": 1080,
-    "named_in_test": false
-  },
-  {
-    "code": "env_manager.fetch_extract_failed",
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
@@ -780,13 +760,33 @@
     "named_in_test": false
   },
   {
+    "code": "env_manager.fetch_not_an_archive",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "download_and_read_build_files",
+    "where": "agent/skills/env_manager.py:1096",
+    "end_line": 1098,
+    "named_in_test": false
+  },
+  {
+    "code": "env_manager.fetch_extract_failed",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "download_and_read_build_files",
+    "where": "agent/skills/env_manager.py:1100",
+    "end_line": 1101,
+    "named_in_test": false
+  },
+  {
     "code": "env_manager.binary_extract_failed",
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
     "func": "_stage_release_binary",
-    "where": "agent/skills/env_manager.py:1213",
-    "end_line": 1214,
+    "where": "agent/skills/env_manager.py:1231",
+    "end_line": 1232,
     "named_in_test": false
   },
   {
@@ -795,8 +795,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_stage_release_binary",
-    "where": "agent/skills/env_manager.py:1218",
-    "end_line": 1222,
+    "where": "agent/skills/env_manager.py:1236",
+    "end_line": 1240,
     "named_in_test": false
   },
   {
@@ -805,8 +805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1350",
-    "end_line": 1352,
+    "where": "agent/skills/env_manager.py:1368",
+    "end_line": 1370,
     "named_in_test": false
   },
   {
@@ -815,8 +815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1465",
-    "end_line": 1467,
+    "where": "agent/skills/env_manager.py:1483",
+    "end_line": 1485,
     "named_in_test": false
   },
   {
@@ -825,8 +825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1482",
-    "end_line": 1482,
+    "where": "agent/skills/env_manager.py:1500",
+    "end_line": 1500,
     "named_in_test": false
   },
   {
@@ -835,8 +835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1509",
-    "end_line": 1511,
+    "where": "agent/skills/env_manager.py:1527",
+    "end_line": 1529,
     "named_in_test": false
   },
   {
@@ -845,8 +845,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1533",
-    "end_line": 1533,
+    "where": "agent/skills/env_manager.py:1551",
+    "end_line": 1551,
     "named_in_test": false
   },
   {
@@ -855,8 +855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1556",
-    "end_line": 1558,
+    "where": "agent/skills/env_manager.py:1574",
+    "end_line": 1576,
     "named_in_test": false
   },
   {
@@ -865,8 +865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1579",
-    "end_line": 1579,
+    "where": "agent/skills/env_manager.py:1597",
+    "end_line": 1597,
     "named_in_test": false
   },
   {
@@ -875,8 +875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1683",
-    "end_line": 1683,
+    "where": "agent/skills/env_manager.py:1701",
+    "end_line": 1701,
     "named_in_test": false
   },
   {
@@ -885,8 +885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1760",
-    "end_line": 1761,
+    "where": "agent/skills/env_manager.py:1778",
+    "end_line": 1779,
     "named_in_test": false
   },
   {
@@ -895,8 +895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1780",
-    "end_line": 1786,
+    "where": "agent/skills/env_manager.py:1798",
+    "end_line": 1804,
     "named_in_test": false
   },
   {
@@ -905,8 +905,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1869",
-    "end_line": 1870,
+    "where": "agent/skills/env_manager.py:1887",
+    "end_line": 1888,
     "named_in_test": false
   },
   {
@@ -915,8 +915,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1883",
-    "end_line": 1884,
+    "where": "agent/skills/env_manager.py:1901",
+    "end_line": 1902,
     "named_in_test": false
   },
   {
@@ -925,8 +925,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_create",
-    "where": "agent/skills/env_manager.py:272",
-    "end_line": 273,
+    "where": "agent/skills/env_manager.py:278",
+    "end_line": 279,
     "named_in_test": false
   },
   {
@@ -935,8 +935,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_install",
-    "where": "agent/skills/env_manager.py:324",
-    "end_line": 331,
+    "where": "agent/skills/env_manager.py:330",
+    "end_line": 337,
     "named_in_test": false
   },
   {
@@ -945,8 +945,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_install",
-    "where": "agent/skills/env_manager.py:377",
-    "end_line": 385,
+    "where": "agent/skills/env_manager.py:383",
+    "end_line": 391,
     "named_in_test": false
   },
   {
@@ -955,8 +955,8 @@
     "source": "helper",
     "tagged": true,
     "func": "apply",
-    "where": "agent/skills/env_manager.py:434",
-    "end_line": 444,
+    "where": "agent/skills/env_manager.py:440",
+    "end_line": 450,
     "named_in_test": false
   },
   {
@@ -965,8 +965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "apply",
-    "where": "agent/skills/env_manager.py:458",
-    "end_line": 465,
+    "where": "agent/skills/env_manager.py:464",
+    "end_line": 471,
     "named_in_test": false
   },
   {
@@ -975,8 +975,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify",
-    "where": "agent/skills/env_manager.py:587",
-    "end_line": 587,
+    "where": "agent/skills/env_manager.py:593",
+    "end_line": 593,
     "named_in_test": true
   },
   {
@@ -985,8 +985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_in_env",
-    "where": "agent/skills/env_manager.py:652",
-    "end_line": 652,
+    "where": "agent/skills/env_manager.py:658",
+    "end_line": 659,
     "named_in_test": false
   },
   {
@@ -995,8 +995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:714",
-    "end_line": 716,
+    "where": "agent/skills/env_manager.py:723",
+    "end_line": 725,
     "named_in_test": false
   },
   {
@@ -1005,8 +1005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:726",
-    "end_line": 728,
+    "where": "agent/skills/env_manager.py:735",
+    "end_line": 737,
     "named_in_test": false
   },
   {
@@ -1015,8 +1015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:731",
-    "end_line": 733,
+    "where": "agent/skills/env_manager.py:740",
+    "end_line": 742,
     "named_in_test": false
   },
   {
@@ -1025,8 +1025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:825",
-    "end_line": 827,
+    "where": "agent/skills/env_manager.py:836",
+    "end_line": 838,
     "named_in_test": false
   },
   {
@@ -1035,8 +1035,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:837",
-    "end_line": 839,
+    "where": "agent/skills/env_manager.py:848",
+    "end_line": 852,
     "named_in_test": false
   },
   {
@@ -1045,8 +1045,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:846",
-    "end_line": 848,
+    "where": "agent/skills/env_manager.py:859",
+    "end_line": 861,
     "named_in_test": false
   },
   {
@@ -1055,8 +1055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:859",
-    "end_line": 862,
+    "where": "agent/skills/env_manager.py:872",
+    "end_line": 875,
     "named_in_test": false
   },
   {
@@ -1065,8 +1065,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:870",
-    "end_line": 872,
+    "where": "agent/skills/env_manager.py:883",
+    "end_line": 885,
     "named_in_test": false
   },
   {
@@ -1075,8 +1075,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:889",
-    "end_line": 891,
+    "where": "agent/skills/env_manager.py:902",
+    "end_line": 904,
     "named_in_test": false
   },
   {
@@ -1085,8 +1085,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:935",
-    "end_line": 939,
+    "where": "agent/skills/env_manager.py:948",
+    "end_line": 952,
     "named_in_test": false
   },
   {
@@ -1095,8 +1095,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:971",
-    "end_line": 971,
+    "where": "agent/skills/env_manager.py:984",
+    "end_line": 989,
     "named_in_test": false
   },
   {
@@ -1165,8 +1165,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:154",
-    "end_line": 154,
+    "where": "agent/skills/job_manager.py:157",
+    "end_line": 157,
     "named_in_test": false
   },
   {
@@ -1175,8 +1175,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:331",
-    "end_line": 331,
+    "where": "agent/skills/job_manager.py:335",
+    "end_line": 335,
     "named_in_test": false
   },
   {
@@ -1930,13 +1930,23 @@
     "named_in_test": true
   },
   {
+    "code": "validate.sam_unreadable",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "_sam_without_samtools",
+    "where": "agent/validators/output_validator.py:228",
+    "end_line": 229,
+    "named_in_test": false
+  },
+  {
     "code": "validate.fastq_tool_rejected",
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
     "func": "_check_fastq",
-    "where": "agent/validators/output_validator.py:241",
-    "end_line": 242,
+    "where": "agent/validators/output_validator.py:264",
+    "end_line": 265,
     "named_in_test": false
   },
   {
@@ -1945,8 +1955,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fasta",
-    "where": "agent/validators/output_validator.py:265",
-    "end_line": 266,
+    "where": "agent/validators/output_validator.py:288",
+    "end_line": 289,
     "named_in_test": false
   },
   {
@@ -1955,8 +1965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_vcf",
-    "where": "agent/validators/output_validator.py:282",
-    "end_line": 283,
+    "where": "agent/validators/output_validator.py:305",
+    "end_line": 306,
     "named_in_test": false
   },
   {
@@ -1975,8 +1985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:855",
-    "end_line": 862,
+    "where": "agent/mcp_tools/workflow_tools.py:841",
+    "end_line": 848,
     "named_in_test": true
   },
   {
@@ -2045,8 +2055,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:705",
-    "end_line": 706,
+    "where": "agent/mcp_tools/env_tools.py:638",
+    "end_line": 639,
     "named_in_test": false
   },
   {
@@ -2105,8 +2115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:263",
-    "end_line": 283,
+    "where": "agent/mcp_tools/pipeline_tools.py:250",
+    "end_line": 270,
     "named_in_test": true
   },
   {
@@ -2115,8 +2125,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:389",
-    "end_line": 389,
+    "where": "agent/mcp_tools/run_tools.py:391",
+    "end_line": 391,
     "named_in_test": false
   },
   {
@@ -2135,8 +2145,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:1097",
-    "end_line": 1127,
+    "where": "agent/mcp_tools/workflow_tools.py:1083",
+    "end_line": 1113,
     "named_in_test": false
   },
   {
@@ -2145,8 +2155,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:1203",
-    "end_line": 1203,
+    "where": "agent/mcp_tools/workflow_tools.py:1189",
+    "end_line": 1189,
     "named_in_test": false
   },
   {
@@ -2185,8 +2195,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:853",
-    "end_line": 853,
+    "where": "agent/mcp_tools/workflow_tools.py:839",
+    "end_line": 839,
     "named_in_test": true
   },
   {
@@ -2210,13 +2220,23 @@
     "named_in_test": false
   },
   {
+    "code": "container_build.frozen",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "freeze",
+    "where": "agent/skills/container_build.py:1000",
+    "end_line": 1002,
+    "named_in_test": false
+  },
+  {
     "code": "container_build.validated_in_image",
     "outcome": "proven",
     "source": "helper",
     "tagged": true,
     "func": "validate_in_image",
-    "where": "agent/skills/container_build.py:1078",
-    "end_line": 1078,
+    "where": "agent/skills/container_build.py:1080",
+    "end_line": 1080,
     "named_in_test": true
   },
   {
@@ -2295,8 +2315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/container_build.py:765",
-    "end_line": 765,
+    "where": "agent/skills/container_build.py:767",
+    "end_line": 767,
     "named_in_test": true
   },
   {
@@ -2305,8 +2325,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare",
-    "where": "agent/skills/container_build.py:773",
-    "end_line": 773,
+    "where": "agent/skills/container_build.py:775",
+    "end_line": 775,
     "named_in_test": false
   },
   {
@@ -2315,8 +2335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_locked",
-    "where": "agent/skills/container_build.py:797",
-    "end_line": 797,
+    "where": "agent/skills/container_build.py:799",
+    "end_line": 799,
     "named_in_test": false
   },
   {
@@ -2325,8 +2345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "declare_pypi",
-    "where": "agent/skills/container_build.py:819",
-    "end_line": 819,
+    "where": "agent/skills/container_build.py:821",
+    "end_line": 821,
     "named_in_test": false
   },
   {
@@ -2335,8 +2355,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run",
-    "where": "agent/skills/container_build.py:884",
-    "end_line": 884,
+    "where": "agent/skills/container_build.py:886",
+    "end_line": 886,
     "named_in_test": true
   },
   {
@@ -2345,18 +2365,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_artifact",
-    "where": "agent/skills/container_build.py:924",
-    "end_line": 925,
-    "named_in_test": false
-  },
-  {
-    "code": "container_build.frozen",
-    "outcome": "proven",
-    "source": "helper",
-    "tagged": true,
-    "func": "freeze",
-    "where": "agent/skills/container_build.py:998",
-    "end_line": 1000,
+    "where": "agent/skills/container_build.py:926",
+    "end_line": 927,
     "named_in_test": false
   },
   {
@@ -2425,8 +2435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "clone_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1029",
-    "end_line": 1030,
+    "where": "agent/skills/env_manager.py:1047",
+    "end_line": 1048,
     "named_in_test": false
   },
   {
@@ -2435,8 +2445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "download_and_read_build_files",
-    "where": "agent/skills/env_manager.py:1100",
-    "end_line": 1102,
+    "where": "agent/skills/env_manager.py:1118",
+    "end_line": 1120,
     "named_in_test": false
   },
   {
@@ -2445,8 +2455,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_stage_release_binary",
-    "where": "agent/skills/env_manager.py:1237",
-    "end_line": 1238,
+    "where": "agent/skills/env_manager.py:1255",
+    "end_line": 1256,
     "named_in_test": false
   },
   {
@@ -2455,8 +2465,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1411",
-    "end_line": 1424,
+    "where": "agent/skills/env_manager.py:1429",
+    "end_line": 1442,
     "named_in_test": false
   },
   {
@@ -2465,8 +2475,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1481",
-    "end_line": 1481,
+    "where": "agent/skills/env_manager.py:1499",
+    "end_line": 1499,
     "named_in_test": false
   },
   {
@@ -2475,8 +2485,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1532",
-    "end_line": 1532,
+    "where": "agent/skills/env_manager.py:1550",
+    "end_line": 1550,
     "named_in_test": false
   },
   {
@@ -2485,8 +2495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1578",
-    "end_line": 1578,
+    "where": "agent/skills/env_manager.py:1596",
+    "end_line": 1596,
     "named_in_test": false
   },
   {
@@ -2495,8 +2505,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1682",
-    "end_line": 1682,
+    "where": "agent/skills/env_manager.py:1700",
+    "end_line": 1700,
     "named_in_test": false
   },
   {
@@ -2505,8 +2515,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start_service",
-    "where": "agent/skills/env_manager.py:1768",
-    "end_line": 1769,
+    "where": "agent/skills/env_manager.py:1786",
+    "end_line": 1787,
     "named_in_test": false
   },
   {
@@ -2515,8 +2525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1867",
-    "end_line": 1868,
+    "where": "agent/skills/env_manager.py:1885",
+    "end_line": 1886,
     "named_in_test": false
   },
   {
@@ -2525,8 +2535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1880",
-    "end_line": 1881,
+    "where": "agent/skills/env_manager.py:1898",
+    "end_line": 1899,
     "named_in_test": false
   },
   {
@@ -2535,8 +2545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_create",
-    "where": "agent/skills/env_manager.py:250",
-    "end_line": 257,
+    "where": "agent/skills/env_manager.py:256",
+    "end_line": 263,
     "named_in_test": false
   },
   {
@@ -2545,8 +2555,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_create",
-    "where": "agent/skills/env_manager.py:288",
-    "end_line": 295,
+    "where": "agent/skills/env_manager.py:294",
+    "end_line": 301,
     "named_in_test": false
   },
   {
@@ -2555,8 +2565,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_install",
-    "where": "agent/skills/env_manager.py:368",
-    "end_line": 376,
+    "where": "agent/skills/env_manager.py:374",
+    "end_line": 382,
     "named_in_test": false
   },
   {
@@ -2565,8 +2575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "apply",
-    "where": "agent/skills/env_manager.py:423",
-    "end_line": 433,
+    "where": "agent/skills/env_manager.py:429",
+    "end_line": 439,
     "named_in_test": false
   },
   {
@@ -2575,8 +2585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "apply",
-    "where": "agent/skills/env_manager.py:450",
-    "end_line": 457,
+    "where": "agent/skills/env_manager.py:456",
+    "end_line": 463,
     "named_in_test": false
   },
   {
@@ -2585,8 +2595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify",
-    "where": "agent/skills/env_manager.py:581",
-    "end_line": 581,
+    "where": "agent/skills/env_manager.py:587",
+    "end_line": 587,
     "named_in_test": true
   },
   {
@@ -2595,8 +2605,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_in_env",
-    "where": "agent/skills/env_manager.py:651",
-    "end_line": 651,
+    "where": "agent/skills/env_manager.py:657",
+    "end_line": 657,
     "named_in_test": false
   },
   {
@@ -2605,8 +2615,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:748",
-    "end_line": 758,
+    "where": "agent/skills/env_manager.py:757",
+    "end_line": 767,
     "named_in_test": false
   },
   {
@@ -2615,8 +2625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:970",
-    "end_line": 970,
+    "where": "agent/skills/env_manager.py:983",
+    "end_line": 983,
     "named_in_test": false
   },
   {
@@ -2810,13 +2820,23 @@
     "named_in_test": true
   },
   {
+    "code": "validate.bam_magic_ok",
+    "outcome": "proven",
+    "source": "helper",
+    "tagged": true,
+    "func": "_sam_without_samtools",
+    "where": "agent/validators/output_validator.py:241",
+    "end_line": 242,
+    "named_in_test": false
+  },
+  {
     "code": "validate.sam_text_ok",
     "outcome": "proven",
     "source": "helper",
     "tagged": true,
     "func": "_sam_text_fallback",
-    "where": "agent/validators/output_validator.py:229",
-    "end_line": 229,
+    "where": "agent/validators/output_validator.py:252",
+    "end_line": 252,
     "named_in_test": true
   },
   {
@@ -2825,8 +2845,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fastq",
-    "where": "agent/validators/output_validator.py:253",
-    "end_line": 253,
+    "where": "agent/validators/output_validator.py:276",
+    "end_line": 276,
     "named_in_test": true
   },
   {
@@ -2835,8 +2855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fasta",
-    "where": "agent/validators/output_validator.py:272",
-    "end_line": 272,
+    "where": "agent/validators/output_validator.py:295",
+    "end_line": 295,
     "named_in_test": true
   },
   {
@@ -2845,8 +2865,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_vcf",
-    "where": "agent/validators/output_validator.py:278",
-    "end_line": 278,
+    "where": "agent/validators/output_validator.py:301",
+    "end_line": 301,
     "named_in_test": true
   },
   {
@@ -2855,8 +2875,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_vcf",
-    "where": "agent/validators/output_validator.py:291",
-    "end_line": 298,
+    "where": "agent/validators/output_validator.py:314",
+    "end_line": 321,
     "named_in_test": true
   },
   {
@@ -2865,8 +2885,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_bed",
-    "where": "agent/validators/output_validator.py:312",
-    "end_line": 312,
+    "where": "agent/validators/output_validator.py:335",
+    "end_line": 335,
     "named_in_test": true
   },
   {
@@ -2875,8 +2895,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_bai",
-    "where": "agent/validators/output_validator.py:319",
-    "end_line": 319,
+    "where": "agent/validators/output_validator.py:342",
+    "end_line": 342,
     "named_in_test": true
   },
   {
@@ -2885,8 +2905,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_bigwig",
-    "where": "agent/validators/output_validator.py:326",
-    "end_line": 326,
+    "where": "agent/validators/output_validator.py:349",
+    "end_line": 349,
     "named_in_test": true
   },
   {
@@ -2895,8 +2915,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_counts_matrix",
-    "where": "agent/validators/output_validator.py:337",
-    "end_line": 337,
+    "where": "agent/validators/output_validator.py:360",
+    "end_line": 360,
     "named_in_test": true
   },
   {
@@ -2905,8 +2925,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_gtf",
-    "where": "agent/validators/output_validator.py:347",
-    "end_line": 347,
+    "where": "agent/validators/output_validator.py:370",
+    "end_line": 370,
     "named_in_test": true
   },
   {
@@ -2915,8 +2935,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_gfa",
-    "where": "agent/validators/output_validator.py:364",
-    "end_line": 369,
+    "where": "agent/validators/output_validator.py:387",
+    "end_line": 392,
     "named_in_test": true
   },
   {
@@ -2925,8 +2945,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_log",
-    "where": "agent/validators/output_validator.py:374",
-    "end_line": 375,
+    "where": "agent/validators/output_validator.py:397",
+    "end_line": 398,
     "named_in_test": true
   },
   {
@@ -2935,8 +2955,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_json",
-    "where": "agent/validators/output_validator.py:390",
-    "end_line": 395,
+    "where": "agent/validators/output_validator.py:413",
+    "end_line": 418,
     "named_in_test": true
   },
   {
@@ -2945,8 +2965,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_jsonl",
-    "where": "agent/validators/output_validator.py:421",
-    "end_line": 422,
+    "where": "agent/validators/output_validator.py:444",
+    "end_line": 445,
     "named_in_test": true
   },
   {
@@ -2955,8 +2975,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_html",
-    "where": "agent/validators/output_validator.py:435",
-    "end_line": 435,
+    "where": "agent/validators/output_validator.py:458",
+    "end_line": 458,
     "named_in_test": true
   },
   {
@@ -2965,8 +2985,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_tabular",
-    "where": "agent/validators/output_validator.py:475",
-    "end_line": 476,
+    "where": "agent/validators/output_validator.py:498",
+    "end_line": 499,
     "named_in_test": true
   },
   {
@@ -2975,8 +2995,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_txt",
-    "where": "agent/validators/output_validator.py:496",
-    "end_line": 496,
+    "where": "agent/validators/output_validator.py:519",
+    "end_line": 519,
     "named_in_test": true
   },
   {
@@ -2985,8 +3005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_any",
-    "where": "agent/validators/output_validator.py:499",
-    "end_line": 499,
+    "where": "agent/validators/output_validator.py:522",
+    "end_line": 522,
     "named_in_test": true
   },
   {
@@ -2995,8 +3015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_parse_seqkit_stats",
-    "where": "agent/validators/output_validator.py:579",
-    "end_line": 587,
+    "where": "agent/validators/output_validator.py:602",
+    "end_line": 610,
     "named_in_test": true
   },
   {
@@ -3065,8 +3085,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_r_package",
-    "where": "agent/mcp_tools/env_tools.py:1222",
-    "end_line": 1223,
+    "where": "agent/mcp_tools/env_tools.py:1155",
+    "end_line": 1156,
     "named_in_test": false
   },
   {
@@ -3075,8 +3095,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_refuse_workflow_repo",
-    "where": "agent/mcp_tools/env_tools.py:528",
-    "end_line": 542,
+    "where": "agent/mcp_tools/env_tools.py:461",
+    "end_line": 475,
     "named_in_test": true
   },
   {
@@ -3085,8 +3105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:669",
-    "end_line": 671,
+    "where": "agent/mcp_tools/env_tools.py:602",
+    "end_line": 604,
     "named_in_test": false
   },
   {
@@ -3095,8 +3115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:677",
-    "end_line": 679,
+    "where": "agent/mcp_tools/env_tools.py:610",
+    "end_line": 612,
     "named_in_test": false
   },
   {
@@ -3105,8 +3125,8 @@
     "source": "helper",
     "tagged": true,
     "func": "synth_build",
-    "where": "agent/mcp_tools/env_tools.py:688",
-    "end_line": 693,
+    "where": "agent/mcp_tools/env_tools.py:621",
+    "end_line": 626,
     "named_in_test": false
   },
   {
@@ -3215,8 +3235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_load",
-    "where": "agent/mcp_tools/pipeline_tools.py:174",
-    "end_line": 177,
+    "where": "agent/mcp_tools/pipeline_tools.py:161",
+    "end_line": 164,
     "named_in_test": true
   },
   {
@@ -3225,8 +3245,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_load",
-    "where": "agent/mcp_tools/pipeline_tools.py:181",
-    "end_line": 185,
+    "where": "agent/mcp_tools/pipeline_tools.py:168",
+    "end_line": 172,
     "named_in_test": true
   },
   {
@@ -3235,8 +3255,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_groups",
-    "where": "agent/mcp_tools/pipeline_tools.py:195",
-    "end_line": 197,
+    "where": "agent/mcp_tools/pipeline_tools.py:182",
+    "end_line": 184,
     "named_in_test": true
   },
   {
@@ -3245,8 +3265,8 @@
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:214",
-    "end_line": 217,
+    "where": "agent/mcp_tools/pipeline_tools.py:201",
+    "end_line": 204,
     "named_in_test": true
   },
   {
@@ -3255,8 +3275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "render_pipeline",
-    "where": "agent/mcp_tools/pipeline_tools.py:223",
-    "end_line": 226,
+    "where": "agent/mcp_tools/pipeline_tools.py:210",
+    "end_line": 213,
     "named_in_test": true
   },
   {
@@ -3275,8 +3295,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:249",
-    "end_line": 250,
+    "where": "agent/mcp_tools/run_tools.py:250",
+    "end_line": 251,
     "named_in_test": false
   },
   {
@@ -3285,8 +3305,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:259",
-    "end_line": 263,
+    "where": "agent/mcp_tools/run_tools.py:260",
+    "end_line": 264,
     "named_in_test": false
   },
   {
@@ -3295,8 +3315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:265",
-    "end_line": 266,
+    "where": "agent/mcp_tools/run_tools.py:266",
+    "end_line": 267,
     "named_in_test": false
   },
   {
@@ -3305,8 +3325,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:269",
-    "end_line": 270,
+    "where": "agent/mcp_tools/run_tools.py:271",
+    "end_line": 272,
     "named_in_test": false
   },
   {
@@ -3315,8 +3335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:284",
-    "end_line": 289,
+    "where": "agent/mcp_tools/run_tools.py:286",
+    "end_line": 291,
     "named_in_test": false
   },
   {
@@ -3325,8 +3345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_output",
-    "where": "agent/mcp_tools/run_tools.py:533",
-    "end_line": 536,
+    "where": "agent/mcp_tools/run_tools.py:535",
+    "end_line": 538,
     "named_in_test": false
   },
   {
@@ -3355,8 +3375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:1202",
-    "end_line": 1202,
+    "where": "agent/mcp_tools/workflow_tools.py:1188",
+    "end_line": 1188,
     "named_in_test": false
   },
   {
@@ -3365,8 +3385,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1313",
-    "end_line": 1317,
+    "where": "agent/mcp_tools/workflow_tools.py:1305",
+    "end_line": 1309,
     "named_in_test": false
   },
   {
@@ -3375,8 +3395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1319",
-    "end_line": 1319,
+    "where": "agent/mcp_tools/workflow_tools.py:1311",
+    "end_line": 1311,
     "named_in_test": false
   },
   {
@@ -3385,9 +3405,19 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1328",
-    "end_line": 1331,
+    "where": "agent/mcp_tools/workflow_tools.py:1320",
+    "end_line": 1323,
     "named_in_test": false
+  },
+  {
+    "code": "stage_artifact.path_is_directory",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "stage_authored_artifact",
+    "where": "agent/mcp_tools/workflow_tools.py:1325",
+    "end_line": 1331,
+    "named_in_test": true
   },
   {
     "code": "stage_artifact.unknown_pipeline",
@@ -3465,8 +3495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_guard_spec_overwrite",
-    "where": "agent/mcp_tools/workflow_tools.py:488",
-    "end_line": 499,
+    "where": "agent/mcp_tools/workflow_tools.py:499",
+    "end_line": 510,
     "named_in_test": true
   },
   {
@@ -3475,8 +3505,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:546",
-    "end_line": 547,
+    "where": "agent/mcp_tools/workflow_tools.py:557",
+    "end_line": 558,
     "named_in_test": true
   },
   {
@@ -3485,8 +3515,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:554",
-    "end_line": 558,
+    "where": "agent/mcp_tools/workflow_tools.py:565",
+    "end_line": 569,
     "named_in_test": false
   },
   {
@@ -3495,8 +3525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:560",
-    "end_line": 561,
+    "where": "agent/mcp_tools/workflow_tools.py:571",
+    "end_line": 572,
     "named_in_test": false
   },
   {
@@ -3505,8 +3535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:591",
-    "end_line": 599,
+    "where": "agent/mcp_tools/workflow_tools.py:585",
+    "end_line": 593,
     "named_in_test": true
   },
   {
@@ -3515,8 +3545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:603",
-    "end_line": 605,
+    "where": "agent/mcp_tools/workflow_tools.py:597",
+    "end_line": 599,
     "named_in_test": true
   },
   {
@@ -3525,9 +3555,19 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:618",
-    "end_line": 624,
+    "where": "agent/mcp_tools/workflow_tools.py:612",
+    "end_line": 618,
     "named_in_test": false
+  },
+  {
+    "code": "seal.usage_block_invalid",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "seal_workflow",
+    "where": "agent/mcp_tools/workflow_tools.py:662",
+    "end_line": 668,
+    "named_in_test": true
   },
   {
     "code": "seal.usage_self_test_failed",
@@ -3535,8 +3575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:736",
-    "end_line": 743,
+    "where": "agent/mcp_tools/workflow_tools.py:722",
+    "end_line": 729,
     "named_in_test": true
   },
   {
@@ -3545,8 +3585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:826",
-    "end_line": 830,
+    "where": "agent/mcp_tools/workflow_tools.py:812",
+    "end_line": 816,
     "named_in_test": false
   },
   {
@@ -3765,8 +3805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "spawn_detached",
-    "where": "agent/skills/backgroundable.py:147",
-    "end_line": 153,
+    "where": "agent/skills/backgroundable.py:149",
+    "end_line": 155,
     "named_in_test": true
   },
   {
@@ -4035,8 +4075,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1199",
-    "end_line": 1201,
+    "where": "agent/skills/env_honesty.py:1196",
+    "end_line": 1198,
     "named_in_test": true
   },
   {
@@ -4045,8 +4085,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1205",
-    "end_line": 1207,
+    "where": "agent/skills/env_honesty.py:1202",
+    "end_line": 1204,
     "named_in_test": true
   },
   {
@@ -4055,8 +4095,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1254",
-    "end_line": 1261,
+    "where": "agent/skills/env_honesty.py:1251",
+    "end_line": 1258,
     "named_in_test": true
   },
   {
@@ -4065,8 +4105,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1266",
-    "end_line": 1275,
+    "where": "agent/skills/env_honesty.py:1263",
+    "end_line": 1272,
     "named_in_test": true
   },
   {
@@ -4075,8 +4115,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1280",
-    "end_line": 1285,
+    "where": "agent/skills/env_honesty.py:1277",
+    "end_line": 1282,
     "named_in_test": true
   },
   {
@@ -4085,8 +4125,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1302",
-    "end_line": 1304,
+    "where": "agent/skills/env_honesty.py:1299",
+    "end_line": 1301,
     "named_in_test": true
   },
   {
@@ -4095,8 +4135,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1337",
-    "end_line": 1339,
+    "where": "agent/skills/env_honesty.py:1334",
+    "end_line": 1336,
     "named_in_test": true
   },
   {
@@ -4105,8 +4145,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1359",
-    "end_line": 1362,
+    "where": "agent/skills/env_honesty.py:1356",
+    "end_line": 1359,
     "named_in_test": true
   },
   {
@@ -4115,8 +4155,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "evaluate_build",
-    "where": "agent/skills/env_honesty.py:1400",
-    "end_line": 1407,
+    "where": "agent/skills/env_honesty.py:1397",
+    "end_line": 1404,
     "named_in_test": true
   },
   {
@@ -4125,8 +4165,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:619",
-    "end_line": 622,
+    "where": "agent/skills/env_honesty.py:616",
+    "end_line": 619,
     "named_in_test": true
   },
   {
@@ -4135,8 +4175,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:625",
-    "end_line": 627,
+    "where": "agent/skills/env_honesty.py:622",
+    "end_line": 624,
     "named_in_test": true
   },
   {
@@ -4145,8 +4185,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:631",
-    "end_line": 634,
+    "where": "agent/skills/env_honesty.py:628",
+    "end_line": 631,
     "named_in_test": true
   },
   {
@@ -4155,8 +4195,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:643",
-    "end_line": 651,
+    "where": "agent/skills/env_honesty.py:640",
+    "end_line": 648,
     "named_in_test": true
   },
   {
@@ -4165,8 +4205,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:655",
-    "end_line": 660,
+    "where": "agent/skills/env_honesty.py:652",
+    "end_line": 657,
     "named_in_test": true
   },
   {
@@ -4175,8 +4215,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:662",
-    "end_line": 666,
+    "where": "agent/skills/env_honesty.py:659",
+    "end_line": 663,
     "named_in_test": true
   },
   {
@@ -4185,8 +4225,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator",
-    "where": "agent/skills/env_honesty.py:668",
-    "end_line": 670,
+    "where": "agent/skills/env_honesty.py:665",
+    "end_line": 667,
     "named_in_test": true
   },
   {
@@ -4195,8 +4235,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator_observed",
-    "where": "agent/skills/env_honesty.py:782",
-    "end_line": 798,
+    "where": "agent/skills/env_honesty.py:779",
+    "end_line": 795,
     "named_in_test": true
   },
   {
@@ -4205,8 +4245,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator_observed",
-    "where": "agent/skills/env_honesty.py:805",
-    "end_line": 809,
+    "where": "agent/skills/env_honesty.py:802",
+    "end_line": 806,
     "named_in_test": true
   },
   {
@@ -4215,8 +4255,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_accelerator_observed",
-    "where": "agent/skills/env_honesty.py:815",
-    "end_line": 820,
+    "where": "agent/skills/env_honesty.py:812",
+    "end_line": 817,
     "named_in_test": true
   },
   {
@@ -4225,8 +4265,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_provenance",
-    "where": "agent/skills/env_honesty.py:864",
-    "end_line": 867,
+    "where": "agent/skills/env_honesty.py:861",
+    "end_line": 864,
     "named_in_test": true
   },
   {
@@ -4235,8 +4275,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_provenance",
-    "where": "agent/skills/env_honesty.py:873",
-    "end_line": 876,
+    "where": "agent/skills/env_honesty.py:870",
+    "end_line": 873,
     "named_in_test": true
   },
   {
@@ -4245,8 +4285,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_provenance",
-    "where": "agent/skills/env_honesty.py:878",
-    "end_line": 882,
+    "where": "agent/skills/env_honesty.py:875",
+    "end_line": 879,
     "named_in_test": true
   },
   {
@@ -4255,8 +4295,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_license",
-    "where": "agent/skills/env_honesty.py:945",
-    "end_line": 954,
+    "where": "agent/skills/env_honesty.py:942",
+    "end_line": 951,
     "named_in_test": true
   },
   {
@@ -4265,8 +4305,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_clause_license",
-    "where": "agent/skills/env_honesty.py:956",
-    "end_line": 960,
+    "where": "agent/skills/env_honesty.py:953",
+    "end_line": 957,
     "named_in_test": true
   },
   {
@@ -4275,8 +4315,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1290",
-    "end_line": 1291,
+    "where": "agent/skills/env_manager.py:1308",
+    "end_line": 1309,
     "named_in_test": false
   },
   {
@@ -4285,8 +4325,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1301",
-    "end_line": 1304,
+    "where": "agent/skills/env_manager.py:1319",
+    "end_line": 1322,
     "named_in_test": true
   },
   {
@@ -4295,8 +4335,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1306",
-    "end_line": 1308,
+    "where": "agent/skills/env_manager.py:1324",
+    "end_line": 1326,
     "named_in_test": true
   },
   {
@@ -4305,8 +4345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1317",
-    "end_line": 1324,
+    "where": "agent/skills/env_manager.py:1335",
+    "end_line": 1342,
     "named_in_test": true
   },
   {
@@ -4315,8 +4355,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1329",
-    "end_line": 1330,
+    "where": "agent/skills/env_manager.py:1347",
+    "end_line": 1348,
     "named_in_test": false
   },
   {
@@ -4325,8 +4365,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_release_binary",
-    "where": "agent/skills/env_manager.py:1360",
-    "end_line": 1363,
+    "where": "agent/skills/env_manager.py:1378",
+    "end_line": 1381,
     "named_in_test": true
   },
   {
@@ -4335,8 +4375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1444",
-    "end_line": 1445,
+    "where": "agent/skills/env_manager.py:1462",
+    "end_line": 1463,
     "named_in_test": false
   },
   {
@@ -4345,8 +4385,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_perl_package",
-    "where": "agent/skills/env_manager.py:1460",
-    "end_line": 1464,
+    "where": "agent/skills/env_manager.py:1478",
+    "end_line": 1482,
     "named_in_test": true
   },
   {
@@ -4355,8 +4395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_cargo_tool",
-    "where": "agent/skills/env_manager.py:1496",
-    "end_line": 1497,
+    "where": "agent/skills/env_manager.py:1514",
+    "end_line": 1515,
     "named_in_test": false
   },
   {
@@ -4365,8 +4405,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_go_tool",
-    "where": "agent/skills/env_manager.py:1544",
-    "end_line": 1545,
+    "where": "agent/skills/env_manager.py:1562",
+    "end_line": 1563,
     "named_in_test": false
   },
   {
@@ -4375,8 +4415,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_conda_lock",
-    "where": "agent/skills/env_manager.py:1657",
-    "end_line": 1658,
+    "where": "agent/skills/env_manager.py:1675",
+    "end_line": 1676,
     "named_in_test": false
   },
   {
@@ -4385,8 +4425,8 @@
     "source": "helper",
     "tagged": true,
     "func": "generate_lock",
-    "where": "agent/skills/env_manager.py:1717",
-    "end_line": 1719,
+    "where": "agent/skills/env_manager.py:1735",
+    "end_line": 1737,
     "named_in_test": false
   },
   {
@@ -4395,8 +4435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stop_service",
-    "where": "agent/skills/env_manager.py:1873",
-    "end_line": 1875,
+    "where": "agent/skills/env_manager.py:1891",
+    "end_line": 1893,
     "named_in_test": false
   },
   {
@@ -4405,8 +4445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_lock_timeout",
-    "where": "agent/skills/env_manager.py:206",
-    "end_line": 210,
+    "where": "agent/skills/env_manager.py:212",
+    "end_line": 216,
     "named_in_test": true
   },
   {
@@ -4415,8 +4455,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify",
-    "where": "agent/skills/env_manager.py:585",
-    "end_line": 585,
+    "where": "agent/skills/env_manager.py:591",
+    "end_line": 591,
     "named_in_test": true
   },
   {
@@ -4425,9 +4465,9 @@
     "source": "helper",
     "tagged": true,
     "func": "install_jar_tool",
-    "where": "agent/skills/env_manager.py:687",
-    "end_line": 688,
-    "named_in_test": false
+    "where": "agent/skills/env_manager.py:694",
+    "end_line": 697,
+    "named_in_test": true
   },
   {
     "code": "env_manager.git_env_missing",
@@ -4435,9 +4475,9 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:807",
-    "end_line": 808,
-    "named_in_test": false
+    "where": "agent/skills/env_manager.py:816",
+    "end_line": 819,
+    "named_in_test": true
   },
   {
     "code": "env_manager.git_nohostbuild_needs_target",
@@ -4445,8 +4485,8 @@
     "source": "helper",
     "tagged": true,
     "func": "install_git_repo",
-    "where": "agent/skills/env_manager.py:941",
-    "end_line": 947,
+    "where": "agent/skills/env_manager.py:954",
+    "end_line": 960,
     "named_in_test": false
   },
   {
@@ -4515,8 +4555,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:102",
-    "end_line": 102,
+    "where": "agent/skills/job_manager.py:105",
+    "end_line": 105,
     "named_in_test": false
   },
   {
@@ -4525,8 +4565,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:105",
-    "end_line": 106,
+    "where": "agent/skills/job_manager.py:108",
+    "end_line": 109,
     "named_in_test": false
   },
   {
@@ -4535,8 +4575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "start",
-    "where": "agent/skills/job_manager.py:110",
-    "end_line": 112,
+    "where": "agent/skills/job_manager.py:113",
+    "end_line": 115,
     "named_in_test": false
   },
   {
@@ -4544,9 +4584,9 @@
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
-    "func": "check",
-    "where": "agent/skills/job_manager.py:208",
-    "end_line": 208,
+    "func": "_observe",
+    "where": "agent/skills/job_manager.py:221",
+    "end_line": 221,
     "named_in_test": false
   },
   {
@@ -4555,8 +4595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:316",
-    "end_line": 316,
+    "where": "agent/skills/job_manager.py:320",
+    "end_line": 320,
     "named_in_test": false
   },
   {
@@ -4565,8 +4605,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cancel",
-    "where": "agent/skills/job_manager.py:322",
-    "end_line": 322,
+    "where": "agent/skills/job_manager.py:326",
+    "end_line": 326,
     "named_in_test": false
   },
   {
@@ -4595,8 +4635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:589",
-    "end_line": 600,
+    "where": "agent/skills/pipeline_state.py:601",
+    "end_line": 612,
     "named_in_test": true
   },
   {
@@ -4605,8 +4645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:602",
-    "end_line": 610,
+    "where": "agent/skills/pipeline_state.py:614",
+    "end_line": 622,
     "named_in_test": false
   },
   {
@@ -4615,8 +4655,28 @@
     "source": "helper",
     "tagged": true,
     "func": "patch",
-    "where": "agent/skills/pipeline_state.py:614",
-    "end_line": 615,
+    "where": "agent/skills/pipeline_state.py:627",
+    "end_line": 628,
+    "named_in_test": false
+  },
+  {
+    "code": "pipeline_state.usage_invalid",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "patch",
+    "where": "agent/skills/pipeline_state.py:633",
+    "end_line": 639,
+    "named_in_test": true
+  },
+  {
+    "code": "pipeline_state.unknown_pipeline",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "patch",
+    "where": "agent/skills/pipeline_state.py:643",
+    "end_line": 644,
     "named_in_test": false
   },
   {
@@ -5440,13 +5500,33 @@
     "named_in_test": true
   },
   {
+    "code": "validate.bam_bad_magic",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_sam_without_samtools",
+    "where": "agent/validators/output_validator.py:236",
+    "end_line": 237,
+    "named_in_test": true
+  },
+  {
+    "code": "validate.bam_bad_magic",
+    "outcome": "refused",
+    "source": "helper",
+    "tagged": true,
+    "func": "_sam_without_samtools",
+    "where": "agent/validators/output_validator.py:239",
+    "end_line": 240,
+    "named_in_test": true
+  },
+  {
     "code": "validate.sam_no_records",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "_sam_text_fallback",
-    "where": "agent/validators/output_validator.py:226",
-    "end_line": 226,
+    "where": "agent/validators/output_validator.py:249",
+    "end_line": 249,
     "named_in_test": true
   },
   {
@@ -5455,8 +5535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_sam_text_fallback",
-    "where": "agent/validators/output_validator.py:228",
-    "end_line": 228,
+    "where": "agent/validators/output_validator.py:251",
+    "end_line": 251,
     "named_in_test": false
   },
   {
@@ -5465,8 +5545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fastq",
-    "where": "agent/validators/output_validator.py:246",
-    "end_line": 246,
+    "where": "agent/validators/output_validator.py:269",
+    "end_line": 269,
     "named_in_test": false
   },
   {
@@ -5475,8 +5555,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fastq",
-    "where": "agent/validators/output_validator.py:248",
-    "end_line": 248,
+    "where": "agent/validators/output_validator.py:271",
+    "end_line": 271,
     "named_in_test": false
   },
   {
@@ -5485,8 +5565,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fastq",
-    "where": "agent/validators/output_validator.py:250",
-    "end_line": 250,
+    "where": "agent/validators/output_validator.py:273",
+    "end_line": 273,
     "named_in_test": false
   },
   {
@@ -5495,8 +5575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fastq",
-    "where": "agent/validators/output_validator.py:252",
-    "end_line": 252,
+    "where": "agent/validators/output_validator.py:275",
+    "end_line": 275,
     "named_in_test": false
   },
   {
@@ -5505,8 +5585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fasta",
-    "where": "agent/validators/output_validator.py:269",
-    "end_line": 269,
+    "where": "agent/validators/output_validator.py:292",
+    "end_line": 292,
     "named_in_test": false
   },
   {
@@ -5515,8 +5595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_fasta",
-    "where": "agent/validators/output_validator.py:271",
-    "end_line": 271,
+    "where": "agent/validators/output_validator.py:294",
+    "end_line": 294,
     "named_in_test": false
   },
   {
@@ -5525,8 +5605,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_vcf",
-    "where": "agent/validators/output_validator.py:287",
-    "end_line": 287,
+    "where": "agent/validators/output_validator.py:310",
+    "end_line": 310,
     "named_in_test": false
   },
   {
@@ -5535,8 +5615,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_vcf",
-    "where": "agent/validators/output_validator.py:290",
-    "end_line": 290,
+    "where": "agent/validators/output_validator.py:313",
+    "end_line": 313,
     "named_in_test": false
   },
   {
@@ -5545,8 +5625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_bed",
-    "where": "agent/validators/output_validator.py:304",
-    "end_line": 304,
+    "where": "agent/validators/output_validator.py:327",
+    "end_line": 327,
     "named_in_test": false
   },
   {
@@ -5555,8 +5635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_bed",
-    "where": "agent/validators/output_validator.py:307",
-    "end_line": 307,
+    "where": "agent/validators/output_validator.py:330",
+    "end_line": 330,
     "named_in_test": false
   },
   {
@@ -5565,8 +5645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_bed",
-    "where": "agent/validators/output_validator.py:311",
-    "end_line": 311,
+    "where": "agent/validators/output_validator.py:334",
+    "end_line": 334,
     "named_in_test": false
   },
   {
@@ -5575,8 +5655,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_bai",
-    "where": "agent/validators/output_validator.py:320",
-    "end_line": 320,
+    "where": "agent/validators/output_validator.py:343",
+    "end_line": 343,
     "named_in_test": false
   },
   {
@@ -5585,8 +5665,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_bigwig",
-    "where": "agent/validators/output_validator.py:327",
-    "end_line": 327,
+    "where": "agent/validators/output_validator.py:350",
+    "end_line": 350,
     "named_in_test": false
   },
   {
@@ -5595,8 +5675,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_counts_matrix",
-    "where": "agent/validators/output_validator.py:333",
-    "end_line": 333,
+    "where": "agent/validators/output_validator.py:356",
+    "end_line": 356,
     "named_in_test": false
   },
   {
@@ -5605,8 +5685,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_counts_matrix",
-    "where": "agent/validators/output_validator.py:336",
-    "end_line": 336,
+    "where": "agent/validators/output_validator.py:359",
+    "end_line": 359,
     "named_in_test": false
   },
   {
@@ -5615,8 +5695,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_gtf",
-    "where": "agent/validators/output_validator.py:343",
-    "end_line": 343,
+    "where": "agent/validators/output_validator.py:366",
+    "end_line": 366,
     "named_in_test": false
   },
   {
@@ -5625,8 +5705,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_gtf",
-    "where": "agent/validators/output_validator.py:346",
-    "end_line": 346,
+    "where": "agent/validators/output_validator.py:369",
+    "end_line": 369,
     "named_in_test": false
   },
   {
@@ -5635,8 +5715,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_gfa",
-    "where": "agent/validators/output_validator.py:353",
-    "end_line": 353,
+    "where": "agent/validators/output_validator.py:376",
+    "end_line": 376,
     "named_in_test": false
   },
   {
@@ -5645,8 +5725,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_gfa",
-    "where": "agent/validators/output_validator.py:358",
-    "end_line": 362,
+    "where": "agent/validators/output_validator.py:381",
+    "end_line": 385,
     "named_in_test": false
   },
   {
@@ -5655,8 +5735,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_log",
-    "where": "agent/validators/output_validator.py:376",
-    "end_line": 377,
+    "where": "agent/validators/output_validator.py:399",
+    "end_line": 400,
     "named_in_test": false
   },
   {
@@ -5665,8 +5745,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_json",
-    "where": "agent/validators/output_validator.py:386",
-    "end_line": 386,
+    "where": "agent/validators/output_validator.py:409",
+    "end_line": 409,
     "named_in_test": false
   },
   {
@@ -5675,8 +5755,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_json",
-    "where": "agent/validators/output_validator.py:388",
-    "end_line": 388,
+    "where": "agent/validators/output_validator.py:411",
+    "end_line": 411,
     "named_in_test": false
   },
   {
@@ -5685,8 +5765,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_jsonl",
-    "where": "agent/validators/output_validator.py:418",
-    "end_line": 419,
+    "where": "agent/validators/output_validator.py:441",
+    "end_line": 442,
     "named_in_test": false
   },
   {
@@ -5695,8 +5775,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_jsonl",
-    "where": "agent/validators/output_validator.py:423",
-    "end_line": 424,
+    "where": "agent/validators/output_validator.py:446",
+    "end_line": 447,
     "named_in_test": false
   },
   {
@@ -5705,8 +5785,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_html",
-    "where": "agent/validators/output_validator.py:433",
-    "end_line": 433,
+    "where": "agent/validators/output_validator.py:456",
+    "end_line": 456,
     "named_in_test": false
   },
   {
@@ -5715,8 +5795,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_html",
-    "where": "agent/validators/output_validator.py:436",
-    "end_line": 437,
+    "where": "agent/validators/output_validator.py:459",
+    "end_line": 460,
     "named_in_test": false
   },
   {
@@ -5725,8 +5805,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_tabular",
-    "where": "agent/validators/output_validator.py:466",
-    "end_line": 466,
+    "where": "agent/validators/output_validator.py:489",
+    "end_line": 489,
     "named_in_test": false
   },
   {
@@ -5735,8 +5815,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_tabular",
-    "where": "agent/validators/output_validator.py:469",
-    "end_line": 470,
+    "where": "agent/validators/output_validator.py:492",
+    "end_line": 493,
     "named_in_test": true
   },
   {
@@ -5745,8 +5825,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_tabular",
-    "where": "agent/validators/output_validator.py:473",
-    "end_line": 474,
+    "where": "agent/validators/output_validator.py:496",
+    "end_line": 497,
     "named_in_test": false
   },
   {
@@ -5755,8 +5835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_txt",
-    "where": "agent/validators/output_validator.py:490",
-    "end_line": 490,
+    "where": "agent/validators/output_validator.py:513",
+    "end_line": 513,
     "named_in_test": false
   },
   {
@@ -5765,8 +5845,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_txt",
-    "where": "agent/validators/output_validator.py:492",
-    "end_line": 492,
+    "where": "agent/validators/output_validator.py:515",
+    "end_line": 515,
     "named_in_test": false
   },
   {
@@ -5775,8 +5855,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_check_txt",
-    "where": "agent/validators/output_validator.py:494",
-    "end_line": 495,
+    "where": "agent/validators/output_validator.py:517",
+    "end_line": 518,
     "named_in_test": false
   },
   {
@@ -5795,8 +5875,8 @@
     "source": "raw",
     "tagged": false,
     "func": "interpret_request",
-    "where": "agent/mcp_tools/intent_tools.py:127",
-    "end_line": 127,
+    "where": "agent/mcp_tools/intent_tools.py:68",
+    "end_line": 68,
     "named_in_test": null
   },
   {
@@ -5805,8 +5885,8 @@
     "source": "raw",
     "tagged": false,
     "func": "interpret_request",
-    "where": "agent/mcp_tools/intent_tools.py:129",
-    "end_line": 129,
+    "where": "agent/mcp_tools/intent_tools.py:70",
+    "end_line": 70,
     "named_in_test": null
   },
   {
@@ -5815,8 +5895,8 @@
     "source": "raw",
     "tagged": false,
     "func": "interpret_request",
-    "where": "agent/mcp_tools/intent_tools.py:134",
-    "end_line": 134,
+    "where": "agent/mcp_tools/intent_tools.py:75",
+    "end_line": 75,
     "named_in_test": null
   },
   {
@@ -5825,8 +5905,8 @@
     "source": "raw",
     "tagged": false,
     "func": "plan_request",
-    "where": "agent/mcp_tools/plan_tools.py:102",
-    "end_line": 102,
+    "where": "agent/mcp_tools/plan_tools.py:73",
+    "end_line": 73,
     "named_in_test": null
   },
   {
@@ -5835,8 +5915,8 @@
     "source": "raw",
     "tagged": false,
     "func": "plan_request",
-    "where": "agent/mcp_tools/plan_tools.py:104",
-    "end_line": 104,
+    "where": "agent/mcp_tools/plan_tools.py:75",
+    "end_line": 75,
     "named_in_test": null
   },
   {
@@ -5845,8 +5925,8 @@
     "source": "raw",
     "tagged": false,
     "func": "plan_request",
-    "where": "agent/mcp_tools/plan_tools.py:109",
-    "end_line": 109,
+    "where": "agent/mcp_tools/plan_tools.py:80",
+    "end_line": 80,
     "named_in_test": null
   },
   {
@@ -5915,8 +5995,8 @@
     "source": "raw",
     "tagged": false,
     "func": "spawn_detached",
-    "where": "agent/skills/backgroundable.py:176",
-    "end_line": 194,
+    "where": "agent/skills/backgroundable.py:178",
+    "end_line": 195,
     "named_in_test": null
   },
   {
