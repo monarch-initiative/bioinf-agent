@@ -495,14 +495,8 @@ def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: st
 
 def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir: str, pdir: Path,
                         rels: list[str], samplesheet: str, access_path: Optional[str], timeout: int) -> dict:
-    parent = os.path.dirname(run_dir)
-    probe = cluster_jobs.remote_paths_exist(env, [parent], timeout=timeout)
-    if probe.get("missing_paths"):
-        raise _refuse("run_production.run_dir_parent_missing",
-                      f"{parent} does not exist on {env_name!r}; the run directory's parent is never created for you",
-                      remedy="create it, or pick a run_dir under a directory that exists")
-    if "error" in probe:
-        raise _Refusal(probe)
+    # run_dir need not exist: the first upload into it creates the directory chain, and
+    # only there, under the path the project is authorized to write.
     state = _remote_run_dir_state(env, run_dir, timeout=timeout)
     if _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=run_dir, samplesheet=samplesheet):
         return {"reused": True, "files_uploaded": []}
@@ -525,11 +519,7 @@ def _materialize_local(*, run_dir: str, pdir: Path, rels: list[str], samplesheet
         raise _refuse("run_production.run_dir_is_the_template",
                       f"{run_dir} is the rendered template itself; a run lives in its own directory",
                       remedy="make a new directory for the run; the template stays a template")
-    if not rd.parent.is_dir():
-        raise _refuse("run_production.run_dir_parent_missing",
-                      f"{rd.parent} does not exist; the run directory's parent is never created for you",
-                      remedy="create it, or pick a run_dir under a directory that exists")
-    rd.mkdir(exist_ok=True)
+    rd.mkdir(parents=True, exist_ok=True)
     manifest_here = rd / MANIFEST_PATH
     state = {"main_nf": (rd / "main.nf").is_file(), "samplesheet": (rd / SAMPLESHEET_FILENAME).is_file(),
              "manifest": manifest_here.read_text() if manifest_here.is_file() else ""}
@@ -570,10 +560,10 @@ def run_production_pipeline(project_name: str,
     """Run the rendered `pipeline` in production in `run_dir` on `compute_env_name`.
 
     pipeline:    a name under <workspace>/pipelines/, or a rendered directory's path.
-    run_dir:     an absolute path on the env — the launch directory. Its parent must
-                 exist; it may be in the env's pipelines zone, the agent's scratch, or a
-                 directory the project grants with `upload` and `exec`. A directory that
-                 already holds this pipeline is re-launched (`-resume`), nothing copied.
+    run_dir:     an absolute path on the env — the launch directory, created if it does
+                 not exist yet; it may be in the env's pipelines zone, the agent's scratch,
+                 or a directory the project grants with `upload` and `exec`. A directory
+                 that already holds this pipeline is re-launched (`-resume`), nothing copied.
     samplesheet: a local CSV, one row per sample, with the columns the pipeline reads
                  (`sample` first); it becomes the run's samples.csv. Required on the first
                  launch into a directory; refused on a re-launch.

@@ -1355,8 +1355,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_materialize_remote",
-    "where": "agent/skills/run_production.py:515",
-    "end_line": 517,
+    "where": "agent/skills/run_production.py:509",
+    "end_line": 511,
     "named_in_test": false
   },
   {
@@ -1365,8 +1365,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:713",
-    "end_line": 713,
+    "where": "agent/skills/run_production.py:703",
+    "end_line": 703,
     "named_in_test": false
   },
   {
@@ -1375,8 +1375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:715",
-    "end_line": 715,
+    "where": "agent/skills/run_production.py:705",
+    "end_line": 705,
     "named_in_test": false
   },
   {
@@ -1425,8 +1425,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:443",
-    "end_line": 444,
+    "where": "agent/skills/stage_apptainer.py:442",
+    "end_line": 443,
     "named_in_test": false
   },
   {
@@ -4835,8 +4835,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_production_pipeline",
-    "where": "agent/skills/run_production.py:711",
-    "end_line": 711,
+    "where": "agent/skills/run_production.py:701",
+    "end_line": 701,
     "named_in_test": true
   },
   {
@@ -5205,8 +5205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:344",
-    "end_line": 348,
+    "where": "agent/skills/stage_apptainer.py:343",
+    "end_line": 347,
     "named_in_test": true
   },
   {
@@ -5215,8 +5215,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:350",
-    "end_line": 352,
+    "where": "agent/skills/stage_apptainer.py:349",
+    "end_line": 351,
     "named_in_test": false
   },
   {
@@ -5225,8 +5225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:362",
-    "end_line": 364,
+    "where": "agent/skills/stage_apptainer.py:361",
+    "end_line": 363,
     "named_in_test": false
   },
   {
@@ -5235,8 +5235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:374",
-    "end_line": 377,
+    "where": "agent/skills/stage_apptainer.py:373",
+    "end_line": 376,
     "named_in_test": false
   },
   {
@@ -5245,8 +5245,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:389",
-    "end_line": 394,
+    "where": "agent/skills/stage_apptainer.py:388",
+    "end_line": 393,
     "named_in_test": false
   },
   {
@@ -5255,8 +5255,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:406",
-    "end_line": 407,
+    "where": "agent/skills/stage_apptainer.py:405",
+    "end_line": 406,
     "named_in_test": false
   },
   {
@@ -5265,8 +5265,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:423",
-    "end_line": 425,
+    "where": "agent/skills/stage_apptainer.py:422",
+    "end_line": 424,
     "named_in_test": false
   },
   {
@@ -5275,8 +5275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_apptainer_image",
-    "where": "agent/skills/stage_apptainer.py:441",
-    "end_line": 441,
+    "where": "agent/skills/stage_apptainer.py:440",
+    "end_line": 440,
     "named_in_test": false
   },
   {
