@@ -426,9 +426,9 @@ def run_production_pipeline(project_name: str,
     Inputs:
       pipeline     a name under <workspace>/pipelines/ (see list_installed_pipelines) or a
                    rendered directory's absolute path.
-      run_dir      absolute path on the env: the launch directory. Its parent must exist; it
-                   may be under the env's pipelines zone, the agent's scratch, or a project
-                   `directories[]` grant with `upload` and `exec`. A run_dir that already
+      run_dir      absolute path on the env: the launch directory, created if it does not
+                   exist yet. It may be under the env's pipelines zone, the agent's scratch,
+                   or a project `directories[]` grant with `upload` and `exec`. A run_dir that already
                    holds this pipeline is re-launched with `-resume`; one holding another
                    render is refused.
       samplesheet  local CSV, one row per sample, with the columns the pipeline reads

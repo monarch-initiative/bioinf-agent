@@ -190,12 +190,25 @@ class TestGates:
         assert r["code"] == "run_production.run_dir_zone"
 
     @pytest.mark.integration
-    def test_missing_parent_refused_never_created(self, tmp_path, local_ok):
+    def test_a_run_dir_whose_parent_is_missing_is_created_under_the_grant(self, tmp_path, local_ok):
         _render(tmp_path)
         d = tmp_path / "proj"; d.mkdir()
-        run_dir = d / "does_not_exist" / "run1"
-        r = _run_local(tmp_path, "rnaseq_counts", run_dir, access=_local_access(tmp_path, str(d)))
-        assert r["code"] == "run_production.run_dir_parent_missing"
+        fq = d / "r1.fq"; fq.write_text("x")
+        run_dir = d / "not_yet" / "run1"
+        r = _run_local(tmp_path, "rnaseq_counts", run_dir, samplesheet=_sheet(tmp_path, [str(fq)]),
+                       access=_local_access(tmp_path, str(d)))
+        assert r["outcome"] == "proven" and r["code"] == "run_production.local_launched", r
+        assert (run_dir / "main.nf").is_file() and (run_dir / "samples.csv").is_file()
+
+    @pytest.mark.integration
+    def test_a_run_dir_outside_the_grant_is_never_created(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        run_dir = tmp_path / "elsewhere" / "run1"
+        r = _run_local(tmp_path, "rnaseq_counts", run_dir, samplesheet=_sheet(tmp_path, [str(fq)]),
+                       access=_local_access(tmp_path, str(d)))
+        assert r["outcome"] == "refused" and r["code"] == "run_production.refused"
         assert not run_dir.parent.exists()
 
     @pytest.mark.integration
@@ -424,12 +437,16 @@ class TestClusterLaunch:
         assert "/data/r1.fq" in r["missing_inputs"]
 
     @pytest.mark.integration
-    def test_the_parent_must_exist_on_the_cluster(self, tmp_path, monkeypatch):
-        _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+    def test_the_run_dir_is_made_by_the_first_upload_never_probed_first(self, tmp_path, monkeypatch):
+        # /work/pipelines/new is not on the cluster yet: the launch goes ahead, the uploads
+        # into it create it (the transfer provider makes the parent), and nothing probes it.
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
         _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
-        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1",
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/new/run1",
                      samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
-        assert r["code"] == "run_production.run_dir_parent_missing"
+        assert r["outcome"] == "proven" and r["code"] == "run_production.submitted", r
+        assert "/work/pipelines/new/run1/main.nf" in [dst for _, dst in remote.uploads]
+        assert remote.sbatch["dir"] == "/work/pipelines/new/run1"
 
     @pytest.mark.integration
     def test_uploads_the_render_and_the_sheet_then_sbatches_with_the_tokens(self, tmp_path, monkeypatch):

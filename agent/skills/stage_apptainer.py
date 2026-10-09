@@ -314,20 +314,19 @@ def stage_apptainer_image(
         access_path: Optional[str] = None,
         timeout: int = 1800) -> dict:
     """Get the apptainer .sif for `freeze_request_key` onto
-    `compute_env_name`. Mode-aware: ADOPT → pull on cluster; BUILD →
-    upload .tar + build on cluster.
+    `compute_env_name`. The .sif is built on THIS machine (apptainer inside a
+    pinned linux container, from the frozen image or its docker-save tarball)
+    and uploaded to the env's container_upload_target; nothing is built or
+    pulled on the cluster.
 
     Returns on success:
       {success: True, compute_env, mode, sif_path, image_digest,
-       request_key, skipped: bool, staged_at}
+       request_key, local_sif, builder_image, skipped: bool, staged_at}
     The `skipped: True` flag means the .sif already existed at
     sif_path — a re-stage is a no-op, not an error.
 
-    Returns {"error": ..., ...} on any refusal/failure. Useful
-    diagnostic fields when present:
-      - `apptainer_stderr` (ADOPT path)
-      - `tar_upload_error` / `apptainer_build_error` (BUILD path)
-      - `hint` (e.g. "open ssh hpc-agent in a side terminal")
+    Returns {"error": ..., ...} on any refusal/failure, with `hint` when
+    the ssh hop itself failed (e.g. "open ssh hpc-agent in a side terminal").
     """
     try:
         # EnvCache lookup — find the freeze record by request_key.
