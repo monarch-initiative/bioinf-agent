@@ -55,9 +55,11 @@ SUCCESS_RULES = ("completed", "sealed", "pipeline", "refused", "asked")
 
 #: Phrases that put a request to the user without a question mark.
 REQUEST_MARKERS = ("action required", "please provide", "please share", "once you share",
-                   "once you provide", "let me know", "i need you to", "i'll need you to",
-                   "could you", "can you", "you'll need to", "you need to", "send me",
-                   "point me to", "tell me", "which one", "confirm")
+                   "once you provide", "once you supply", "let me know", "i need you to",
+                   "i'll need you to", "i need the", "i'll need the", "could you", "can you",
+                   "you'll need to", "you need to", "send me", "point me to", "tell me",
+                   "which one", "confirm", "needed from you", "need from you", "what's needed",
+                   "what is needed", "provide the", "provide a", "supply the", "supply a")
 
 
 def asks_the_user(text: str) -> bool:

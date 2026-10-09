@@ -373,6 +373,11 @@ class TestWorkspaceLadderAndSuccess:
         assert row["success"] is True
         assert metrics.asks_the_user("Which one?") and metrics.asks_the_user("Please provide the path.")
         assert not metrics.asks_the_user("I picked GATK and set it up.")
+        # a request laid out as a numbered list under a heading, no question mark anywhere
+        assert metrics.asks_the_user(
+            "**What's needed from you**\n1. Download the tarball from the vendor (accept the EULA).\n"
+            "2. Provide the local path to it.\nOnce you supply those I will run the install.")
+        assert not metrics.asks_the_user("Sealed. The env report and run dashboard are written for you.")
 
     def test_codes_match_is_fnmatch_over_any_observed_code(self):
         assert metrics.codes_match({"freeze.fixture_gated": 1}, ["freeze.fixture_*"])
