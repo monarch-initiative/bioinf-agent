@@ -700,6 +700,11 @@ class TestRunner:
         assert cmd[cmd.index("--allowedTools") + 1] == "mcp__bioinf__*"
         assert cmd[cmd.index("--effort") + 1] == "high"
         assert "--disallowedTools" not in cmd
+        assert "--add-dir" not in cmd
+        # the run directory is granted to the harness's own tools, so Bash/Read reach the
+        # run's workspace without a permission denial
+        granted = experiments.build_command(e, "opus", add_dirs=("/runs/x", "/runs/x/compute"))
+        assert granted[granted.index("--add-dir") + 1] == "/runs/x" and granted.count("--add-dir") == 2
         e2 = experiments.load_experiment(_exp(tmp_path, disallowed_tools=["Bash", "Write"]))
         cmd2 = experiments.build_command(e2, "opus")
         i = cmd2.index("--disallowedTools")

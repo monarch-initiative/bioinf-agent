@@ -540,11 +540,8 @@ def coverage_disclosure(contract: BuildContract) -> dict:
             "refuse first; a green tag must never be derived from a failing contract")
     payload = {"contract_coverage": contract.as_dict()}
     if contract.unobserved:
-        # SPLIT BY WHAT THE GAP COSTS. `establishes` already distinguishes the two, and
-        # collapsing them reads every degrade as a possible problem: the commonest one
-        # by far is the adopt path's DISCLOSURE-only gap (a biocontainer's record says
-        # nothing about shipped_binaries), and a first-time user meets `degraded` on
-        # the route the docs tell them to PREFER — it has to say that is expected.
+        # Split by what the gap costs: an ASSURANCE gap needs action, a DISCLOSURE gap
+        # (no shipped_binaries to describe) is the common, expected case.
         assurance = [c for c in contract.unobserved if c.establishes == ASSURANCE]
         disclosure = [c for c in contract.unobserved if c.establishes != ASSURANCE]
         lines = [f"the honesty contract PASSED and the env is registered and shippable. "
@@ -560,8 +557,8 @@ def coverage_disclosure(contract: BuildContract) -> dict:
             lines.append(
                 "SAYS less, but proves the same (disclosure): "
                 + ", ".join(c.clause for c in disclosure)
-                + ". Expected on the adopt path — a pre-built biocontainer carries no "
-                  "record of the binaries it shipped, and nothing can recover one.")
+                + ". Expected when the image has no agent-built binaries to describe — an "
+                  "adopted biocontainer, or an image built from packages alone.")
         payload["coverage_advisory"] = " ".join(lines)
     return payload
 

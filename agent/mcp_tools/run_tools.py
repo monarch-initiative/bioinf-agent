@@ -227,7 +227,7 @@ def run_step_in_container(
     purpose: str = "",
     step: int = 0,
     timeout_seconds: int = 1800,
-    platform: str = "linux/amd64",
+    platform: str = "",
 ) -> dict:
     """Run a pipeline step INSIDE the frozen env image and auto-validate every
     produced output — the validation-locus pivot: **the artifact you ship is the
@@ -244,7 +244,8 @@ def run_step_in_container(
     validated==shipped.
 
     output_types: {basename|ext: validator_type}. inputs: paths (or {path,…}).
-    extra_mounts: ["host:container", …] for data outside data_dir."""
+    extra_mounts: ["host:container", …] for data outside data_dir. `platform` defaults
+    to the frozen record's own (an arm64 image runs as arm64); pass one only to override."""
     if not pipeline_id:
         return refused("run_container.pipeline_id_required",
                        error="pipeline_id is required for run_step_in_container")
@@ -265,6 +266,7 @@ def run_step_in_container(
         return refused("run_container.no_frozen_env",
                        error=f"no frozen env for '{freeze_request_key}' — run freeze() first")
     image = rec.get("image")
+    platform = _ms.docker_platform(platform or rec.get("platform") or "")
     if not image:
         return refused("run_container.no_image_handle",
                        error=f"freeze record for '{freeze_request_key}' has no image handle")

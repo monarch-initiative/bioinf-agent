@@ -152,6 +152,12 @@ def parse_conda_spec(spec: str) -> dict:
     }
 
 
+def _last_line(text: str, limit: int = 200) -> str:
+    """The last non-empty line of a stream, capped — the one that names the cause."""
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    return lines[-1][:limit] if lines else ""
+
+
 class EnvManager:
     def __init__(self, config: dict):
         self.config = config
@@ -649,7 +655,8 @@ class EnvManager:
             run_fields["stderr_truncated"] = _err_note
         if result["returncode"] == 0:
             return proven("env_manager.run_in_env_ok", **run_fields)
-        return broke("env_manager.run_in_env_failed", **run_fields)
+        return broke("env_manager.run_in_env_failed",
+                     error=_last_line(_err) or f"exit status {result['returncode']}", **run_fields)
 
     def env_path(self, env_name: str) -> Path:
         return self.envs_dir / env_name
@@ -685,7 +692,9 @@ class EnvManager:
         env_path  = self.envs_dir / env_name
         if not env_path.exists():
             return refused("env_manager.jar_env_missing",
-                           success=False, error=f"env not found: {env_path}")
+                           success=False, error=f"env not found: {env_path}",
+                           remedy=f"create it first: install_conda_packages(env_name={env_name!r}, "
+                                  "packages=[the runtime the jar needs, e.g. 'openjdk=17'])")
 
         share_dir = env_path / "share" / tool_name
         bin_dir   = env_path / "bin"
@@ -805,7 +814,9 @@ class EnvManager:
         env_path = self.envs_dir / env_name
         if not env_path.exists():
             return refused("env_manager.git_env_missing",
-                           success=False, error=f"env not found: {env_path}")
+                           success=False, error=f"env not found: {env_path}",
+                           remedy=f"create it first: install_conda_packages(env_name={env_name!r}, "
+                                  "packages=[the build and runtime deps, e.g. 'make', 'zlib'])")
 
         share_dir = env_path / "share" / tool_name
         log: list[str] = []
@@ -835,7 +846,9 @@ class EnvManager:
             log.append(f"git checkout {ref} rc={co['returncode']}")
             if co["returncode"] != 0:
                 return broke("env_manager.git_checkout_failed",
-                             success=False, error=f"git checkout {ref} failed",
+                             success=False,
+                             error=f"git checkout {ref} failed: "
+                                   f"{_last_line(co.get('stderr') or '') or 'no such ref'}",
                              stderr=(co.get("stderr") or "")[-500:], log=log)
 
         rev = self.run_in_env(
@@ -968,7 +981,12 @@ class EnvManager:
         )
         if verify_ok:
             return proven("env_manager.git_installed", **git_fields)
-        return broke("env_manager.git_verify_failed", **git_fields)
+        return broke("env_manager.git_verify_failed",
+                     error=f"verify_command exited non-zero: {_last_line(verify_output)}",
+                     remedy="the wrapper runs under `set -o pipefail`, and many tools exit 1 when "
+                            "printing usage; verify by testing the output instead, e.g. "
+                            "test -n \"$(TOOL 2>&1 | grep -w Version)\"",
+                     **git_fields)
 
     # conda is suffix-agnostic about archives; we recognize the common release
     # tarball/zip shapes so a single asset URL "just works".

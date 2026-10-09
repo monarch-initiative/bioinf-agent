@@ -99,67 +99,54 @@ def render_pipeline(sealed_workflow: str,
                     cohort: Optional[list[dict[str, Any]]] = None,
                     overwrite: bool = False) -> dict:
     """**The PIPELINE layer.** Render a SEALED workflow as a runnable pipeline directory
-    under ``<workspace>/pipelines/<name>/``. Executes nothing. The directory is a
-    TEMPLATE: copy it next to the data, put the samples in ``samples.csv`` and the
-    paths in ``params.yaml``, and run it there.
+    under ``<workspace>/pipelines/<name>/``. Executes nothing. The directory is a template:
+    copy it next to the data, fill ``samples.csv`` and ``params.yaml``, run it there.
 
     **One way to run it.** ``main.nf`` + ``nextflow.config`` + ``params.yaml`` +
-    ``samples.csv`` run every row of the samplesheet with Nextflow, one stage per
-    how-to command, ``-resume`` re-running only what changed: ``nextflow run main.nf
-    -profile local -params-file params.yaml -resume`` on a laptop (docker),
-    ``sbatch launcher.sh`` on a cluster (apptainer + SLURM; the launcher loads the
-    modules). WHERE it runs is ``nextflow.config``'s business — the ``local`` profile
-    names the docker image, the ``slurm`` profile the ``.sif`` — and ``params.yaml``
-    holds only the pipeline's parameters. ``pipeline.html`` shows all of it in the
-    files' own vocabulary, with the command main.nf runs per stage. Every run writes
-    ``runs/<timestamp>/trace.txt`` (each task's command) and ``report.html``.
+    ``samples.csv`` run every samplesheet row with Nextflow, one stage per how-to command,
+    ``-resume`` re-running only what changed: ``nextflow run main.nf -profile local
+    -params-file params.yaml -resume`` on a laptop (docker), ``sbatch launcher.sh`` on a
+    cluster (apptainer + SLURM; the launcher loads the modules). ``nextflow.config`` decides
+    where (``local`` names the image, ``slurm`` the ``.sif``); ``params.yaml`` holds only
+    parameters. ``pipeline.html`` shows all of it with the command run per stage; every run
+    writes ``runs/<timestamp>/trace.txt`` and ``report.html``.
 
-    **What is derived from the seal and what you choose.** The samplesheet's example
-    rows are the seal's own I4 trials — one or more; a one-trial seal renders a
-    one-row sheet — and ``sample`` is the row key. A placeholder whose value differs
-    across trials is a samplesheet COLUMN; one that is the same everywhere is a
-    shared PARAM with the sealed value as its default (with one trial: the sample id
-    and read inputs are per-sample, everything else shared). Override with
-    ``per_sample=`` / ``shared=`` (placeholder names). ``stages=`` groups how-to
-    commands into stages by their 1-based numbers, e.g. ``[[1, 2], [3]]`` runs
-    commands 1 and 2 as one job; default is one stage per command so a stage can be
-    re-run alone. ``stage_names=`` names them. ``resources={STAGE: {cpus, mem, time,
-    gpus}}`` sizes a stage; an unsized stage carries a DEFAULT request that every
-    file labels as unsized, with the sealed run's measurement beside it to size from.
-    ``env=`` names a compute env in projects_access.yaml: the launcher then carries
-    its SLURM policy and module names, and the ``slurm`` profile's ``container`` is
-    the path ``stage_apptainer_image`` writes in that env's container zone.
+    **Derived from the seal, or chosen.** The samplesheet's example rows are the I4 trials
+    (``sample`` is the row key). A placeholder whose value differs across trials is a
+    COLUMN; one that is the same everywhere is a shared PARAM with the sealed value as its
+    default (one trial: sample id and reads per-sample, the rest shared). Override with
+    ``per_sample=`` / ``shared=``. ``stages=`` groups how-to commands by 1-based number
+    (``[[1, 2], [3]]``); the default is one stage per command. ``stage_names=`` names them.
+    ``resources={STAGE: {cpus, mem, time, gpus}}`` sizes a stage; an unsized stage carries a
+    labelled default beside the sealed run's measurement. ``env=`` names a compute env in
+    projects_access.yaml: the launcher carries its SLURM policy and modules, and the
+    ``slurm`` profile's container is the path ``stage_apptainer_image`` writes there.
 
-    **Cohort stages — a second sealed workflow, attached.** ``cohort=[{"sealed_workflow":
-    "rnaseq_de", "collect": {"COUNTS_DIR": "{SAMPLE}.counts.tsv"}}]`` attaches that
-    workflow's how-to as stages that run ONCE, over every sample, after the per-sample
-    stage that writes the collected artifact has finished for every row (Nextflow
-    ``.collect()``; one directory holding every sample's copy, staged under the
-    placeholder's name). ``collect`` is DECLARED: each key is an input of the cohort
-    how-to, each value a per-sample artifact as the record spells it (the refusal
-    lists them); the artifact must carry the sample id in its name. A cohort how-to
-    input declared ``format: samplesheet`` receives the pipeline's own ``samples.csv``;
-    the columns its sealed trial sheet carries beyond the per-sample ones are added to
-    the samplesheet (example values from that sheet, matched on ``sample``). A cohort
-    how-to input whose sealed value is an authored artifact of that workflow
-    (``stage_authored_artifact``, content mode) is a SCRIPT: carried verbatim into
-    ``bin/`` and pointed at from params.yaml. Cohort stages publish flat under
-    ``results/``. Optional per entry: ``stages`` / ``stage_names`` / ``shared`` as above.
+    **Cohort stages.** ``cohort=[{"sealed_workflow": "rnaseq_de", "collect": {"COUNTS_DIR":
+    "{SAMPLE}.counts.tsv"}}]`` attaches a second sealed workflow as stages that run ONCE
+    over every sample, after the per-sample stage writing the collected artifact has
+    finished for every row (``.collect()``: one directory of every sample's copy, under the
+    placeholder's name). ``collect`` is declared: each key an input of the cohort how-to,
+    each value a per-sample artifact as the record spells it (the refusal lists them),
+    carrying the sample id in its name. A cohort input declared ``format: samplesheet``
+    receives the pipeline's own ``samples.csv`` (columns beyond the per-sample ones are
+    added from its sealed trial sheet, matched on ``sample``); one whose sealed value is a
+    content-mode authored artifact is a script carried verbatim into ``bin/``. Cohort
+    stages publish flat under ``results/``. Per entry: ``stages`` / ``stage_names`` /
+    ``shared`` as above.
 
-    **Refuses** (``refused``, with a remedy) when the seal cannot support the render — no
+    **Refuses** (``refused``, with a remedy) when the seal cannot support the render: no
     how-to, no proven trial, a placeholder no trial binds, an artifact no sealed step was
     observed writing, a stage cut that mixes images, a fan-in not declared or naming an
-    artifact no per-sample stage writes, a placeholder both how-tos use — and when the target
-    directory holds files edited since they were rendered (``pipeline.dir_edited``; pass
-    ``overwrite=True`` to replace them, or a new ``name``). **Every rendered command is
-    checked against the sealed how-to before any file is written** — a drift is a
-    refusal, never a file.
+    artifact no per-sample stage writes, a placeholder both how-tos use; and when the
+    target directory holds files edited since they were rendered (``pipeline.dir_edited``;
+    ``overwrite=True`` replaces them, or use a new ``name``). Every rendered command is
+    checked against the sealed how-to before any file is written.
 
-    Returns ``proven("pipeline.rendered")`` with ``dir``, ``page``, ``files``, the
-    ``stages`` (name, scope, commands, image digest, sized?), the ``params`` and
-    ``samplesheet_columns``, the ``cohort_workflows`` and ``scripts`` when there are
-    any, the ``sif`` path when an env was named, and every derivation ``note``. Open
-    ``page`` first.
+    Returns ``proven("pipeline.rendered")`` with ``dir``, ``page``, ``files``, the ``stages``
+    (name, scope, commands, image digest, sized?), ``params``, ``samplesheet_columns``,
+    ``cohort_workflows`` and ``scripts`` when there are any, ``sif`` when an env was named,
+    and every derivation ``note``. Open ``page`` first.
     """
     from agent.skills.pipeline_record import (CohortRequest, LocalRuntime, PipelineDerivationError,
                                               derive_pipeline_record, sha256_of)

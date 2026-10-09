@@ -447,7 +447,7 @@ def freeze(
                             "(e.g. `pip install …` via run_in_env) — a biocontainer cannot "
                             "represent these")
             adopt = {**adopt, "skipped": _skipped}
-        docker_platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
+        docker_platform = _ms.docker_platform(platform)
         conda_deps = _ms._freeze.requested_conda_specs(draft) if draft else []
         if not conda_deps and not non_conda:
             # no draft (or no recorded conda installs): treat the requested tools as
@@ -616,7 +616,7 @@ def freeze(
         # across tools, plus the biocontainer's transitive + OS layers. Best-effort:
         # a docker/read failure leaves it empty and the report falls back to the tag.
         from agent.skills.container_build import ContainerBuild as _CB
-        _adopt_platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(platform, platform)
+        _adopt_platform = _ms.docker_platform(platform)
         try:
             record["resolved_packages"] = _CB.conda_sbom_from_image(image, _adopt_platform)
             record["system_packages"] = _CB.apt_sbom_from_image(image, _adopt_platform)

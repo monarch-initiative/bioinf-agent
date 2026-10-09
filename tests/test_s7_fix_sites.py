@@ -101,6 +101,40 @@ def test_runner_falls_back_to_the_pinned_digest_when_the_tag_rotted(tmp_path, mo
     assert runner.image == fr["image_digest"]
 
 
+def test_runner_runs_the_image_as_the_records_own_platform(tmp_path, monkeypatch):
+    """The record spells its platform the docker way; a map keyed by conda spellings
+    missed it and ran every self-test as amd64, which an arm64 image cannot satisfy."""
+    from agent.mcp_tools import workflow_tools
+    from agent import mcp_server as _ms
+    monkeypatch.setattr(_ms._docker, "image_digest", lambda ref: "sha256:" + "51" * 32)
+    for spelled, expected in (("linux/arm64", "linux/arm64"), ("linux-aarch64", "linux/arm64"),
+                              ("linux-64", "linux/amd64"), ("", "linux/amd64")):
+        fr, draft = _runner_inputs(tmp_path)
+        fr["platform"] = spelled
+        runner = workflow_tools._image_usage_runner(fr, draft)
+        assert runner is not None and runner.platform == expected, (spelled, runner and runner.platform)
+
+
+def test_the_no_runner_reason_names_what_was_missing(tmp_path, monkeypatch):
+    """When no in-image runner can be built, the seal says which precondition failed
+    rather than listing candidates: the unresolved image, or the first absent input."""
+    from agent.mcp_tools import workflow_tools
+    from agent import mcp_server as _ms
+    fr, draft = _runner_inputs(tmp_path)
+    draft["usage"]["outputs"] = [{"name": "out", "files": ["out.sam"]}]
+    monkeypatch.setattr(_ms._docker, "image_digest", lambda ref: None)
+    why = workflow_tools._no_image_runner_reason(fr, draft)
+    assert "s2_align:latest" in why and "does not resolve" in why
+    monkeypatch.setattr(_ms._docker, "image_digest", lambda ref: "sha256:" + "51" * 32)
+    draft["usage"]["trials"][0]["substitutions"]["R1"] = str(tmp_path / "gone.fastq")
+    why = workflow_tools._no_image_runner_reason(fr, draft)
+    assert "gone.fastq" in why and "does not exist on this host" in why
+    assert workflow_tools._image_usage_runner(fr, draft) is None
+    from agent.skills import spec_writer
+    r = spec_writer.self_test_usage(draft, None, no_runner_reason=why)
+    assert r["status"] == "not_attempted" and "gone.fastq" in r["reason"] and "conda_env" in r["reason"]
+
+
 def test_runner_is_none_when_neither_spelling_resolves(tmp_path, monkeypatch):
     from agent.mcp_tools import workflow_tools
     from agent import mcp_server as _ms

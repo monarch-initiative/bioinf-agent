@@ -524,6 +524,27 @@ def test_stage_authored_artifact_generated_by_mode(tmp_path, monkeypatch):
     assert a["content_full_in_spec"] is False
 
 
+def test_stage_authored_artifact_refuses_a_directory(tmp_path, monkeypatch):
+    """An artifact is one file; a directory used to raise IsADirectoryError out of the
+    sha256 read and come back as a `broke`. It is a refusal that names the way through."""
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+
+    ps = PipelineState({})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("dir_test", "test")
+    d = tmp_path / "counts"
+    d.mkdir()
+    (d / "a.tsv").write_text("g\t1\n")
+    result = srv.stage_authored_artifact(
+        pipeline_id="dir_test", path=str(d), role="counts_dir", description="a directory",
+        generated_by="cp …",
+    )
+    assert result["outcome"] == "refused" and result["code"] == "stage_artifact.path_is_directory"
+    assert "one generated_by call per file" in result["remedy"]
+    assert ps.get_draft("dir_test").get("authored_artifacts", []) == []
+
+
 def test_stage_authored_artifact_rejects_both_modes(tmp_path, monkeypatch):
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
@@ -2593,6 +2614,30 @@ def test_conda_to_docker_platform_map():
     from agent.mcp_server import _CONDA_TO_DOCKER_PLATFORM as M
     assert M["linux-64"] == "linux/amd64"
     assert M["linux-aarch64"] == "linux/arm64"
+
+
+def test_docker_platform_reads_either_spelling():
+    """A frozen record stores the docker spelling, a freeze request the conda one; a
+    reader that only mapped the conda spelling ran every arm64 image as amd64."""
+    from agent.mcp_server import docker_platform
+    assert docker_platform("linux-64") == "linux/amd64"
+    assert docker_platform("linux-aarch64") == "linux/arm64"
+    assert docker_platform("linux/arm64") == "linux/arm64"
+    assert docker_platform("linux/amd64") == "linux/amd64"
+    assert docker_platform("") == "linux/amd64"
+    assert docker_platform(" linux/arm64 ") == "linux/arm64"
+
+
+def test_emit_dockerfile_retries_apt_update_once():
+    """A snapshot mirror that drops one request must not cost the whole build."""
+    from agent.skills.container_build import emit_dockerfile, PixiEngine
+    pinned = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(),
+                             has_env_layer=False, longtail_steps=[],
+                             apt_snapshot="20260526T200000Z")
+    assert "|| (sleep 20 && apt-get -o Acquire::Check-Valid-Until=false update)" in pinned
+    live = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(),
+                           has_env_layer=False, longtail_steps=[])
+    assert "(apt-get update || (sleep 20 && apt-get update))" in live
 
 
 def test_perl_install_method_records_replay_fields(tmp_path, monkeypatch):
@@ -7685,3 +7730,28 @@ def test_an_unpinned_request_discloses_that_a_cache_hit_is_a_reuse():
                   [("busco", None)], draft_with_version(v)), "linux/amd64")
               for v in ("6.0.0", "3.0.2")}
     assert len(pinned) == 2, "a recorded version must keep the two artifacts apart"
+
+
+# ---------------------------------------------------------------------------
+# A breakage names its cause; a refusal for a missing env names the way through.
+# ---------------------------------------------------------------------------
+
+def test_last_line_is_the_line_that_names_the_cause():
+    from agent.skills.env_manager import _last_line
+    assert _last_line("") == ""
+    assert _last_line("\n\n") == ""
+    assert _last_line("Solving environment: failed\n\nPackagesNotFoundError: x\n\n") == "PackagesNotFoundError: x"
+    assert len(_last_line("y" * 500)) == 200
+
+
+def test_an_install_into_a_missing_env_says_how_to_make_one(tmp_path, monkeypatch):
+    from agent.skills import workspace
+    from agent.skills.env_manager import EnvManager
+    monkeypatch.setattr(workspace, "conda_envs_dir", lambda: tmp_path / "envs")
+    em = EnvManager({})
+    r = em.install_git_repo(env_name="no_such_env", repo_url="https://example.invalid/x.git", tool_name="x")
+    assert r["outcome"] == "refused" and r["code"] == "env_manager.git_env_missing"
+    assert "install_conda_packages(env_name='no_such_env'" in r["remedy"]
+    r = em.install_jar_tool(env_name="no_such_env", tool_name="picard", jar_url="https://example.invalid/p.jar")
+    assert r["outcome"] == "refused" and r["code"] == "env_manager.jar_env_missing"
+    assert "install_conda_packages(env_name='no_such_env'" in r["remedy"]

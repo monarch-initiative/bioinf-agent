@@ -140,13 +140,19 @@ def _reap_orphan_service_pids() -> None:
 
 mcp = FastMCP("bioinf-agent")
 
-# freeze()'s `platform` is a conda subdir (linux-64); buildx/recipe builds want a
-# docker platform (linux/amd64). Map the ones we ship to.
+# A platform is spelled two ways: conda subdir (linux-64) on a freeze request, docker
+# (linux/amd64) on a build and on the frozen record. `docker_platform` reads either.
 _CONDA_TO_DOCKER_PLATFORM = {
     "linux-64": "linux/amd64",
     "linux-aarch64": "linux/arm64",
     "linux-arm64": "linux/arm64",
 }
+
+
+def docker_platform(value: str) -> str:
+    """The docker spelling of `value`, given in either spelling; empty → linux/amd64."""
+    v = (value or "").strip()
+    return _CONDA_TO_DOCKER_PLATFORM.get(v, v) or "linux/amd64"
 
 # Tool definitions live in agent/mcp_tools/ — see the index at the end of
 # this file. The helpers below stay here because (a) they're called from

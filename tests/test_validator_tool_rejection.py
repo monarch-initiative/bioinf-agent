@@ -236,3 +236,44 @@ def test_run_tool_sets_tool_found_false_for_absent_binary():
     cp = v._run_tool(["definitely_not_a_real_tool_zzz", "--version"])
     assert cp.tool_found is False
     assert cp.returncode != 0
+
+
+# ---------------------------------------------------------------------------
+# samtools ABSENT on a BAM: the file is binary, so a text parse proves nothing
+# either way. Its BGZF + BAM magic is the structural check.
+# ---------------------------------------------------------------------------
+
+def _bgzf(payload: bytes) -> bytes:
+    import gzip
+    return gzip.compress(payload)
+
+
+def test_bam_without_samtools_is_proven_by_its_magic(tmp_path, monkeypatch):
+    v = _validator()
+    monkeypatch.setattr(v, "_run_tool", _fake_run(127, tool_found=False))
+    p = tmp_path / "unmapped.bam"
+    p.write_bytes(_bgzf(b"BAM\x01" + b"\x00" * 64))
+    r = v._check_sam(p)
+    assert r["passed"] is True and r["validation_method"] == "magic", r
+    assert "samtools unavailable" in r["note"]
+
+
+def test_compressed_non_bam_without_samtools_is_refused(tmp_path, monkeypatch):
+    v = _validator()
+    monkeypatch.setattr(v, "_run_tool", _fake_run(127, tool_found=False))
+    p = tmp_path / "x.bam"
+    p.write_bytes(_bgzf(b"@HD\tVN:1.6\nnot a bam\n"))
+    r = v._check_sam(p)
+    assert r["passed"] is False and r["code"] == "validate.bam_bad_magic", r
+    p.write_bytes(b"\x1f\x8b" + b"garbage")   # gzip header, nothing readable behind it
+    r = v._check_sam(p)
+    assert r["passed"] is False and r["code"] == "validate.bam_bad_magic", r
+
+
+def test_plain_sam_without_samtools_still_takes_the_text_check(tmp_path, monkeypatch):
+    v = _validator()
+    monkeypatch.setattr(v, "_run_tool", _fake_run(127, tool_found=False))
+    p = tmp_path / "x.sam"
+    p.write_text("@HD\tVN:1.6\n" + "\t".join(["r1", "4", "*", "0", "0", "*", "*", "0", "0", "ACGT", "IIII"]) + "\n")
+    r = v._check_sam(p)
+    assert r["passed"] is True and r["validation_method"] == "text_fallback", r

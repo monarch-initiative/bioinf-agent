@@ -116,7 +116,7 @@ class _ImageUsageRunner:
             platform=self.platform, timeout=timeout)
 
 
-def _local_trial_mounts(draft: dict):
+def _local_trial_mounts(draft: dict, missing: list | None = None):
     """THE one precondition for "can the I4 self-test run at THIS locus at all?".
 
     Walks the exact substitutions `self_test_usage` will use (declared trials, else
@@ -170,6 +170,8 @@ def _local_trial_mounts(draft: dict):
             elif p.parent.is_dir() and any(p.parent.glob(p.name + ".*")):
                 d = str(p.parent)              # a prefix naming an on-disk family
             else:
+                if missing is not None:
+                    missing.append(s)
                 return None                    # cluster-locus / missing input
             if d == "/":
                 continue                       # never bind-mount the host root
@@ -223,13 +225,7 @@ def _image_usage_runner(fr: dict, draft: dict):
     except Exception:
         resolved = None
     if not resolved:
-        # A daemon TAG can rot while the pinned bytes remain: in the S7 sea
-        # trial, containerd GC dropped `s2_align:latest`'s tag mapping —
-        # `docker images` listed it, inspect-by-tag said "No such image" — and
-        # this probe concluded no runner existed while the digest resolved the
-        # whole time. The record carries that digest in the field beside the
-        # tag: one identity, two spellings, and only one was consulted. Running
-        # by sha256: ref is exactly as pinned as running by tag.
+        # A tag can rot while the pinned bytes remain; the digest is the same identity.
         digest = (fr.get("image_digest") or "").strip()
         if digest and digest != image:
             try:
@@ -239,8 +235,23 @@ def _image_usage_runner(fr: dict, draft: dict):
                 pass
     if not resolved:
         return None                        # not resolvable locally (adopted, or no daemon)
-    platform = _ms._CONDA_TO_DOCKER_PLATFORM.get(fr.get("platform", ""), "linux/amd64")
-    return _ImageUsageRunner(image, platform, mounts)
+    return _ImageUsageRunner(image, _ms.docker_platform(fr.get("platform", "")), mounts)
+
+
+def _no_image_runner_reason(fr: dict, draft: dict) -> str:
+    """Why `_image_usage_runner` returned None, as one stated fact for the seal record."""
+    image = (fr.get("image") or "").strip()
+    if not image:
+        return "the frozen record names no image"
+    from agent.models.core_data import usage_commands
+    if not "\n".join(usage_commands(draft.get("usage") or {})):
+        return "usage.command_template is empty"
+    missing: list[str] = []
+    if _local_trial_mounts(draft, missing) is None:
+        return (f"trial input {missing[0]!r} does not exist on this host (it may live at "
+                "another locus)")
+    return (f"the pinned image {image!r} (digest {fr.get('image_digest') or 'unrecorded'}) "
+            "does not resolve in the local Docker daemon")
 
 
 #: Bounds on what a proven-trial record may carry onto disk. The self-test's own
@@ -689,7 +700,9 @@ def seal_workflow(
         if runner is None and draft.get("conda_env") and _local_trial_mounts(draft) is not None:
             runner = _ms._env_mgr
         try:
-            usage_detail = self_test_usage(draft, runner, validator=_ms._validator)
+            usage_detail = self_test_usage(
+                draft, runner, validator=_ms._validator,
+                no_runner_reason=_no_image_runner_reason(fr, draft) if runner is None else "")
             usage_ok = bool(usage_detail.get("ok"))
         except Exception as e:
             usage_ok = False
@@ -1307,6 +1320,14 @@ def stage_authored_artifact(
             return refused(
                 "stage_artifact.source_missing",
                 error=f"generated_by mode requires the file to already exist on disk: {path}",
+            )
+        if p.is_dir():
+            return refused(
+                "stage_artifact.path_is_directory",
+                error=f"an artifact is one file and this is a directory: {path}",
+                remedy="stage each file inside it (one generated_by call per file); a step "
+                       "whose input is the directory then traces through them, because I8 "
+                       "accepts a directory input when a declared file sits directly in it",
             )
         try:
             idx, artifact = record_generated_artifact(

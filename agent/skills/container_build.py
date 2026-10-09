@@ -567,10 +567,12 @@ def emit_dockerfile(
             sources = _snapshot_sources_list(apt_snapshot).replace("\n", "\\n")
             return [f"RUN printf '{sources}' > /etc/apt/sources.list \\",
                     "    && rm -rf /etc/apt/sources.list.d/* \\",
-                    "    && apt-get -o Acquire::Check-Valid-Until=false update \\",
+                    "    && (apt-get -o Acquire::Check-Valid-Until=false update \\",
+                    "        || (sleep 20 && apt-get -o Acquire::Check-Valid-Until=false update)) \\",
                     "    && apt-get install -y --no-install-recommends \\",
                     f"        {pkgs} \\", "    && rm -rf /var/lib/apt/lists/*", ""]
-        return ["RUN apt-get update && apt-get install -y --no-install-recommends \\",
+        return ["RUN (apt-get update || (sleep 20 && apt-get update)) \\",
+                "    && apt-get install -y --no-install-recommends \\",
                 f"        {pkgs} \\", "    && rm -rf /var/lib/apt/lists/*", ""]
 
     # ---- builder stage: full toolchain + engine + long-tail builds ----

@@ -146,11 +146,15 @@ def load_experiment(path: Path) -> dict:
 # One run
 # ---------------------------------------------------------------------------
 
-def build_command(exp: dict, model: str) -> list[str]:
+def build_command(exp: dict, model: str, add_dirs: tuple[str, ...] = ()) -> list[str]:
+    """The headless session. `add_dirs` are granted to the harness's own file tools (the
+    run directory, so Bash/Read reach the run's workspace without a permission denial)."""
     cmd = ["claude", "-p", exp["prompt"], "--model", model,
            "--output-format", "stream-json", "--verbose", "--no-session-persistence",
            "--mcp-config", ".mcp.json", "--strict-mcp-config",
            "--max-budget-usd", str(exp["budget_usd"])]
+    for d in add_dirs:
+        cmd += ["--add-dir", d]
     if exp["allowed_tools"]:
         cmd += ["--allowedTools", *exp["allowed_tools"]]
     if exp["disallowed_tools"]:
@@ -268,7 +272,7 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = root / exp["name"] / f"{model}__r{repeat}__{stamp}"
     host = workspace.zones()
-    cmd = build_command(exp, model)
+    cmd = build_command(exp, model, add_dirs=(str(run_dir),))
     env = build_env(exp, run_dir, host)
     overrides = {k: env[k] for k in ("BIOINF_WORKSPACE", "BIOINF_ENVS", "BIOINF_RESOURCES",
                                       "BIOINF_PROJECTS_ACCESS", "BIOINF_MCP_AUTO_RELOAD",

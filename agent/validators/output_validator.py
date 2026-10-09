@@ -175,7 +175,7 @@ class OutputValidator:
                 return broke("validate.sam_tool_rejected",
                         passed=False, validation_method="tool",
                         error=f"samtools quickcheck rejected the file: {ret.stderr.strip()[:200]}")
-            return self._sam_text_fallback(path)
+            return self._sam_without_samtools(path)
         stat = self._run_tool(["samtools", "flagstat", str(path)], timeout=120)
         if stat.returncode == 0:
             return proven("validate.sam_ok",
@@ -217,6 +217,29 @@ class OutputValidator:
                       note="unaligned BAM/SAM (no @SQ targets, as produced by "
                            "picard FastqToSam / samtools import); header and "
                            "records read back")
+
+    def _sam_without_samtools(self, path: Path) -> dict:
+        """samtools is absent: a BAM is proven by its BGZF + `BAM\\1` magic (a text
+        parse of compressed bytes proves nothing), a SAM by its text."""
+        try:
+            with open(path, "rb") as f:
+                head = f.read(2)
+        except OSError as e:
+            return broke("validate.sam_unreadable", passed=False, validation_method="magic",
+                         error=f"could not read the file: {e}")
+        if head != b"\x1f\x8b":
+            return self._sam_text_fallback(path)
+        try:
+            with gzip.open(path, "rb") as g:
+                magic = g.read(4)
+        except (OSError, EOFError) as e:
+            return refused("validate.bam_bad_magic", passed=False, validation_method="magic",
+                           error=f"gzip-compressed but not readable as BGZF: {e}")
+        if magic != b"BAM\x01":
+            return refused("validate.bam_bad_magic", passed=False, validation_method="magic",
+                           error="gzip-compressed file does not begin with the BAM magic")
+        return proven("validate.bam_magic_ok", passed=True, validation_method="magic",
+                      note="samtools unavailable — BGZF and BAM magic checked, records not counted")
 
     def _sam_text_fallback(self, path: Path) -> dict:
         lines = self._head_lines(path, 20)
