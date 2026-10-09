@@ -21,7 +21,7 @@ from agent.models import core_data as _core_data
 from agent.skills import resources as _resources_skill
 from agent.skills import tool_surface as _tool_surface
 from agent.skills import workspace as _workspace
-from agent.skills.outcomes import refused
+from agent.skills.outcomes import proven, refused
 @mcp.tool()
 def download_reference_database(
     name: str,
@@ -162,16 +162,18 @@ def download_reference_database(
         if not replaced:
             existing.append({k: v for k, v in rdb.items() if v is not None})
         _ms._pipeline_state.patch(pipeline_id, {"reference_databases": existing})
-    return {
-        "job_id":     job.get("job_id"),
-        "status_path": job.get("status_path"),
-        "log_path":   job.get("log_path"),
-        "local_path": str(target),
-        "name":       name,
-        "url":        url,
-        "command":    cmd,
-        "note":       "Use check_job(job_id) to monitor; ReferenceDatabase entry recorded in draft.reference_databases (available=false until download finishes).",
-    }
+    return proven(
+        "data.refdb_download_started",
+        job_id=job.get("job_id"),
+        status_path=job.get("status_path"),
+        log_path=job.get("log_path"),
+        local_path=str(target),
+        name=name,
+        url=url,
+        command=cmd,
+        note="Use check_job(job_id) to monitor; ReferenceDatabase entry recorded in "
+             "draft.reference_databases (available=false until download finishes).",
+    )
 
 
 @mcp.tool()

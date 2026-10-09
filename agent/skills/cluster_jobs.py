@@ -37,6 +37,7 @@ import re
 import shlex
 import subprocess
 from datetime import datetime, timezone
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -205,9 +206,17 @@ def cluster_job_status(project_name: str,
                        compute_env_name: str,
                        job_id: str,
                        *,
+                       run_dir: str = "",
                        access_path: Optional[str] = None,
                        timeout: int = 60) -> dict:
     """Look up SLURM state for `job_id` on `compute_env_name`.
+
+    `run_dir` names a rendered pipeline's launch directory: the job is then the
+    MANAGER (Nextflow submitting one SLURM job per stage and sample, doing none of
+    the work), and the answer gains `pipeline` — every task from the run's own
+    `runs/<stamp>/trace.txt` with its status, exit code, runtime, peak memory and
+    SLURM job id, a count per status, and a verdict over the tasks. The manager's
+    own row is never reported as the work.
 
     Pure-read: runs ONE ssh invocation of
     `bash -lc 'sacct -j <id> -P --noheader -X -o <fields>'`, parses
@@ -267,8 +276,8 @@ def cluster_job_status(project_name: str,
 
         jobs = _parse_sacct_output(res.stdout)
         # Each row STATES its verdict. This is the only window a PRODUCTION run
-        # has — submit_workflow_job is submit-and-document, so nobody polls on
-        # the caller's behalf and nobody classifies for them. Handing back a raw
+        # has — submission is submit-and-document, so nobody polls on the
+        # caller's behalf and nobody classifies for them. Handing back a raw
         # `TIMEOUT | 0:0` row invites the wrong reading — rc is zero, so the job
         # must be fine. Additive (the raw columns are untouched), so consumers
         # of the raw shape are unaffected.
@@ -276,18 +285,121 @@ def cluster_job_status(project_name: str,
             verdict, why = classify_sacct_row(row)
             row["verdict"] = verdict
             row["verdict_reason"] = why
-        return {
+        out = {
             "compute_env": compute_env_name,
             "job_id":      norm_id,
             "jobs":        jobs,
             "captured_at": datetime.now(timezone.utc).isoformat(),
         }
+        if run_dir:
+            if not _ABS_SAFE_PATH_RE.match(run_dir):
+                return refused("cluster.unsafe_run_dir", error=
+                    f"run_dir {run_dir!r} is not an absolute safe path (refused before ssh)")
+            out["pipeline"] = _read_pipeline_run(env, run_dir, norm_id, jobs, timeout=timeout)
+        return out
 
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
         return refused("cluster.status_bad_arg", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
         return broke("cluster.status_timeout", error=f"sacct timed out after {e.timeout}s")
+
+
+# ---------------------------------------------------------------------------
+# A rendered pipeline's run, read from its own records
+# ---------------------------------------------------------------------------
+#
+# The manager job prints `run records: runs/<stamp>/` to its SLURM log
+# (`<pipeline>-<jobid>.out` in the launch directory) before any task starts, and
+# nextflow.config writes `runs/<stamp>/trace.txt` as tasks finish. One ssh hop
+# reads both. Columns are the renderer's TRACE_FIELDS; the parse goes by the header
+# so a reordered trace cannot mislabel a field.
+
+#: Trace statuses a run can leave a task in. Nextflow's own vocabulary.
+TASK_DONE, TASK_FAILED = "COMPLETED", "FAILED"
+_TASK_LIVE = ("SUBMITTED", "RUNNING", "NEW")
+
+
+def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
+    q = shlex.quote
+    script = (f'out=$(ls -1 {q(run_dir)}/*-{job_id}.out 2>/dev/null | head -n 1); '
+              f'if [ -z "$out" ]; then echo NOOUT; exit 0; fi; '
+              f'echo "OUT=$out"; '
+              f'stamp=$(grep -o -m1 "runs/[0-9_]*" "$out" | head -n 1); echo "STAMP=$stamp"; '
+              f'if [ -n "$stamp" ] && [ -f {q(run_dir)}/"$stamp"/trace.txt ]; then '
+              f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo TRACE_END; fi; exit 0')
+    return f"bash -lc {q(script)}"
+
+
+def _parse_trace(text: str) -> list[dict]:
+    """Nextflow's tab-separated trace, by its header line."""
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return []
+    header = lines[0].split("\t")
+    rows = []
+    for ln in lines[1:]:
+        cells = ln.split("\t")
+        rows.append({header[i]: (cells[i] if i < len(cells) else "") for i in range(len(header))})
+    return rows
+
+
+def _task_view(row: dict) -> dict:
+    """One task as the caller reads it: the work, never the manager. The work
+    directory rides along only for a task that did not complete — that is where
+    `.command.log` and `.command.err` are."""
+    view = {k: row.get(k, "") for k in ("name", "native_id", "status", "exit", "realtime", "peak_rss")}
+    if row.get("status") != TASK_DONE:
+        view["workdir"] = row.get("workdir", "")
+    return view
+
+
+def _pipeline_verdict(tasks: list[dict], manager_rows: list[dict]) -> str:
+    """succeeded | failed | running | not_started — over the TASKS, with the manager
+    consulted only to tell a finished run from one still submitting."""
+    statuses = [t.get("status") for t in tasks]
+    if any(s == TASK_FAILED for s in statuses):
+        return "failed"
+    manager_terminal = bool(manager_rows) and all(r.get("verdict") != RUNNING for r in manager_rows)
+    if tasks and all(s == TASK_DONE for s in statuses) and manager_terminal:
+        return "succeeded"
+    if not tasks and manager_terminal and manager_rows and all(r.get("verdict") == DIED for r in manager_rows):
+        return "failed"
+    return "running" if (tasks or not manager_terminal) else "not_started"
+
+
+def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[dict], *,
+                       timeout: int) -> dict:
+    """What the run's own records say. Never raises: an unreadable run directory is
+    reported as such beside the manager's SLURM row."""
+    argv = _ssh_argv(env, _build_pipeline_run_cmd(run_dir, job_id))
+    try:
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        return broke("cluster.run_records_timeout", run_dir=run_dir,
+                     error=f"reading the run records timed out after {e.timeout}s")
+    if res.returncode != 0:
+        hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
+        return broke("cluster.run_records_ssh_failed", run_dir=run_dir,
+                     error=f"could not read the run records (rc={res.returncode}): "
+                           f"{(res.stderr or '').strip()[:300]}",
+                     **({"hint": hint} if hint else {}))
+    lines = (res.stdout or "").splitlines()
+    if "NOOUT" in lines:
+        return {"run_dir": run_dir, "verdict": "not_started", "tasks": [], "task_summary": {},
+                "note": f"no manager log (<pipeline>-{job_id}.out) in {run_dir} yet: the job has not started"}
+    stamp = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("STAMP=")), "")
+    out_log = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("OUT=")), "")
+    trace_rows: list[dict] = []
+    if "TRACE_BEGIN" in lines and "TRACE_END" in lines:
+        a, b = lines.index("TRACE_BEGIN"), lines.index("TRACE_END")
+        trace_rows = _parse_trace("\n".join(lines[a + 1:b]))
+    tasks = [_task_view(r) for r in trace_rows]
+    summary = dict(Counter(t.get("status", "") for t in tasks))
+    return {"run_dir": run_dir, "manager_log": out_log, "stamp": stamp,
+            "run_records": f"{run_dir}/{stamp}" if stamp else None,
+            "task_summary": summary, "tasks": tasks,
+            "verdict": _pipeline_verdict(tasks, manager_rows)}
 
 
 # ---------------------------------------------------------------------------

@@ -1,11 +1,11 @@
 # H — a PyPI tool whose weights are a separate download and whose runtime is a deep-learning
-# stack. Judged by the `sealed` rule. Trips to look for: the model files fetched outside the
-# record (an orphan to I8), a TensorFlow build that cannot run in the shipped image, the
-# annotation "proven" on an empty VCF. The pip route emits no outcome code of its own yet,
-# so this definition cannot pin it; read the install steps in the runs table.
+# stack. Judged by the `sealed` rule with the pip route pinned. Trips to look for: the model
+# files fetched outside the record (an orphan to I8), a TensorFlow build that cannot run in
+# the shipped image, the annotation "proven" on an empty VCF.
 name: h_spliceai
 tier: C2
 success: sealed
+required_codes: ["env_manager.pip_installed"]
 prompt: |
   Install SpliceAI from PyPI and prove it by annotating a VCF derived from the phenopacket
   in the core test data against the chr22 reference, with the annotation file and genome it

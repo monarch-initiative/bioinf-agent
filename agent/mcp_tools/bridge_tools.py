@@ -298,7 +298,8 @@ def globus_task_status(project_name: str,
 @mcp.tool()
 def cluster_job_status(project_name: str,
                        compute_env_name: str,
-                       job_id: str) -> dict:
+                       job_id: str,
+                       run_dir: str = "") -> dict:
     """Look up SLURM state for `job_id` on `compute_env_name` so the
     agent can poll a submitted job to completion.
 
@@ -325,6 +326,7 @@ def cluster_job_status(project_name: str,
         project_name=project_name,
         compute_env_name=compute_env_name,
         job_id=job_id,
+        run_dir=run_dir or "",
         access_path=_resolve_access_path(),
     )
 
@@ -400,70 +402,50 @@ def submit_workflow_job(project_name: str,
 
 @mcp.tool()
 def run_production_pipeline(project_name: str,
-                           compute_env_name: str,
-                           workflow_name: str,
-                           tool_name: str,
-                           command: str,
-                           inputs: dict,
-                           outputs: dict,
-                           freeze_request_key: str,
-                           workflow_dir: str,
-                           resources: dict = {},
-                           sealed_workflow: str = "",
-                           platform: str = "linux/amd64") -> dict:
-    """Run a frozen env's workflow in PRODUCTION on whichever compute env you name, the
-    local laptop or an ssh cluster: one call, swap `compute_env_name`. What differs between
-    loci (scheduler, container runtime, modules) is an env property in projects_access.yaml.
+                            compute_env_name: str,
+                            pipeline: str,
+                            run_dir: str,
+                            samplesheet: str = "",
+                            params: dict = {},
+                            walltime: str = "") -> dict:
+    """Run a RENDERED pipeline in production on whichever compute env you name — ONE verb,
+    swap `compute_env_name`. The pipeline directory `render_pipeline` wrote is copied into
+    `run_dir` on that env, your samplesheet becomes its samples.csv, and the run starts the
+    one way a rendered pipeline runs: `sbatch launcher.sh` on an ssh env, a background
+    `nextflow run main.nf -profile local …` on a local env. Submit-and-document: a manifest
+    is written and the call returns; follow up with `cluster_job_status(…, run_dir=)` or
+    `check_job`.
 
-      local → renders a re-runnable `run.sh` that `docker run`s the frozen image against
-              `workflow_dir` (same-path bind mount), launches it in the background and
-              writes a submission manifest. Poll with check_job.
-      ssh   → the nextflow + slurm + apptainer submission, with modules and slurm policy
-              from the env config and the staged .sif derived from `freeze_request_key`.
-
-    Not a composite: freeze first; on the cluster also `stage_apptainer_image` first
-    (refused otherwise). This documents the run in a manifest; it does not seal a
-    WorkflowSpec — `run_step_in_container` / `run_step_on_cluster` do.
-
-    Authorization: `workflow_dir` must be a `directories[]` path with `upload` and `exec`.
+    Before anything is copied or launched it checks AT THE LOCUS: every image the stages
+    run in is there (the staged `.sif` — refused with the `stage_apptainer_image` call to
+    make otherwise; the docker image locally); every path the run binds — the shared path
+    parameters and every path cell of the samplesheet — exists; and the shared references
+    still hash to what the workflow was sealed against where an anchor exists. A reference
+    that diverged launches as `degraded`, never a bare success.
 
     Inputs:
-      command             ONE line with `${PLACEHOLDER}` slots, the same on both loci. The
-                          cluster branch refuses single quotes, backslashes and triple
-                          double quotes (main.nf would rewrite them); keep to that subset
-                          to stay portable.
-      inputs              {PLACEHOLDER: absolute path on the compute env}; every slot declared.
-      outputs             {PLACEHOLDER: bare filename}, written into workflow_dir.
-      freeze_request_key  the frozen env, the same handle on both loci.
-      workflow_dir        absolute path under a `directories[]` grant.
-      resources           {mem_gb, cpus, time, gpus?, partition?, qos?}: optional locally
-                          (docker --memory/--cpus), REQUIRED on the cluster (mem + time).
-                          partition/qos are cluster-only; omit both to take the env's
-                          `slurm.gpu` convention or the scheduler's choice; `gpu_placement`
-                          reports what resolved (as in submit_workflow_job).
-      sealed_workflow     OPTIONAL `{name}.workflow.yaml` to check this run's DATA against:
-                          the env is pinned by digest, only this pins the references. Name
-                          it explicitly, never inferred from workflow_name. Omitted ⇒
-                          `reference_check.status = "not_attempted"`; a divergence returns
-                          `degraded`, never a bare success.
+      pipeline     a name under <workspace>/pipelines/ (see list_installed_pipelines) or a
+                   rendered directory's absolute path.
+      run_dir      absolute path on the env: the launch directory. Its parent must exist; it
+                   may be under the env's pipelines zone, the agent's scratch, or a project
+                   `directories[]` grant with `upload` and `exec`. A run_dir that already
+                   holds this pipeline is re-launched with `-resume`; one holding another
+                   render is refused.
+      samplesheet  local CSV, one row per sample, with the columns the pipeline reads
+                   (`sample` first; paths absolute AT THE LOCUS). Required on the first
+                   launch into a run_dir; omit on a re-launch.
+      params       {params.yaml key: value} for this run only — on the launch line, so it
+                   wins over params.yaml. A path, a word or a number.
+      walltime     the manager job's SLURM time for this submission (`sbatch --time=…`).
 
-    Returns `{success, locus, compute_env, job_id, workflow_dir, manifest_path, …}`; on any
-    refusal or failure `{"error": …}`.
+    Returns `{success, locus, pipeline, run_dir, job_id, samplesheet, params, launch,
+    manifest_path, reference_check, follow_up, …}`; refusals name their remedy.
     """
     from agent.skills import run_production
     return run_production.run_production_pipeline(
-        project_name=project_name,
-        compute_env_name=compute_env_name,
-        workflow_name=workflow_name,
-        tool_name=tool_name,
-        command=command,
-        inputs=inputs,
-        outputs=outputs,
-        freeze_request_key=freeze_request_key,
-        workflow_dir=workflow_dir,
-        sealed_workflow=sealed_workflow or None,
-        resources=resources or {},
-        platform=platform or "linux/amd64",
+        project_name=project_name, compute_env_name=compute_env_name,
+        pipeline=pipeline, run_dir=run_dir, samplesheet=samplesheet or "",
+        params=dict(params or {}), walltime=walltime or "",
         access_path=_resolve_access_path(),
     )
 

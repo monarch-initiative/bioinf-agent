@@ -1174,6 +1174,14 @@ def evaluate_build(result: dict) -> BuildContract:
             coverage.append(ClauseCoverage(f"WELL_FORMED.{key}", (f"WELL_FORMED.{key}",), CHECKED, len(parsed),
                                            f"{len(parsed)} {key} record(s) parsed against {model}",
                                            DISCLOSURE))
+        elif key in result:
+            # The producer wrote an empty list: this image has nothing of that kind
+            # (no agent-built binary in an adopted or packages-only image). The
+            # precondition is absent and that absence is itself a fact — NOT_APPLICABLE.
+            coverage.append(ClauseCoverage(
+                f"WELL_FORMED.{key}", (f"WELL_FORMED.{key}",), NOT_APPLICABLE, 0,
+                f"{key} recorded as empty — this image ships none, a fact the producer "
+                f"stated", DISCLOSURE))
         else:
             # NOT a violation — a record may legitimately predate the field. But it is
             # NOT compliance either: nothing was validated, so nothing may be implied.

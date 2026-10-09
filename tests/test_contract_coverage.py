@@ -96,6 +96,21 @@ def test_not_applicable_and_unobserved_are_distinct_states():
     assert c.as_dict()["fully_observed"] is False
 
 
+def test_an_empty_shipped_binaries_list_is_not_applicable_not_unobserved():
+    """A pure-package image (an adopted biocontainer, or packages alone) ships no
+    agent-built binary, and freeze now SAYS so with an empty list. That is the
+    precondition being absent as a fact — NOT_APPLICABLE — so a clean freeze no
+    longer reads `degraded` on every such image. An ABSENT key still reads
+    UNOBSERVED: a record from before the field is not a record that declared none."""
+    rec = _clean_record()
+    rec["shipped_binaries"] = []
+    c = eh.evaluate_build(rec)
+    assert c.ok
+    assert _clause(c, "WELL_FORMED.shipped_binaries").status == eh.NOT_APPLICABLE
+    assert not [x for x in c.unobserved if x.clause == "WELL_FORMED.shipped_binaries"]
+    assert "WELL_FORMED.shipped_binaries" not in c.summary().split("UNOBSERVED")[-1]
+
+
 def test_fully_observed_record_has_no_unobserved_clauses():
     c = eh.evaluate_build(_clean_record())
     assert c.ok and not c.unobserved

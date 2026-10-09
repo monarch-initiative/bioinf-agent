@@ -111,12 +111,16 @@ def _ran_off_host(step: dict) -> bool:
 
     Read from the step's own runtime evidence (`validation_locus`, the sacct/cluster
     fields `run_step_on_cluster` stamps), never from a caller-supplied flag: a step
-    could otherwise claim cross-locus staging to excuse a genuine orphan."""
+    could otherwise claim cross-locus staging to excuse a genuine orphan.
+
+    The cluster is the one locus whose paths live on another filesystem. `native`,
+    `emulated` and `adopted` name where a container step validated on THIS machine,
+    so they are on-host like `host` and `container`."""
     if not isinstance(step, dict):
         return False
     locus = (step.get("validation_locus")
              or (step.get("resource_usage") or {}).get("locus") or "")
-    return str(locus).lower() not in ("", "host", "local", "container")
+    return str(locus).lower() == "cluster"
 
 EXTERNAL_SOURCE_KINDS = frozenset({
     "test_data", "reference_databases", "runtime_configs", "authored_artifacts",

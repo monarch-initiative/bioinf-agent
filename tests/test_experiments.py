@@ -718,10 +718,51 @@ class TestRunner:
         def no_daemon(cmd, **kw):
             raise OSError("no docker")
         monkeypatch.setattr(experiments.subprocess, "run", no_daemon)
-        assert experiments.docker_snapshot() == {"image": None, "container": None}
-        result = experiments.docker_cleanup({"image": None, "container": None})
+        assert experiments.docker_snapshot() == {"image": None, "container": None, "tags": None}
+        result = experiments.docker_cleanup({"image": None, "container": None, "tags": None})
         assert result["skipped"] == "no Docker daemon answered"
         assert result["images_removed"] == [] and result["containers_removed"] == []
+        assert result["host_tags_restored"] == [] and result["host_tags_lost"] == []
+
+    def test_docker_cleanup_puts_back_a_host_tag_a_run_repointed(self, monkeypatch):
+        """A run that names an env the host already has builds `name:latest` anew; the
+        host's image is left untagged and the run's image removed. The tag goes back on
+        the host's id when that id survives; a tag whose id is gone is reported, since
+        that is what happened to rnaseq_counts:latest on this machine."""
+        calls = []
+        tags = {"rnaseq_counts:latest": "sha256:new", "other:latest": "sha256:other"}
+        present = {"sha256:old", "sha256:new", "sha256:other"}
+
+        def fake_run(cmd, **kw):
+            class R:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            r = R()
+            if cmd[:3] == ["docker", "image", "ls"] and "--format" in cmd:
+                r.stdout = "".join(f"{t} {i}\n" for t, i in tags.items()) + "<none>:<none> sha256:old\n"
+            elif cmd[:3] == ["docker", "image", "ls"]:
+                r.stdout = "\n".join(sorted(present)) + "\n"
+            elif cmd[:2] == ["docker", "ps"]:
+                r.stdout = ""
+            elif cmd[:3] == ["docker", "image", "rm"]:
+                calls.append(("rm", cmd[-1])); present.discard(cmd[-1])
+                tags.pop("rnaseq_counts:latest", None)
+            elif cmd[:3] == ["docker", "image", "inspect"]:
+                r.returncode = 0 if cmd[-1] in present else 1
+            elif cmd[:2] == ["docker", "tag"]:
+                calls.append(("tag", cmd[2], cmd[3])); tags[cmd[3]] = cmd[2]
+            return r
+        monkeypatch.setattr(experiments.subprocess, "run", fake_run)
+        before = {"image": {"sha256:old", "sha256:other", "sha256:gone"}, "container": set(),
+                  "tags": {"rnaseq_counts:latest": "sha256:old", "other:latest": "sha256:other",
+                           "vanished:latest": "sha256:gone"}}
+        result = experiments.docker_cleanup(before)
+        assert ("rm", "sha256:new") in calls
+        assert ("tag", "sha256:old", "rnaseq_counts:latest") in calls
+        assert result["host_tags_restored"] == ["rnaseq_counts:latest"]
+        assert result["host_tags_lost"] == [{"tag": "vanished:latest", "id": "sha256:gone"}]
+        assert not any(c[0] == "tag" and c[2] == "other:latest" for c in calls)   # unchanged tags untouched
 
     def test_the_isolation_record_is_derived_from_the_definition(self, tmp_path):
         e = experiments.load_experiment(_exp(tmp_path))

@@ -112,12 +112,20 @@ def test_the_staging_allowance_matches_external_sources_only_not_prior_outputs()
     ({"resource_usage": {"locus": "cluster"}}, True),
     ({"validation_locus": "host"}, False),
     ({"validation_locus": "container"}, False),
+    # The container loci `run_step_in_container` stamps: validated on THIS machine, so
+    # their paths compare directly and the basename allowance must stay shut for them.
+    ({"validation_locus": "native"}, False),
+    ({"validation_locus": "emulated"}, False),
+    ({"resource_usage": {"locus": "native"}}, False),
+    ({"resource_usage": {"locus": "adopted"}}, False),
     ({}, False),
     ("not a dict", False),
 ])
 def test_off_host_is_read_from_runtime_evidence(step, off_host):
     """Read from what the runtime stamped, never from a caller-supplied flag — otherwise
-    a step could claim cross-locus staging to excuse a genuine orphan."""
+    a step could claim cross-locus staging to excuse a genuine orphan. Only the cluster
+    is off-host: an in-container step that read as off-host unlocked I8's basename
+    tolerance for every container step."""
     assert sw._ran_off_host(step) is off_host
 
 

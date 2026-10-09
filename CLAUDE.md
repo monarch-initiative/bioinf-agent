@@ -97,10 +97,9 @@ Compose these. The agent picks the right primitive; the primitive enforces its c
 | `cluster_partitions` | **HPC bridge.** Discover SLURM partitions, which carry GPUs (with the card type) and which QoS each accepts, so `slurm.gpu: {partition, qos}` is READ off the cluster rather than typed. Returns `gpu_convention_candidates` (candidates, not a pick). A chosen pair goes into a job's `slurm={partition, qos}`; naming one is optional |
 | `upload` / `download` | **HPC bridge — the transfer surface.** Auto-routed by where the remote path falls (scratch / common_data / container_upload / reports / project_path). Blocks until the bytes are verified |
 | `globus_task_status` | Resolve a Globus task's real end state. Reach for it after `transfer.globus_sync_wait_exceeded` — that means WE stopped waiting, not that Globus stopped |
-| `cluster_job_status` | **HPC bridge.** SLURM state query. Read `verdict`, not the exit code — a scheduler-killed job reports rc=0 |
+| `cluster_job_status` | **HPC bridge.** SLURM state query. Read `verdict`, not the exit code — a scheduler-killed job reports rc=0. Pass `run_dir=` for a pipeline run: the answer gains every task from the run's own trace, and the manager job is never reported as the work |
 | `stage_apptainer_image` | **HPC bridge.** Deliver a frozen env to the cluster as a `.sif`. Idempotent. Never builds on the head node |
-| `submit_workflow_job` | **HPC bridge — production submission.** Render + upload + sbatch, then return. Submit-and-document: no polling |
-| `run_production_pipeline` | **The locus-agnostic production run — ONE verb, swap the env.** Dispatches on `env.type` (local docker / cluster nextflow+SLURM). Pass `sealed_workflow=` to pin the DATA, not just the env |
+| `run_production_pipeline` | **Run a RENDERED pipeline in production — ONE verb, swap the env.** Copies the pipeline directory into `run_dir` on the env named, uses your samplesheet, checks the images and every bound path at the locus and the references against the seal, then `sbatch launcher.sh` (ssh) or a background `nextflow run … -profile local` (local). Submit-and-document: a manifest, no polling |
 | `run_step_on_cluster` | **Cluster VALIDATION/seal.** Runs in the agent's scratch sandbox, polls, fetches, validates, records a cluster-locus step. Use a FRESH `workflow_name` per attempt |
 
 Below the primitives there are still lower-level tools — use them when a primitive doesn't fit, prefer the primitive when it does. **Every low-level tool SAYS SO in its own description**, naming the primitive that supersedes it. Those notes are generated from `agent/skills/tool_surface.py`, which positions every registered tool; `tests/test_tool_surface.py` fails the build on a tool without a position or a primitive missing from the table above.
@@ -128,7 +127,7 @@ The full flow, in order — two layers (env, then workflow):
 
 **Three ways in, and which one is canonical is NOT settled.** The eight steps above are the protocol itself. `interpret_request` → `plan_request` is the typed front door. `install_pipeline_brief(name)` hands back the invariants and primitives for one tool as a structured brief a subagent can execute unsupervised. All three reach the same primitives; they differ in how much is decided before the first install runs.
 
-To execute the *same* frozen env ON HPC, the Phase 2 bridge consumes the `freeze_request_key` directly: `run_step_on_cluster` for the validate-then-seal flow; `stage_apptainer_image` → `submit_workflow_job` → `cluster_job_status` → `download` for production runs. See **HPC bridge — Phase 2**.
+To execute the *same* frozen env ON HPC, the Phase 2 bridge consumes the `freeze_request_key` directly: `run_step_on_cluster` for the validate-then-seal flow; `stage_apptainer_image` → `run_production_pipeline` → `cluster_job_status` → `download` for production runs. See **HPC bridge — Phase 2**.
 
 ---
 
@@ -183,7 +182,7 @@ Generated artifacts:
 - **A thread count is a slot, not a literal.** Write the tool's thread flag as `-p {THREADS}` with an input `{name: THREADS, format: threads}` and bind one count in every trial. `render_pipeline` binds it to the stage's CPU request (`task.cpus`), the sealed count by default, so the command and the SLURM request cannot disagree; a literal `-p 4` renders as 4 threads on a 1-cpu request. Two sibling slots for a COHORT how-to (one that runs once over every sample, attached with `render_pipeline(cohort=)`): an input `format: samplesheet` is the pipeline's own `samples.csv` (bind the trial to a sheet with a `sample` column plus the columns the script reads), and the fan-in input (a directory of every sample's file) is declared at render with `collect={PLACEHOLDER: "{SAMPLE}.counts.tsv"}`, so name per-sample outputs after the sample. A script the how-to runs is a `stage_authored_artifact` (content mode) bound as a plain path input: the render carries it into `bin/`.
 - **One reading per field.** A new consumer MUST use the `core_data` leaves rather than re-spell the logic (`tests/test_one_reading_per_field.py` enforces it): `usage_commands()`, `usage_status()`/`usage_label()`, `record_is_gated()`, `test_data_paths()`/`test_data_anchors()`/`resolve_data_path()`, `step_is_validated()`, `usage_proven_trials()`, `service_probe_log()`/`service_healthy_probes()`/`probe_is_healthy()`. Two readings of one field is how drift starts. `reference_databases[*].source_url` is optional; I5 pins content by sha256, not URL.
 - **Output placeholders in `usage.command_template`**: write every output path through an OUTPUT slot — one named `{OUTPUT_DIR}`/`{OUT_DIR}` or containing `output`. The I4 self-test runs each trial in a fresh scratch dir and fills THAT path into output slots, then scans it for `usage.outputs[*].files`. An output written via an unrecognized slot (e.g. `-o {OUT_TSV}`) lands outside the scratch dir → I4 fails with `produced_files: []`. Correct idiom: `-o {OUTPUT_DIR}/stats.tsv`.
-- **`run_pipeline_step` output detection**: the step only detects files created/modified under `watch_dir` (default: the input's directory). If your command writes elsewhere via `-o <path>`/`> <path>`, pass `watch_dir=<that dir>` — an undetected output has no validation and fails I3 at seal.
+- **`run_pipeline_step` output detection**: the step only detects files created/modified under `watch_dir` (default: the input's directory). If your command writes elsewhere via `-o <path>`/`> <path>`, pass `watch_dir=<that dir>` — an undetected output has no validation and fails I3 at seal. A missing `watch_dir` is created for you; a script or samplesheet you author is written by `stage_authored_artifact(content=…)`. No shell or editor is needed for either.
 
 ---
 
@@ -202,7 +201,7 @@ Layer 1 produces an HPC-shippable container; the bridge drives real jobs on a re
 ### Two walls, two operations
 
 - **Scratch — the agent's sandbox.** Cluster validation/seal runs live here: `<env.agent_scratch_target.path>/<project>/<workflow_name>/`. Env-implicit grant, project-prefix isolation. Validation jobs are short and bounded, so `run_step_on_cluster` polls to completion synchronously.
-- **`directories[]` — the user's territory.** Production runs live here, under explicit per-directory grants. Production jobs run hours-to-days, so `submit_workflow_job` is **submit-and-document**: it returns the `job_id`, writes a manifest to `<reports>/job_submissions/<project>/<workflow_name>_<job_id>.submission.json`, and the user (or a future agent invocation) follows up via `cluster_job_status` + `download`.
+- **`directories[]` — the user's territory.** Production runs live here, under explicit per-directory grants. Production jobs run hours-to-days, so `run_production_pipeline` is **submit-and-document**: it returns the `job_id`, writes a manifest to `<scratch>/job_submissions/<project>/<pipeline>_<job_id>.submission.json`, and the user (or a future agent invocation) follows up via `cluster_job_status` + `download`.
 
 The two operations share the render+sbatch machinery but each owns its auth surface — scratch via `check_env_target_capability`, project_path via `check_permission` against `directories[]`. The walls don't get crossed inside one primitive.
 
@@ -250,13 +249,13 @@ Prove a frozen env works on the cluster — the bytes the user runs on HPC are t
 
 ### The production chain (`directories[]` — long-running, submit-and-document)
 
-**The locus-agnostic front door is `run_production_pipeline(project, env, …)`** — one verb that runs the frozen env's workflow in production on WHICHEVER env you name, dispatching on `env.type`. For a **local** env it is the whole chain (render `run.sh` → background `docker run` → poll `check_job`). The steps below are the CLUSTER mechanism its ssh branch delegates to:
+**The front door is `run_production_pipeline(project, env, pipeline, run_dir, samplesheet=…)`** — one verb that runs a RENDERED pipeline on WHICHEVER env you name, dispatching on `env.type`. On a **local** env it copies the pipeline into `run_dir` and starts `nextflow run … -profile local` as a background job (poll `check_job`). On the cluster:
 
-1. **`stage_apptainer_image(project, env, freeze_request_key)`** — idempotent .sif delivery.
-2. **`upload(project, env, local_path, remote_abs_path)`** (×N) — push input data into the project workspace.
-3. **`submit_workflow_job(project, env, workflow_dir, workflow_name, …)`** — renders + uploads + sbatches, returns `job_id`, writes the submission manifest. No polling.
-4. **`cluster_job_status(project, env, job_id)`** — query whenever asked. sacct-backed; read `verdict`.
-5. **`download(project, env, remote_abs_path, local_path)`** — pull outputs back; sha256 round-trip (or Globus end-to-end).
+1. **`stage_apptainer_image(project, env, freeze_request_key)`** — idempotent .sif delivery, once per env the pipeline's stages run in (`run_production_pipeline` refuses with the exact calls otherwise).
+2. **`upload(project, env, local_path, remote_abs_path)`** (×N) — push the data the samplesheet names, or point the samplesheet and `params.yaml` at data already on the cluster. Paths in the sheet are absolute AT THE CLUSTER.
+3. **`run_production_pipeline(project, env, pipeline, run_dir, samplesheet=<local csv>, params={…})`** — copies the rendered directory into `run_dir`, checks images and paths at the locus and the references against the seal, `sbatch launcher.sh`, returns `job_id`, writes the manifest. No polling. The same `run_dir` again re-launches with `-resume`.
+4. **`cluster_job_status(project, env, job_id, run_dir=…)`** — the manager's SLURM row plus every task from `runs/<stamp>/trace.txt`; read `pipeline.verdict`.
+5. **`download(project, env, remote_abs_path, local_path)`** — pull `results/` back; sha256 round-trip (or Globus end-to-end).
 
 Pre-submission exploration: `snapshot_project` (read-only recursive capped listings, `name_glob`-filterable) and `cluster_module_avail` (pick a real `module load X/Y.Z` line).
 
