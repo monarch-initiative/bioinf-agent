@@ -108,10 +108,9 @@ def list_resources(inputs: dict, config: dict) -> dict:
                                     # + downstream basecaller pipelines can route by file_format
                                     # / chemistry / suggested_model.
                                     "file_format":     smp.get("file_format", "fastq"),
-                                    "chemistry":       smp.get("chemistry"),
-                                    "flowcell":        smp.get("flowcell"),
-                                    "kit":             smp.get("kit"),
-                                    "suggested_model": smp.get("suggested_model"),
+                                    # Pod5 / nanopore fields ride only when the manifest states them.
+                                    **{k: smp[k] for k in ("chemistry", "flowcell", "kit", "suggested_model")
+                                       if smp.get(k) is not None},
                                     "core_dir": str(core_dir),
                                 })
 

@@ -88,3 +88,22 @@ def test_multiple_producers_in_one_consumer():
          "detected_outputs": ["/d/3.txt"]},
     ]
     assert {s["step"]: s for s in _derive_step_dependencies(steps)}[3]["depends_on"] == [1, 2]
+
+
+def test_a_cluster_step_consuming_a_prior_steps_remote_output_gets_its_producer():
+    """A cluster step's outputs live at the locus that made them (`remote_outputs`);
+    the next cluster step consumes them there. Registering only `detected_outputs`
+    sealed every cluster chain with `depends_on: []` while I8 passed."""
+    steps = [
+        {"step": 1, "tool": "picard",
+         "inputs": [{"path": "/work/scratch/proj/a/R1.fq"}],
+         "detected_outputs": ["/laptop/fetched/a/unmapped.bam"],
+         "remote_outputs": ["/work/scratch/proj/a/unmapped.bam"]},
+        {"step": 2, "tool": "picard",
+         "inputs": [{"path": "/work/scratch/proj/a/unmapped.bam"}],
+         "detected_outputs": ["/laptop/fetched/b/metrics.txt"],
+         "remote_outputs": ["/work/scratch/proj/b/metrics.txt"]},
+    ]
+    by = {s["step"]: s for s in _derive_step_dependencies(steps)}
+    assert by[1]["depends_on"] == []
+    assert by[2]["depends_on"] == [1]

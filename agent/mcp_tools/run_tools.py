@@ -109,6 +109,12 @@ def run_pipeline_step(
                   response as `output_types_unmatched` so a typo doesn't go
                   silent.
 
+    watch_dir: the directory whose new and modified files are the step's outputs
+                  (default: the first input's directory). A missing watch_dir is
+                  created, so no shell is needed to prepare an output directory.
+    Long stdout/stderr is cut to head+tail in the response; the full text is on
+    disk at `log_path`.
+
     pipeline_id is required (this primitive's purpose is the merged flow).
     """
     if not pipeline_id:
@@ -116,6 +122,7 @@ def run_pipeline_step(
                        error="pipeline_id is required for run_pipeline_step")
     if (_bad := _inputs_refusal(inputs, "run_pipeline_step.invalid_inputs")):
         return _bad
+    watch_dir_created = _ensure_watch_dir(watch_dir)
 
     result = _ms._env_mgr.run_in_env(
         env_name, command, timeout=timeout_seconds, inputs=inputs,
@@ -206,9 +213,22 @@ def run_pipeline_step(
             "created/modified under watch_dir (default: the input's directory). If "
             "your command writes via `-o <path>`/`> <path>` to a different dir, pass "
             "watch_dir=<that dir> so the output is detected and validated — otherwise "
-            "it will fail I3 (no validated detected_outputs) at seal_workflow."
+            "it will fail I3 (no validated detected_outputs) at seal_workflow. A missing "
+            "watch_dir is created for you."
         )
-    return out
+    if watch_dir_created:
+        out["watch_dir_created"] = watch_dir
+    return _ms._shrink_stdio_for_response(out, label=f"step.{pipeline_id}", log_subdir="step_logs")
+
+
+def _ensure_watch_dir(watch_dir: str) -> bool:
+    """Create the caller's watch_dir when it does not exist yet; True when created.
+    The directory a step writes into is the step's business, not a shell errand the
+    agent has to run first (and may not be allowed to)."""
+    if not watch_dir or Path(watch_dir).exists():
+        return False
+    Path(watch_dir).mkdir(parents=True, exist_ok=True)
+    return True
 
 
 @mcp.tool()
@@ -245,7 +265,9 @@ def run_step_in_container(
 
     output_types: {basename|ext: validator_type}. inputs: paths (or {path,…}).
     extra_mounts: ["host:container", …] for data outside data_dir. `platform` defaults
-    to the frozen record's own (an arm64 image runs as arm64); pass one only to override."""
+    to the frozen record's own (an arm64 image runs as arm64); pass one only to override.
+    A missing watch_dir is created. Long stdout/stderr is cut to head+tail in the
+    response; the full text is on disk at `log_path`."""
     if not pipeline_id:
         return refused("run_container.pipeline_id_required",
                        error="pipeline_id is required for run_step_in_container")
@@ -303,6 +325,7 @@ def run_step_in_container(
             h, c = m.split(":", 1)
             mounts.append((h, c))
 
+    watch_dir_created = _ensure_watch_dir(watch_dir)
     wdir = (Path(watch_dir).resolve() if watch_dir else ddir)
 
     def _snap() -> dict:
@@ -387,6 +410,10 @@ def run_step_in_container(
         "validations":       validations,
         "validation_count":  len(validations),
     }
+    if watch_dir_created:
+        payload["watch_dir_created"] = watch_dir
+    payload = _ms._shrink_stdio_for_response(payload, label=f"step.{pipeline_id}",
+                                             log_subdir="step_logs")
     if res.get("returncode") == 0:
         return proven("run_container.step_ran", **payload)
     return broke("run_container.step_failed", **payload)

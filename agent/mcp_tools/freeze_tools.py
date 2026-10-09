@@ -96,6 +96,36 @@ def _validate_tools_in_image(image: str, platform: str, tools: list,
     return rows
 
 
+def _compact_freeze_response(out: dict) -> dict:
+    """What the caller reads inline. The record on disk (EnvCache, attestation, ENV
+    report) is complete; the response keeps every field but cuts the two that carry
+    the record's bulk and that the next call never reads: each verification's
+    captured banner/output down to its first lines, and the coverage clauses down to
+    the ones that are not plainly checked (the summary line counts the rest)."""
+    if not isinstance(out, dict):
+        return out
+    vs = out.get("verifications")
+    if isinstance(vs, list):
+        out["verifications"] = [_compact_verification(v) for v in vs]
+    cc = out.get("contract_coverage")
+    if isinstance(cc, dict) and isinstance(cc.get("clauses"), list):
+        out["contract_coverage"] = {**cc, "clauses": [c for c in cc["clauses"]
+                                                      if not (isinstance(c, dict) and c.get("status") == "checked")]}
+    return out
+
+
+def _compact_verification(v: object) -> object:
+    if not isinstance(v, dict):
+        return v
+    v = dict(v)
+    for key in ("banner", "out"):
+        text = v.get(key)
+        if isinstance(text, str) and len(text) > 300:
+            lines = [ln for ln in text.splitlines() if ln.strip()]
+            v[key] = "\n".join(lines[:3])[:300] + f" … [{len(text)} chars in the record]"
+    return v
+
+
 def _shipped_binary_entry(step: dict) -> dict:
     """One `shipped_binaries[]` record from a baked long-tail step, as the declared
     `ShippedBinary` shape. The baked command IS this tier's provenance; the per-tool
@@ -332,8 +362,8 @@ def freeze(
         return _ms._summarize_sbom_in_response(
             # merge (not kwargs) so a business key already in `cached` (e.g.
             # request_key) can't collide with an explicit kwarg → TypeError.
-            proven("freeze.cache_hit",
-                   **{**cached, "success": True, "cache_hit": True, "request_key": rkey})
+            _compact_freeze_response(proven("freeze.cache_hit",
+                   **{**cached, "success": True, "cache_hit": True, "request_key": rkey}))
         )
 
     # A request-based FALLBACK anchor only. The authoritative content_digest is the
@@ -569,8 +599,10 @@ def freeze(
             license_gated=gated, licenses=licenses, redistributable=not gated,
             content_digest=content_digest,
             build_method="adopt", adopt_image=adopt.get("image_by_digest", image))
-    if shipped_binaries:
-        record["shipped_binaries"] = shipped_binaries
+    # Always written: an empty list states that this image ships no agent-built
+    # binary (an adopted biocontainer, or packages alone), which the contract reads
+    # as NOT_APPLICABLE; an absent key is a record that predates the field, UNOBSERVED.
+    record["shipped_binaries"] = shipped_binaries
     record["validation_locus"] = validation_locus
     # report inputs — all runtime-captured (from the BuildResult), so the env
     # report rendered from them can't be faked. Absent on the adopt path.
@@ -805,7 +837,7 @@ def freeze(
     # summarization fires. ~10-15k tokens of SBOM rows eliminated per response
     # with zero loss of accessible information (the agent Reads the HTML when
     # it wants the full SBOM).
-    return _ms._summarize_sbom_in_response(out)
+    return _compact_freeze_response(_ms._summarize_sbom_in_response(out))
 
 
 @mcp.tool()
@@ -1021,13 +1053,13 @@ def freeze_from_image(
     if _stop:
         return _stop
     from agent.skills import freeze_from_image as _ffi
-    return _ffi.freeze_from_image(
+    return _compact_freeze_response(_ffi.freeze_from_image(
         image=image, tools=[dict(t) for t in tools], name=name, version=version,
         platform=platform, build_method=build_method,
         dockerfile_source=dict(dockerfile_source) if dockerfile_source else None,
         gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
-        env_dir=_workspace.env_dir(name))
+        env_dir=_workspace.env_dir(name)))
 
 
 @mcp.tool()
@@ -1063,9 +1095,9 @@ def build_env_from_authors_recipe(
     if _stop:
         return _stop
     from agent.skills import freeze_from_image as _ffi
-    return _ffi.build_from_authors_recipe(
+    return _compact_freeze_response(_ffi.build_from_authors_recipe(
         repo=repo, tools=[dict(t) for t in tools], name=name, recipe=recipe, ref=ref,
         version=version, platform=platform, build_args=dict(build_args or {}),
         gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
-        env_dir=_workspace.env_dir(name))
+        env_dir=_workspace.env_dir(name)))

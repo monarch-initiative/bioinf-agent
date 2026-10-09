@@ -158,6 +158,29 @@ def _last_line(text: str, limit: int = 200) -> str:
     return lines[-1][:limit] if lines else ""
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """SIGKILL every descendant of a monitored child, then the child itself.
+
+    The monitored command is `conda run` → bash → the tool. Killing the Popen handle
+    alone leaves the rest alive, reparented, and holding the output pipes, so the
+    communicate() that follows waits for them and the timeout never takes effect.
+    """
+    try:
+        import psutil
+        descendants = psutil.Process(proc.pid).children(recursive=True)
+    except Exception:
+        descendants = []
+    for p in descendants:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+
+
 class EnvManager:
     def __init__(self, config: dict):
         self.config = config
@@ -2106,6 +2129,11 @@ class EnvManager:
         resource_usage gets populated. Invariant I7 refuses to finalize if a
         rc=0 step has no resource_usage, so an agent cannot synthesize one
         without going through this monitor.
+
+        The child gets no stdin. This server's fd 0 is the MCP transport, and a
+        tool that reads stdin when given no file (`cat`, `sort`, most `tool sub`
+        forms) would otherwise wait on the protocol socket for ever. On timeout
+        the whole tree is killed, see _kill_tree.
         """
         import threading
         try:
@@ -2118,6 +2146,7 @@ class EnvManager:
         try:
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -2179,8 +2208,11 @@ class EnvManager:
             stdout, stderr = proc.communicate(timeout=timeout)
             rc = proc.returncode
         except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout, stderr = proc.communicate()
+            _kill_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                stdout, stderr = "", ""
             stderr = (stderr or "") + f"\nCommand timed out after {timeout}s: {' '.join(cmd)}"
             rc = -1
         except Exception as e:

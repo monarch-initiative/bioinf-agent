@@ -346,7 +346,9 @@ def _derive_step_dependencies(pipeline_steps: list) -> list:
     the overlap.
 
     Derivation is exact-path input↔output overlap (the byte-identical lineage
-    edge), last-writer-wins in step order (matches _check_lineage_integrity). Only
+    edge), last-writer-wins in step order (matches _check_lineage_integrity). A
+    step's `remote_outputs` count as its outputs: a cluster step's files live at the
+    locus that made them, and the next cluster step consumes them there. Only
     fills depends_on when currently absent/empty (honors the 'if absent' contract);
     an explicit value is left untouched. Returns NEW step dicts (no draft mutation)."""
     # Walk in step-number order to build the producer index (last writer wins),
@@ -370,7 +372,8 @@ def _derive_step_dependencies(pipeline_steps: list) -> list:
             s2["depends_on"] = sorted(deps)
         enriched[sn] = s2
         # Register outputs AFTER deriving deps so a step can't depend on itself.
-        for o in (s2.get("detected_outputs") or []) + (s2.get("outputs") or []):
+        for o in ((s2.get("detected_outputs") or []) + (s2.get("outputs") or [])
+                  + (s2.get("remote_outputs") or [])):
             if isinstance(o, str) and o:
                 producer[o] = sn
 

@@ -178,9 +178,10 @@ _STDIO_HEAD_KEEP  = 1500    # leading chars in the shrunk response
 _STDIO_TAIL_KEEP  = 2500    # trailing chars (errors typically live at the tail)
 
 
-def _shrink_stdio_for_response(result: dict, *, label: str) -> dict:
+def _shrink_stdio_for_response(result: dict, *, label: str,
+                               log_subdir: str = "install_logs") -> dict:
     """Cap stdout/stderr in the LIVE response to head+tail, preserving full
-    bytes on disk under env_reports/install_logs/{label}.{ts}.log.
+    bytes on disk under scratch/<log_subdir>/{label}.{ts}.log.
 
     Truth surface unchanged — install_step records `command` + `returncode` +
     `installed_packages` (NEVER `stdout`/`stderr` from this dict, verified by
@@ -199,7 +200,7 @@ def _shrink_stdio_for_response(result: dict, *, label: str) -> dict:
         return result
 
     import time
-    log_dir = workspace.scratch_dir("install_logs")
+    log_dir = workspace.scratch_dir(log_subdir)
     safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in label)[:60]
     log_path = log_dir / f"{safe}.{int(time.time() * 1000)}.log"
     full = (f"=== COMMAND ===\n{result.get('command','')}\n"

@@ -227,14 +227,41 @@ def _docker_ids(kind: str) -> set[str] | None:
     return {line.strip() for line in r.stdout.splitlines() if line.strip()}
 
 
+def _docker_tags() -> dict[str, str] | None:
+    """{repo:tag: id} for every tagged image the daemon holds; None without a daemon."""
+    try:
+        r = subprocess.run(["docker", "image", "ls", "--no-trunc", "--format", "{{.Repository}}:{{.Tag}} {{.ID}}"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    tags: dict[str, str] = {}
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and not parts[0].startswith("<none>"):
+            tags[parts[0]] = parts[1]
+    return tags
+
+
+def _docker(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", *args], capture_output=True, text=True)
+
+
 def docker_snapshot() -> dict:
-    return {"image": _docker_ids("image"), "container": _docker_ids("container")}
+    return {"image": _docker_ids("image"), "container": _docker_ids("container"), "tags": _docker_tags()}
 
 
 def docker_cleanup(before: dict) -> dict:
     """Remove what the run added to the daemon — the containers first, then the images —
-    and only that. An id present before the run is never touched; nothing is pruned."""
-    result: dict = {"containers_removed": [], "images_removed": [], "failed": []}
+    and only that. An id present before the run is never touched; nothing is pruned.
+
+    A run that names an env the host already has re-points the host's tag at its own
+    new image, and removing that image leaves the host's image untagged. Every tag the
+    host held before is put back on its id when that id still exists; a tag whose id is
+    gone is reported, since nothing can restore it."""
+    result: dict = {"containers_removed": [], "images_removed": [], "failed": [],
+                    "host_tags_restored": [], "host_tags_lost": []}
     after = docker_snapshot()
     for kind, rm in (("container", ["docker", "rm", "-f"]), ("image", ["docker", "image", "rm", "-f"])):
         if before.get(kind) is None or after.get(kind) is None:
@@ -246,6 +273,14 @@ def docker_cleanup(before: dict) -> dict:
                 result[f"{kind}s_removed"].append(ident)
             else:
                 result["failed"].append({"kind": kind, "id": ident, "stderr": r.stderr.strip()[-400:]})
+    now = _docker_tags()
+    for tag, ident in sorted((before.get("tags") or {}).items()):
+        if now is None or now.get(tag) == ident:
+            continue
+        if _docker("image", "inspect", ident).returncode == 0 and _docker("tag", ident, tag).returncode == 0:
+            result["host_tags_restored"].append(tag)
+        else:
+            result["host_tags_lost"].append({"tag": tag, "id": ident})
     return result
 
 
@@ -340,6 +375,8 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
     if cl:
         print(f"   cleanup: {len(cl['images_removed'])} images, {len(cl['containers_removed'])} containers removed"
               f"{'; ' + str(len(cl['failed'])) + ' failed' if cl['failed'] else ''}"
+              f"{'; host tags restored: ' + ', '.join(cl['host_tags_restored']) if cl.get('host_tags_restored') else ''}"
+              f"{'; HOST TAGS LOST: ' + str(cl['host_tags_lost']) if cl.get('host_tags_lost') else ''}"
               f"{'; ' + cl['skipped'] if cl.get('skipped') else ''}", flush=True)
     return run_dir
 

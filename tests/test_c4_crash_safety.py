@@ -124,9 +124,8 @@ def _battery():
         # run_production_pipeline: a nonexistent project → get_project raises
         # KeyError, caught into a tagged broke BEFORE any docker/ssh/dispatch.
         ("run_production_pipeline", B.run_production_pipeline,
-         dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV, workflow_name="wf",
-              tool_name="t", command="c", inputs={}, outputs={},
-              freeze_request_key=BAD_KEY, workflow_dir="/wf"), True),
+         dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV, pipeline="nope",
+              run_dir="/wf"), True),
         ("stage_apptainer_image", B.stage_apptainer_image,
          dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV, freeze_request_key=BAD_KEY), True),
         ("run_step_on_cluster", B.run_step_on_cluster,

@@ -1,535 +1,718 @@
 """
-run_production — the locus-agnostic PRODUCTION run.
+run_production — run a RENDERED pipeline in production on a compute env.
 
-ONE verb, `run_production_pipeline(project, env, ...)`, runs a frozen env's
-workflow against the user's project data and DOCUMENTS the run (a manifest) —
-it does not seal a WorkflowSpec (that's the validation verbs' job). It dispatches
-on the compute env's `type`:
+ONE verb, `run_production_pipeline(project, env, pipeline, run_dir, …)`. The rendered
+pipeline directory — what `render_pipeline` wrote under <workspace>/pipelines/<name>/ —
+is copied into `run_dir` on the env named, the caller's samplesheet becomes its
+samples.csv, and the run starts the one way a rendered pipeline runs: `sbatch
+launcher.sh` on an ssh env, `nextflow run main.nf -profile local …` in the background on
+a local env. The submission is documented in a manifest and the call returns; it polls
+nothing (`cluster_job_status` / `check_job` do) and seals nothing.
 
-  local → render a re-runnable `run.sh` (`docker run` the frozen image against
-          `workflow_dir`, same-path bind mounts), launch it in the background via
-          the JobManager, write a manifest. No scheduler — the laptop is the compute.
-  ssh   → delegate to `submit_workflow_job` (nextflow + slurm + apptainer),
-          sourcing the module names + slurm policy from the ENV config and
-          deriving the staged `.sif` path from `freeze_request_key`. Refuses if
-          the `.sif` isn't staged (non-composite — stage_apptainer_image first).
+Before anything is copied or launched it checks, AT THE LOCUS: every image the stages run
+in is there (the staged .sif on a cluster, the docker image on a laptop); every path the
+run binds — the shared path parameters and every path cell of the samplesheet — exists;
+and the shared references still hash to what the workflow was SEALED against where a
+sealed anchor exists. A reference that diverged launches, reported as `degraded`, never
+as a bare success.
 
-Plug-and-play: the SAME call runs on either locus — swap `compute_env_name`. What
-differs (scheduler, container runtime, module names) is an env property, never a
-call arg; `resources` (mem/cpus/time) is the one uniform per-run knob, honored
-per-locus (docker --memory/--cpus locally; #SBATCH on the cluster). Completes the
-run grid: validate = run_step_in_container / run_step_on_cluster; production =
-run_production_pipeline (local / ssh).
+A run directory is Nextflow's launch directory, and `-resume` only works from the same
+one: a second call naming a `run_dir` that already holds this pipeline launches there
+again without re-copying (the samples.csv in place is the one used), and a `run_dir`
+holding a different render is refused.
 """
 from __future__ import annotations
 
+import csv
+import glob
 import os
 import re
 import shlex
+import shutil
 import subprocess
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
 
-from agent.skills import compute_access, data_pins, stage_apptainer, submit_workflow
+import yaml
+
+from agent.skills import cluster_jobs, compute_access, data_pins, stage_apptainer, submit_workflow, transfer, workspace
 from agent.skills.outcomes import proven, refused, broke, degraded
-from agent.skills import workspace
+from agent.skills.pipeline_record import PipelineRecord, load_pipeline_record
+from agent.skills.pipeline_render import (MANIFEST_PATH, RECORD_PATH, SAMPLESHEET_FILENAME,
+                                          _edited_since_render, parse_manifest)
+from agent.skills.pipeline_render_nextflow import RUN_LOCAL, SAMPLESHEET_PARAM
+from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+
+#: A value handed to Nextflow on the launch line: a path, a word, a number. Every character
+#: is one `shlex.quote` leaves bare, so the line reads as written on both loci.
+_VALUE_RE = re.compile(r"^[A-Za-z0-9_./+:,=@%-]{1,4096}$")
+#: A SLURM walltime: minutes, M:S, H:M:S, D-H, D-H:M, D-H:M:S.
+_WALLTIME_RE = re.compile(r"^(\d+|\d+:\d{2}|\d+:\d{2}:\d{2}|\d+-\d+|\d+-\d+:\d{2}|\d+-\d+:\d{2}:\d{2})$")
+_SAMPLE_KEY = "sample"
+_PARAMS_FILE = "params.yaml"
+_REMOTE_CHECK_CHUNK = 400
 
 
-# ${name} — the SAME placeholder syntax workflow_render uses, so one command
-# string is valid on both loci (the local path can't invent a `{name}` dialect).
-_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+class _Refusal(Exception):
+    """A gate said no before anything was copied or launched; carries the tagged return."""
+    def __init__(self, result: dict):
+        super().__init__(str(result.get("error", "")))
+        self.result = result
 
 
-# ---------------------------------------------------------------------------
-# Local rendering — the "simple shell script"
-# ---------------------------------------------------------------------------
-
-def _render_local_command(command: str,
-                          inputs: Mapping[str, str],
-                          outputs: Mapping[str, str]) -> str:
-    """Substitute every ${PLACEHOLDER} with its shell-quoted value, held to the
-    exact contract the cluster path enforces: every placeholder declared (I6),
-    inputs ABSOLUTE, outputs BARE filenames written into workflow_dir.
-
-    One place the two loci deliberately DIVERGE: the command's own content. Here
-    the substituted command is shell-quoted once into `run.sh`, so quotes,
-    backslashes and bare `$VAR` arrive at docker intact and are accepted. The
-    cluster path refuses all three, because main.nf wraps the command in a Groovy
-    interpolated string that silently rewrites them
-    (`workflow_render._check_command_renders_faithfully`). That is a real
-    difference in what each locus can carry faithfully, not an oversight on
-    either side — do not "reconcile" them by loosening the cluster check."""
-    subs = {**dict(inputs or {}), **dict(outputs or {})}
-
-    undeclared = sorted(p for p in set(_PLACEHOLDER_RE.findall(command or ""))
-                        if p not in subs)
-    if undeclared:
-        raise ValueError(
-            f"command has ${{PLACEHOLDER}}(s) not declared in inputs/outputs: "
-            f"{undeclared}")
-    for key, val in (inputs or {}).items():
-        if not isinstance(val, str) or not val.startswith("/"):
-            raise ValueError(
-                f"inputs[{key!r}] must be an absolute path (got {val!r})")
-    for key, val in (outputs or {}).items():
-        if (not isinstance(val, str) or not val or "/" in val
-                or ".." in val.split("/")):
-            raise ValueError(
-                f"outputs[{key!r}] must be a bare filename written into "
-                f"workflow_dir (got {val!r})")
-
-    return _PLACEHOLDER_RE.sub(lambda m: shlex.quote(subs[m.group(1)]), command)
-
-
-def _docker_resource_flags(resources: Mapping) -> list[str]:
-    """The docker-run limits a laptop can enforce from `resources`. `time` has
-    no docker analog and is skipped (a local run isn't wall-clock killed)."""
-    flags: list[str] = []
-    if resources.get("mem_gb"):
-        flags += ["--memory", f"{resources['mem_gb']}g"]
-    if resources.get("cpus"):
-        flags += ["--cpus", str(resources["cpus"])]
-    return flags
-
-
-def _render_run_script(*, image: str, workdir: str, platform: str,
-                       concrete_command: str, resources: Mapping,
-                       mounts: list) -> str:
-    """The re-runnable local production script (the local analog of launcher.sh).
-    Each dir in `mounts` is bind-mounted same-path so absolute paths resolve
-    verbatim: workflow_dir, plus the parent of any input outside it."""
-    res_flags = _docker_resource_flags(resources or {})
-    res_line = ("  " + " ".join(shlex.quote(f) for f in res_flags) + " \\\n"
-                if res_flags else "")
-    mount_lines = "".join(
-        f"  -v {shlex.quote(m)}:{shlex.quote(m)} \\\n" for m in mounts)
-    return (
-        "#!/usr/bin/env bash\n"
-        "# run_production_pipeline (local) — runs the frozen env image here.\n"
-        "# Re-run:  bash <this script>\n"
-        "set -euo pipefail\n"
-        "\n"
-        f"IMAGE={shlex.quote(image)}\n"
-        f"WORKDIR={shlex.quote(workdir)}\n"
-        f"PLATFORM={shlex.quote(platform)}\n"
-        "\n"
-        "# Pull the image if absent (an adopted biocontainer is by-digest).\n"
-        'docker image inspect "$IMAGE" >/dev/null 2>&1 || '
-        'docker pull --platform "$PLATFORM" "$IMAGE"\n'
-        "\n"
-        'docker run --rm --platform "$PLATFORM" \\\n'
-        f"{res_line}"
-        f"{mount_lines}"
-        '  -w "$WORKDIR" \\\n'
-        '  "$IMAGE" \\\n'
-        f"  bash -c {shlex.quote(concrete_command)}\n"
-    )
-
-
-def _short_stamp(iso: str) -> str:
-    """Filesystem-safe run stamp from an ISO timestamp (supplied by the caller)."""
-    return re.sub(r"[^0-9]", "", iso)[:14] or "run"
+def _refuse(code: str, error: str, **fields) -> _Refusal:
+    return _Refusal(refused(code, success=False, error=error, **fields))
 
 
 # ---------------------------------------------------------------------------
-# Local locus — render run.sh, launch in the background, document
+# The rendered pipeline
 # ---------------------------------------------------------------------------
 
-def _run_local(*, project: dict, project_name: str, compute_env_name: str,
-               record: dict, freeze_request_key: str, workflow_name: str,
-               tool_name: str, command: str, inputs: Mapping[str, str],
-               outputs: Mapping[str, str], workflow_dir: str,
-               resources: Mapping, platform: str,
-               reference_check: Mapping,
-               _job_manager, _docker_available, _daemon_is_remote) -> dict:
-    image = record.get("image")
-    if not image:
-        return refused("run_production.no_image_handle",
-            error=f"freeze record for {freeze_request_key!r} has no image handle")
+def _load_pipeline(pipeline: str) -> tuple[PipelineRecord, Path, dict[str, str], list[str]]:
+    """The record, its directory, the manifest {relative path: sha256} and the files
+    edited since the render. `pipeline` is a name under the pipelines zone or an absolute
+    path to a rendered directory."""
+    if not isinstance(pipeline, str) or not pipeline.strip():
+        raise _refuse("run_production.pipeline_required",
+                      "name a rendered pipeline, or give its directory",
+                      remedy="list_installed_pipelines shows what is rendered; render_pipeline makes one")
+    p = Path(pipeline)
+    zone = workspace.pipelines_dir()
+    pdir = p if p.is_absolute() else zone / pipeline
+    if not (pdir / RECORD_PATH).is_file() or not (pdir / MANIFEST_PATH).is_file():
+        have = sorted(d.name for d in zone.iterdir() if (d / RECORD_PATH).is_file()) if zone.is_dir() else []
+        raise _refuse("run_production.no_rendered_pipeline",
+                      f"{pdir} is not a rendered pipeline (no {RECORD_PATH})",
+                      rendered_pipelines=have,
+                      remedy="render_pipeline(sealed_workflow=…) first, or name one of rendered_pipelines")
+    try:
+        record = load_pipeline_record(pdir / RECORD_PATH)
+    except Exception as e:
+        raise _refuse("run_production.pipeline_record_invalid",
+                      f"{pdir / RECORD_PATH} is not a pipeline record this system wrote: "
+                      f"{type(e).__name__}: {str(e)[:300]}",
+                      remedy="re-render the pipeline")
+    manifest = parse_manifest((pdir / MANIFEST_PATH).read_text())
+    return record, pdir, manifest, _edited_since_render(pdir, manifest)
 
-    # Docker preflight — the background run.sh does `docker run`; fail loud here.
-    docker_refusal = _docker_available()
-    if docker_refusal:
-        return docker_refusal
-    if _daemon_is_remote():
-        return refused("run_production.remote_daemon",
-            error="run_production_pipeline (local) bind-mounts local paths, but the "
-            "active Docker daemon is REMOTE (DOCKER_HOST) and can't see them.")
 
-    # workflow_dir must exist (no auto-mkdir) and be authorized upload+exec —
-    # the same production wall as the cluster.
-    normed_dir = submit_workflow._validate_workflow_dir(workflow_dir)
-    if not Path(normed_dir).is_dir():
-        return refused("run_production.workflow_dir_missing",
-            error=f"workflow_dir {normed_dir!r} does not exist — create it first "
-            f"(the agent does not mkdir in your territory).")
-    compute_access.check_permission(project, compute_env_name, normed_dir, "upload")
-    compute_access.check_permission(project, compute_env_name, normed_dir,
-                                    "run_production_pipeline")
+def _carried_files(pdir: Path, manifest: Mapping[str, str]) -> list[str]:
+    """Relative paths copied into a run directory: every rendered file but the example
+    samplesheet, plus the manifest that identifies the render."""
+    rels = [rel for rel in sorted(manifest) if rel != SAMPLESHEET_FILENAME and (pdir / rel).is_file()]
+    if MANIFEST_PATH not in rels:
+        rels.append(MANIFEST_PATH)
+    return rels
 
-    concrete_command = _render_local_command(command, inputs, outputs)
-    mounts = [normed_dir]
-    for val in (inputs or {}).values():
-        parent = os.path.normpath(str(Path(str(val)).parent))
-        if (parent != normed_dir and not parent.startswith(normed_dir + os.sep)
-                and parent not in mounts):
-            mounts.append(parent)
-    script = _render_run_script(image=image, workdir=normed_dir, platform=platform,
-                                concrete_command=concrete_command,
-                                resources=resources, mounts=mounts)
-    run_sh = Path(normed_dir) / f"{workflow_name}.run.sh"
-    run_sh.write_text(script)
-    run_sh.chmod(0o755)
 
-    # Background launch — a real production run outlives the stream watchdog, so
-    # we submit-and-document like the cluster path.
-    started = datetime.now(timezone.utc).isoformat()
-    job_id = f"prod_{workflow_name}_{_short_stamp(started)}"
-    launch = _job_manager.start(command=f"bash {shlex.quote(str(run_sh))}",
-                                job_id=job_id, working_dir=normed_dir,
-                                tool="run_production_pipeline")
-    if "error" in launch:
-        return {**launch, "run_script": str(run_sh)}
-    job_id = launch.get("job_id", job_id)
+def _params_file(pdir: Path) -> dict:
+    """params.yaml as the run will read it — the file, not the record, because the file
+    is the one a person edits after the render."""
+    try:
+        raw = yaml.safe_load((pdir / _PARAMS_FILE).read_text()) or {}
+    except Exception as e:
+        raise _refuse("run_production.params_unreadable",
+                      f"{pdir / _PARAMS_FILE} is not valid YAML: {type(e).__name__}: {str(e)[:200]}",
+                      remedy="fix the file; it is read as `-params-file`")
+    if not isinstance(raw, dict):
+        raise _refuse("run_production.params_unreadable", f"{pdir / _PARAMS_FILE} is not a mapping",
+                      remedy="one `key: value` per line")
+    return {str(k): ("" if v is None else str(v)) for k, v in raw.items()}
 
-    manifest = {
-        "locus": "local", "project_name": project_name,
-        "compute_env": compute_env_name, "workflow_name": workflow_name,
-        "tool_name": tool_name, "job_id": job_id, "workflow_dir": normed_dir,
-        "command": command, "concrete_command": concrete_command,
-        "inputs": dict(inputs), "outputs": dict(outputs), "image": image,
-        "image_digest": record.get("image_digest"),
-        "freeze_request_key": freeze_request_key, "resources": dict(resources or {}),
-        # The DATA pins, alongside the env pin. A manifest that records
-        # image_digest but nothing about the references it consumed documents
-        # half a run.
-        "reference_check": dict(reference_check),
-        "run_script": str(run_sh), "submitted_at": started,
-        "follow_up": {
-            "poll": f"call check_job(job_id={job_id!r})",
-            "outputs": "the declared outputs land under workflow_dir",
-            "rerun": f"bash {run_sh}",
-        },
-    }
-    manifest_path = submit_workflow._write_submission_manifest(
-        project_name=project_name, workflow_name=workflow_name,
-        job_id=job_id, manifest=manifest)
 
-    return proven("run_production.local_launched", success=True,
-        locus="local", compute_env=compute_env_name, job_id=job_id,
-        workflow_dir=normed_dir, run_script=str(run_sh),
-        image=image, submitted_at=started, manifest_path=manifest_path,
-        follow_up=manifest["follow_up"])
+def _effective_params(pdir: Path, overrides: Optional[Mapping]) -> tuple[dict[str, str], list[str]]:
+    """{params.yaml key: value} as the run will see it — the file's values under the
+    caller's overrides — and the launch-line tokens that carry the overrides."""
+    effective = _params_file(pdir)
+    allowed = set(effective) - {SAMPLESHEET_PARAM[0]}
+    tokens: list[str] = []
+    for key, value in (overrides or {}).items():
+        k = str(key)
+        if k not in allowed:
+            raise _refuse("run_production.unknown_param", f"{k!r} is not a parameter of this pipeline",
+                          params=sorted(allowed),
+                          remedy=f"params= takes the keys of {_PARAMS_FILE}; the samplesheet is always "
+                                 f"{SAMPLESHEET_FILENAME} in the run directory")
+        sv = str(value)
+        if not _VALUE_RE.match(sv):
+            raise _refuse("run_production.unsafe_param_value",
+                          f"params[{k!r}] holds characters the launch line cannot carry: {sv[:80]!r}",
+                          remedy=f"a path, a word or a number; edit {_PARAMS_FILE} in the run directory for anything else")
+        effective[k] = sv
+        tokens += [f"--{k}", sv]
+    return effective, tokens
+
+
+def _read_samplesheet(path: str, record: PipelineRecord) -> tuple[list[str], list[dict]]:
+    """The caller's samplesheet, checked against the columns the pipeline reads."""
+    sp = Path(path)
+    if not sp.is_file():
+        raise _refuse("run_production.samplesheet_missing", f"samplesheet {path!r} is not a file on this machine",
+                      remedy="give the local path of a CSV with one row per sample")
+    with sp.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        header = [h.strip() for h in (reader.fieldnames or [])]
+        rows = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in reader]
+    need = [c.name for c in record.samplesheet.columns]
+    missing = [c for c in need if c not in header]
+    if missing:
+        raise _refuse("run_production.samplesheet_columns",
+                      f"samplesheet {path} lacks column(s) {missing}; the pipeline reads {need}",
+                      required_columns=need, remedy="add the column(s); columns beyond these are carried through")
+    if not rows:
+        raise _refuse("run_production.samplesheet_empty", f"samplesheet {path} has no rows",
+                      remedy="one row per sample under the header line")
+    ids = [r.get(_SAMPLE_KEY, "") for r in rows]
+    if any(not s for s in ids) or len(set(ids)) != len(ids):
+        raise _refuse("run_production.samplesheet_sample_ids",
+                      "every row needs a unique, non-empty `sample`",
+                      remedy="`sample` is the row key: it tags every task and names results/<sample>/")
+    for col in record.samplesheet.columns:
+        if col.value_kind != "path":
+            continue
+        bad = [r.get(col.name, "") for r in rows if not r.get(col.name, "").startswith("/")]
+        if bad:
+            raise _refuse("run_production.samplesheet_relative_path",
+                          f"column {col.name!r} must hold absolute paths at the locus; got {bad[:3]}",
+                          remedy="absolute paths for data: a run resolves relative ones against its launch directory")
+    return header, rows
+
+
+def _bound_paths(record: PipelineRecord, effective: Mapping[str, str], rows: list[dict]) -> tuple[dict[str, str], list[str], list[str]]:
+    """What the run binds at the locus: {param key: absolute path} for the shared path
+    parameters, the prefixes (an index family) among them, and every path cell of the
+    samplesheet. A relative parameter value names a file inside the run directory (a
+    carried script) and is not checked at the locus."""
+    shared: dict[str, str] = {}
+    prefixes: list[str] = []
+    for p in record.params:
+        if p.kind != "shared" or p.value_kind not in ("path", "prefix"):
+            continue
+        key = p.name.lower()
+        val = effective.get(key, "")
+        if not val.startswith("/"):
+            continue
+        shared[key] = val
+        if p.value_kind == "prefix":
+            prefixes.append(val)
+    cells: list[str] = []
+    path_cols = [c.name for c in record.samplesheet.columns if c.value_kind == "path"]
+    for r in rows:
+        for c in path_cols:
+            v = r.get(c, "")
+            if v and v not in cells:
+                cells.append(v)
+    return shared, prefixes, cells
 
 
 # ---------------------------------------------------------------------------
-# Cluster locus — source specifics from the env, delegate to the proven path
+# Authorization
 # ---------------------------------------------------------------------------
 
-def _run_cluster(*, project_name: str, compute_env_name: str, env: dict,
-                 record: dict, freeze_request_key: str, workflow_name: str,
-                 tool_name: str, command: str, inputs: Mapping[str, str],
-                 outputs: Mapping[str, str], workflow_dir: str,
-                 resources: Mapping, access_path: Optional[str],
-                 timeout: int, reference_check: Mapping) -> dict:
-    # Cluster specifics come from the ENV config, never the call — that's what
-    # makes the env swappable. Refuse (don't invent) if absent.
-    modules = compute_access.get_container_modules(env)
-    missing_mods = [m for m in ("apptainer_module", "nextflow_module")
-                    if not modules.get(m)]
-    if missing_mods:
-        return refused("run_production.env_missing_modules",
-            error=f"compute env {compute_env_name!r} declares no {missing_mods} — "
-            f"add them to this env in projects_access.yaml "
-            f"(e.g. apptainer/1.5.0, nextflow/25.04.7).")
-
-    # A scheduler needs a resource request; a laptop doesn't.
-    slurm = _resources_to_slurm(resources or {})
-    if not (slurm.get("mem") and slurm.get("time")):
-        return refused("run_production.resources_required",
-            error="a cluster production run needs `resources` with at least "
-            "mem_gb and time (e.g. {'mem_gb': 8, 'time': '02:00:00', 'cpus': 4}).")
-
-    # Derive the staged .sif path (the SAME path stage_apptainer_image writes).
-    # Non-composite: require it's already staged, don't stage here.
-    ct_path = ((env.get("container_upload_target") or {}).get("path") or "").rstrip("/")
-    if not ct_path:
-        return refused("run_production.no_container_target",
-            error=f"env {compute_env_name!r} has no container_upload_target — "
-            f"declare one and stage_apptainer_image first.")
-    env_name_for_sif = record.get("name") or freeze_request_key.split("|", 1)[0]
-    content_digest = record.get("content_digest") or record.get("image_digest", "")
-    sif_remote_abs = (f"{ct_path}/{env_name_for_sif}_"
-                      f"{stage_apptainer._short_digest(content_digest)}.sif")
-    if not stage_apptainer._remote_sif_exists(env, sif_remote_abs, timeout=min(timeout, 120)):
-        return refused("run_production.sif_not_staged",
-            error=f"the frozen env's .sif is not staged on {compute_env_name!r} at "
-            f"{sif_remote_abs!r}. Call stage_apptainer_image(project, env, "
-            f"freeze_request_key={freeze_request_key!r}) first, then re-run.",
-            expected_sif=sif_remote_abs)
-
-    return submit_workflow.submit_workflow_job(
-        project_name=project_name, compute_env_name=compute_env_name,
-        workflow_dir=workflow_dir, workflow_name=workflow_name,
-        tool_name=tool_name, command=command, inputs=inputs, outputs=outputs,
-        apptainer_sif=sif_remote_abs,
-        apptainer_module=modules["apptainer_module"],
-        nextflow_module=modules["nextflow_module"],
-        slurm=slurm, access_path=access_path, timeout=timeout,
-        # The DATA pins go into the cluster manifest too. Two manifest writers
-        # with two shapes is exactly how a disclosure ends up on one locus only.
-        extra_manifest={"reference_check": dict(reference_check),
-                        "freeze_request_key": freeze_request_key})
+_ZONE_TARGET = {"scratch": compute_access.get_agent_scratch_target,
+                "pipelines": compute_access.get_agent_pipelines_target}
 
 
-def _resources_to_slurm(resources: Mapping) -> dict:
-    """Map the neutral `resources` knob to the slurm SIZING vocabulary
-    submit_workflow expects (env policy is merged separately)."""
-    out: dict = {}
-    if resources.get("mem_gb"):
-        out["mem"] = f"{resources['mem_gb']}g"
-    if resources.get("time"):
-        out["time"] = resources["time"]
-    for k in ("cpus", "gpus", "ntasks"):
-        if resources.get(k) is not None:
-            out[k] = resources[k]
-    # partition / qos pass through to the cluster locus (the local branch has no
-    # scheduler to read them). Without this a production run could ask for
-    # `gpus: N` and had NO way to say where it should land — the placement came
-    # only from the env's standing convention, so a partition discovered with
-    # `cluster_partitions` was unusable from this verb. Omitting them is still
-    # fine: the job renders `gpu_placement: undeclared` and the scheduler picks.
-    for k in ("partition", "qos"):
-        if resources.get(k):
-            out[k] = resources[k]
+def _authorize_run_dir(project: dict, env: dict, env_name: str, run_dir: str) -> str:
+    """The zone `run_dir` falls in, with upload AND exec checked for it: a run writes
+    files there and the job runs there."""
+    zone = transfer._classify_zone_and_authorize(
+        project=project, env=env, remote_abs_path=f"{run_dir}/main.nf", op="upload", primitive_name="upload")
+    name = zone["zone"]
+    if name in ("common_data", "container_upload"):
+        raise _refuse("run_production.run_dir_zone",
+                      f"{run_dir} is in the env's {name} zone, which holds reference data and images, not runs",
+                      remedy="use the env's pipelines zone, the agent's scratch, or a directory the project grants with upload+exec")
+    if name == "project_path":
+        compute_access.check_permission(project, env_name, run_dir, "run_production_pipeline")
+    else:
+        compute_access.check_env_target_capability(project, env_name, _ZONE_TARGET[name](env),
+                                                   "run_production_pipeline", zone["auth_target"])
+    return name
+
+
+# ---------------------------------------------------------------------------
+# The locus: images, paths, the data pins
+# ---------------------------------------------------------------------------
+
+def _stage_images(record: PipelineRecord) -> list[dict]:
+    """One entry per distinct image the stages run in."""
+    seen: dict[str, dict] = {}
+    for s in record.stages:
+        key = s.image or s.name
+        if key not in seen:
+            seen[key] = {"image": s.image, "sif_path": s.sif_path, "request_key": s.request_key,
+                         "env_name": s.env_name, "stages": []}
+        seen[key]["stages"].append(s.name)
+    return list(seen.values())
+
+
+def _docker_image_present(image: str) -> bool:
+    try:
+        r = subprocess.run(["docker", "image", "inspect", image], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return r.returncode == 0
+
+
+def _check_images_local(record: PipelineRecord) -> None:
+    missing = [im for im in _stage_images(record) if not im["image"] or not _docker_image_present(im["image"])]
+    if missing:
+        raise _refuse("run_production.image_missing",
+                      f"{len(missing)} image(s) the pipeline runs in are not in the local Docker daemon: "
+                      f"{[im['image'] for im in missing]}",
+                      missing_images=missing,
+                      remedy="`docker load -i <workspace>/environments/<env>/<env>.tar`, or re-run freeze for the env")
+
+
+def _check_images_cluster(record: PipelineRecord, env: dict, env_name: str, project_name: str, timeout: int) -> None:
+    images = _stage_images(record)
+    unrendered = [im for im in images if not im["sif_path"]]
+    if unrendered:
+        raise _refuse("run_production.rendered_without_cluster",
+                      f"the pipeline was rendered without a .sif path for {[im['image'] for im in unrendered]}",
+                      remedy=f"render_pipeline(…, env={env_name!r}) so nextflow.config names the staged images")
+    not_staged = [im for im in images
+                  if not stage_apptainer._remote_sif_exists(env, im["sif_path"], timeout=min(timeout, 120))]
+    if not_staged:
+        calls = [f"stage_apptainer_image(project_name={project_name!r}, compute_env_name={env_name!r}, "
+                 f"freeze_request_key={im['request_key']!r})" for im in not_staged]
+        raise _refuse("run_production.sif_not_staged",
+                      f"{len(not_staged)} image(s) are not staged on {env_name!r}: "
+                      f"{[im['sif_path'] for im in not_staged]}",
+                      not_staged=not_staged, remedy="stage each first: " + "; ".join(calls))
+
+
+def _check_paths_local(paths: list[str], prefixes: list[str]) -> None:
+    missing = [p for p in paths if not os.path.exists(p)]
+    missing += [p for p in prefixes if not glob.glob(p + "*")]
+    if missing:
+        raise _refuse("run_production.inputs_missing",
+                      f"{len(missing)} bound path(s) do not exist on this machine: {missing[:5]}"
+                      + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
+                      missing_inputs=missing, locus="local",
+                      remedy="fix the samplesheet or params.yaml; a prefix names a family of files (<prefix>*)")
+
+
+def _remote_prefixes_exist(env: dict, prefixes: list[str], *, timeout: int) -> dict:
+    """{ok, missing} for index-family prefixes: a prefix exists when `<prefix>*` matches."""
+    clean = [p for p in prefixes if p]
+    if not clean:
+        return {"ok": True, "missing": []}
+    bad = [p for p in clean if not cluster_jobs._ABS_SAFE_PATH_RE.match(p)]
+    if bad:
+        raise _refuse("run_production.unsafe_input_path",
+                      f"path(s) hold characters a remote check cannot carry: {bad[:5]}")
+    checks = "; ".join(f'compgen -G {shlex.quote(p + "*")} > /dev/null || echo MISSING:{shlex.quote(p)}' for p in clean)
+    argv = _ssh_argv(env, f"bash -lc {shlex.quote(checks)}")
+    res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    if res.returncode != 0:
+        hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
+        raise _Refusal(broke("run_production.input_check_ssh_failed",
+                             error=f"remote prefix check ssh failed (rc={res.returncode}): "
+                                   f"{(res.stderr or '').strip()[:300]}", **({"hint": hint} if hint else {})))
+    missing = [ln.split("MISSING:", 1)[1] for ln in (res.stdout or "").splitlines() if ln.startswith("MISSING:")]
+    return {"ok": not missing, "missing": missing}
+
+
+def _check_paths_cluster(env: dict, paths: list[str], prefixes: list[str], *, timeout: int) -> None:
+    missing: list[str] = []
+    for i in range(0, len(paths), _REMOTE_CHECK_CHUNK):
+        res = cluster_jobs.remote_paths_exist(env, paths[i:i + _REMOTE_CHECK_CHUNK], timeout=timeout)
+        if res.get("missing_paths"):
+            missing += list(res["missing_paths"])
+        elif "error" in res:
+            raise _Refusal({**res, "code": "run_production.input_check_ssh_failed"} if res.get("outcome") == "broke"
+                           else res)
+    missing += _remote_prefixes_exist(env, prefixes, timeout=timeout)["missing"]
+    if missing:
+        raise _refuse("run_production.inputs_missing",
+                      f"{len(missing)} bound path(s) do not exist on the cluster: {missing[:5]}"
+                      + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
+                      missing_inputs=missing, locus="cluster",
+                      remedy="upload the data (or point the samplesheet / params.yaml at data already there)")
+
+
+def _load_spec(path: str) -> tuple[Optional[dict], Optional[str]]:
+    """(spec, error): a sealed workflow read through the typed seam."""
+    from agent.skills.spec_writer import load_workflow_spec
+    p = Path(path) if path else None
+    if p is None or not p.is_file():
+        return None, f"the sealed workflow is not at {path!r}"
+    try:
+        spec = load_workflow_spec(p)
+    except Exception as e:                                      # pragma: no cover
+        return None, f"{p.name} is not a valid WorkflowSpec: {type(e).__name__}: {e}"
+    return (spec.model_dump() if hasattr(spec, "model_dump") else dict(spec)), None
+
+
+def _spec_for(record: PipelineRecord, param_key: str) -> str:
+    """The sealed workflow a shared parameter belongs to: a cohort's when every stage
+    that reads it is that cohort's, else the base workflow's."""
+    used_by = {s for p in record.params if p.name.lower() == param_key for s in p.used_by}
+    for cw in record.cohort_workflows:
+        if used_by and used_by <= set(cw.stages):
+            return cw.sealed_workflow_path
+    return record.sealed_workflow_path
+
+
+def _observe_cluster(env: dict, paths: list[str], *, timeout: int) -> dict:
+    """{path: {exists, sha256}} observed on the cluster: the sidecar hash where the
+    download job left one, never a hash computed on the head node."""
+    from agent.skills.acquire_data import _probe_cluster_path
+    observed: dict[str, dict] = {}
+    for path in paths:
+        probe = _probe_cluster_path(env, path, timeout=timeout)
+        if "error" in probe:
+            observed[path] = {"exists": None, "sha256": "", "probe_error": probe["error"]}
+        else:
+            observed[path] = {"exists": bool(probe.get("exists")), "sha256": probe.get("sha256") or ""}
+    return observed
+
+
+def _reference_check(record: PipelineRecord, shared: Mapping[str, str], *, locus: str,
+                     env: dict, timeout: int) -> dict:
+    """The shared references this run binds against what the workflow was SEALED with.
+    Grouped by the sealed workflow each parameter belongs to; one verdict."""
+    if not shared:
+        return {"status": data_pins.NOT_ATTEMPTED, "reason": "the pipeline binds no shared path parameter",
+                "locus": locus, "findings": []}
+    by_spec: dict[str, dict[str, str]] = {}
+    for key, path in shared.items():
+        by_spec.setdefault(_spec_for(record, key), {})[key] = path
+    observed = _observe_cluster(env, sorted(set(shared.values())), timeout=timeout) if locus == "cluster" else {}
+    findings: list[dict] = []
+    unreadable: list[str] = []
+    for spec_path, inputs in by_spec.items():
+        spec, err = _load_spec(spec_path)
+        if err:
+            unreadable.append(err)
+            continue
+        check = data_pins.check_bound_inputs(
+            spec, inputs, locus=locus,
+            remote_presence={p: o.get("exists") for p, o in observed.items()},
+            remote_sha256={p: o.get("sha256", "") for p, o in observed.items()})
+        findings += check["findings"]
+    counts = {v: sum(1 for f in findings if f["verdict"] == v)
+              for v in (data_pins.MATCH, data_pins.DIVERGED, data_pins.UNANCHORED, data_pins.UNVERIFIED)}
+    # Four answers, stated apart: a pinned reference that CHANGED (diverged — the run
+    # launches, downgraded); a pinned one we could not compare at this locus (unverified
+    # — downgraded too, the pin existed); every pinned one matched (verified); and a
+    # reference the seal never pinned at all (unanchored — nothing to compare, said so,
+    # never rounded up into a verdict either way).
+    if counts[data_pins.DIVERGED]:
+        status = data_pins.DIVERGED
+    elif counts[data_pins.UNVERIFIED]:
+        status = data_pins.UNVERIFIED
+    elif not findings:
+        status = data_pins.NOT_ATTEMPTED
+    elif counts[data_pins.MATCH] == len(findings):
+        status = data_pins.VERIFIED
+    else:
+        status = data_pins.UNANCHORED
+    out = {"status": status, "findings": findings, "counts": counts, "locus": locus,
+           "sealed_workflows": sorted(by_spec)}
+    if unreadable:
+        out["unreadable"] = unreadable
+        if status == data_pins.NOT_ATTEMPTED:
+            out["reason"] = "; ".join(unreadable)
+    out["summary"] = data_pins.summarize(out) if findings else out.get("reason", "")
     return out
+
+
+def _disclose(result: dict, reference_check: Mapping) -> dict:
+    """Attach the data-pin verdict and DOWNGRADE a launch that could not stand behind
+    its data. A divergence does not refuse — re-running against a newer reference is
+    legitimate; doing it without being told is the failure this closes."""
+    if not isinstance(result, dict):                            # pragma: no cover
+        return result
+    out = {**result, "reference_check": dict(reference_check)}
+    if out.get("outcome") != "proven":
+        return out
+    status = reference_check.get("status")
+    rest = {k: v for k, v in out.items() if k not in ("outcome", "code")}
+    if status == data_pins.DIVERGED:
+        return degraded("run_production.reference_diverged", **rest,
+                        reference_divergence=reference_check.get("summary", ""))
+    if status == data_pins.UNVERIFIED:
+        return degraded("run_production.reference_unverified", **rest,
+                        reference_divergence=reference_check.get("summary", ""))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# The run directory
+# ---------------------------------------------------------------------------
+
+def _remote_run_dir_state(env: dict, run_dir: str, *, timeout: int) -> dict:
+    """What `run_dir` holds on the cluster: a rendered main.nf, a samplesheet, and the
+    manifest text if there is one. One ssh hop."""
+    q = shlex.quote
+    script = (f'[ -e {q(run_dir + "/main.nf")} ] && echo MAIN=1 || echo MAIN=0; '
+              f'[ -e {q(run_dir + "/" + SAMPLESHEET_FILENAME)} ] && echo SHEET=1 || echo SHEET=0; '
+              f'echo MANIFEST_BEGIN; cat {q(run_dir + "/" + MANIFEST_PATH)} 2>/dev/null; echo MANIFEST_END')
+    argv = _ssh_argv(env, f"bash -lc {q(script)}")
+    res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    if res.returncode != 0:
+        hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
+        raise _Refusal(broke("run_production.run_dir_probe_failed",
+                             error=f"could not inspect {run_dir} on the cluster (rc={res.returncode}): "
+                                   f"{(res.stderr or '').strip()[:300]}", **({"hint": hint} if hint else {})))
+    lines = (res.stdout or "").splitlines()
+    manifest = ""
+    if "MANIFEST_BEGIN" in lines and "MANIFEST_END" in lines:
+        a, b = lines.index("MANIFEST_BEGIN"), lines.index("MANIFEST_END")
+        manifest = "\n".join(lines[a + 1:b]).strip()
+    return {"main_nf": "MAIN=1" in lines, "samplesheet": "SHEET=1" in lines, "manifest": manifest}
+
+
+def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: str) -> bool:
+    """True when `run_dir` already holds THIS render (a re-launch, nothing copied);
+    False when it is empty of a render (copy everything). Anything else is refused."""
+    if not state["main_nf"]:
+        if not samplesheet:
+            raise _refuse("run_production.samplesheet_required",
+                          f"{run_dir} holds no run yet and no samplesheet was given",
+                          remedy="samplesheet=<local CSV>: one row per sample; it becomes the run's samples.csv")
+        return False
+    if state["manifest"].strip() != ours.strip():
+        raise _refuse("run_production.run_dir_holds_another_render",
+                      f"{run_dir} already holds a pipeline that is not this render",
+                      remedy="use a new run directory, or re-render the pipeline that lives there")
+    if samplesheet:
+        raise _refuse("run_production.samplesheet_already_there",
+                      f"{run_dir} already holds {SAMPLESHEET_FILENAME}; a re-launch resumes with it",
+                      remedy="omit samplesheet= to resume, or start the new samples in a new run directory")
+    if not state["samplesheet"]:
+        raise _refuse("run_production.samplesheet_required",
+                      f"{run_dir} holds the pipeline but no {SAMPLESHEET_FILENAME}",
+                      remedy="samplesheet=<local CSV> cannot be added to a directory that already holds a run; "
+                             "put one there by hand, or use a new run directory")
+    return True
+
+
+def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir: str, pdir: Path,
+                        rels: list[str], samplesheet: str, access_path: Optional[str], timeout: int) -> dict:
+    parent = os.path.dirname(run_dir)
+    probe = cluster_jobs.remote_paths_exist(env, [parent], timeout=timeout)
+    if probe.get("missing_paths"):
+        raise _refuse("run_production.run_dir_parent_missing",
+                      f"{parent} does not exist on {env_name!r}; the run directory's parent is never created for you",
+                      remedy="create it, or pick a run_dir under a directory that exists")
+    if "error" in probe:
+        raise _Refusal(probe)
+    state = _remote_run_dir_state(env, run_dir, timeout=timeout)
+    if _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=run_dir, samplesheet=samplesheet):
+        return {"reused": True, "files_uploaded": []}
+    uploaded: list[str] = []
+    for rel in rels + [SAMPLESHEET_FILENAME]:
+        local = str(pdir / rel) if rel != SAMPLESHEET_FILENAME else samplesheet
+        up = transfer.upload(project_name=project_name, compute_env_name=env_name, local_path=local,
+                             remote_abs_path=f"{run_dir}/{rel}", access_path=access_path, timeout=timeout)
+        if "error" in up:
+            raise _Refusal(broke("run_production.upload_failed",
+                                 error=f"upload of {rel} failed before launch: {up['error']}",
+                                 files_uploaded=uploaded))
+        uploaded.append(up.get("remote_abs_path", f"{run_dir}/{rel}"))
+    return {"reused": False, "files_uploaded": uploaded}
+
+
+def _materialize_local(*, run_dir: str, pdir: Path, rels: list[str], samplesheet: str) -> dict:
+    rd = Path(run_dir)
+    if rd.resolve() == pdir.resolve():
+        raise _refuse("run_production.run_dir_is_the_template",
+                      f"{run_dir} is the rendered template itself; a run lives in its own directory",
+                      remedy="make a new directory for the run; the template stays a template")
+    if not rd.parent.is_dir():
+        raise _refuse("run_production.run_dir_parent_missing",
+                      f"{rd.parent} does not exist; the run directory's parent is never created for you",
+                      remedy="create it, or pick a run_dir under a directory that exists")
+    rd.mkdir(exist_ok=True)
+    manifest_here = rd / MANIFEST_PATH
+    state = {"main_nf": (rd / "main.nf").is_file(), "samplesheet": (rd / SAMPLESHEET_FILENAME).is_file(),
+             "manifest": manifest_here.read_text() if manifest_here.is_file() else ""}
+    if _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=run_dir, samplesheet=samplesheet):
+        return {"reused": True, "files_copied": []}
+    copied: list[str] = []
+    for rel in rels:
+        dst = rd / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(pdir / rel, dst)
+        if rel.endswith(".sh") or rel.startswith("bin/"):
+            dst.chmod(dst.stat().st_mode | 0o111)
+        copied.append(str(dst))
+    shutil.copy2(samplesheet, rd / SAMPLESHEET_FILENAME)
+    copied.append(str(rd / SAMPLESHEET_FILENAME))
+    return {"reused": False, "files_copied": copied}
 
 
 # ---------------------------------------------------------------------------
 # The verb
 # ---------------------------------------------------------------------------
 
-def _disclose(result: dict, reference_check: Mapping) -> dict:
-    """Attach the data-pin verdict to whatever the locus branch returned, and
-    DOWNGRADE a launch that could not stand behind its data.
-
-    Here rather than in the two branches because there are two manifest writers
-    with two shapes, and a disclosure added to one leaf silently misses the other
-    locus — which is how the ENV report and the attestation ended up with two
-    implementations of the same divergence question.
-
-    A divergence does not REFUSE. Re-running a validated pipeline against a newer
-    reference is a legitimate, common thing to want; the failure this closes is
-    doing it without being told. That is what `degraded` means — proceeded, with
-    reduced assurance, and said so."""
-    if not isinstance(result, dict):                        # pragma: no cover
-        return result
-    out = {**result, "reference_check": dict(reference_check)}
-    status = reference_check.get("status")
-    if out.get("outcome") != "proven":
-        return out                                          # already a refusal/break
-    if status == data_pins.DIVERGED:
-        return degraded("run_production.reference_diverged",
-                        **{k: v for k, v in out.items()
-                           if k not in ("outcome", "code")},
-                        reference_divergence=reference_check.get("summary", ""))
-    if status == data_pins.UNVERIFIED:
-        return degraded("run_production.reference_unverified",
-                        **{k: v for k, v in out.items()
-                           if k not in ("outcome", "code")},
-                        reference_divergence=reference_check.get("summary", ""))
-    return out
-
-
-def _observe_inputs(inputs: Mapping[str, str], *, locus: str, env: dict,
-                    timeout: int) -> dict:
-    """{path: {exists, sha256}} for every bound input, observed AT ITS LOCUS.
-
-    ONE observation, two consumers: the existence precondition below and the
-    sealed-pin comparison in `data_pins`. Keeping it in one place is what stops
-    a cluster run from being stat-ed locally — the mistake that makes a check
-    report every correct path as missing."""
-    observed: dict[str, dict] = {}
-    if locus == "cluster":
-        from agent.skills.acquire_data import _probe_cluster_path
-        for path in dict.fromkeys((inputs or {}).values()):
-            probe = _probe_cluster_path(env, path, timeout=timeout)
-            if "error" in probe:
-                # An unreachable cluster is NOT a missing file. Record the
-                # ignorance rather than converting it into a finding — the
-                # absent-vs-unchecked distinction this codebase keeps relearning.
-                observed[path] = {"exists": None, "sha256": "",
-                                  "probe_error": probe["error"]}
-            else:
-                observed[path] = {"exists": bool(probe.get("exists")),
-                                  "sha256": probe.get("sha256") or ""}
-    else:
-        for path in dict.fromkeys((inputs or {}).values()):
-            p = Path(path)
-            observed[path] = {"exists": p.is_file() or p.is_dir(), "sha256": ""}
-    return observed
-
-
-def _missing_inputs(observed: Mapping[str, dict]) -> list:
-    """Paths we LOOKED FOR and did not find. `exists is None` means we could not
-    look, which is not the same thing and must not be reported as one."""
-    return sorted(p for p, o in observed.items() if o.get("exists") is False)
-
-
-def _load_sealed_spec(sealed_workflow: str) -> tuple:
-    """(spec_dict, error). Read through the TYPED seam — `load_workflow_spec` is
-    documented as the read-back path for 'any consumer that ACTS on a sealed
-    spec', and deciding whether to warn a user about their reference data is
-    acting on one. A malformed artifact fails here, loudly, rather than
-    surfacing as a bogus divergence."""
-    from agent.skills.spec_writer import load_workflow_spec
-    path = workspace.sealed_workflow_path(sealed_workflow)
-    if path is None:
-        available = workspace.sealed_workflow_names()
-        return None, (f"no sealed workflow named {sealed_workflow!r} "
-                      f"(have: {', '.join(available) or 'none'})")
-    try:
-        spec = load_workflow_spec(path)
-    except Exception as e:                                  # pragma: no cover
-        return None, f"{path.name} is not a valid WorkflowSpec: {type(e).__name__}: {e}"
-    return (spec.model_dump() if hasattr(spec, "model_dump") else dict(spec)), None
+def _stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
 
 def run_production_pipeline(project_name: str,
                             compute_env_name: str,
-                            workflow_name: str,
-                            tool_name: str,
-                            command: str,
-                            inputs: Mapping[str, str],
-                            outputs: Mapping[str, str],
-                            freeze_request_key: str,
-                            workflow_dir: str,
+                            pipeline: str,
+                            run_dir: str,
                             *,
-                            sealed_workflow: Optional[str] = None,
-                            resources: Optional[Mapping] = None,
-                            platform: str = "linux/amd64",
+                            samplesheet: str = "",
+                            params: Optional[Mapping] = None,
+                            walltime: str = "",
                             access_path: Optional[str] = None,
                             timeout: int = 300,
-                            _env_cache=None,
                             _job_manager=None) -> dict:
-    """Run a frozen env's workflow in PRODUCTION on whichever env is named —
-    local laptop or ssh cluster. Same call, swap the env.
+    """Run the rendered `pipeline` in production in `run_dir` on `compute_env_name`.
 
-    command: ${PLACEHOLDER} slots. inputs: {NAME: absolute_path}. outputs:
-      {NAME: bare_filename} (lands in workflow_dir). Same contract both loci.
-    workflow_dir: a directories[] path with both `upload` and `exec`.
-    resources: {mem_gb, cpus, time, gpus?, partition?, qos?} — optional locally,
-      REQUIRED on the cluster (a SLURM job must declare mem + time).
-      `partition`/`qos` are read only by the cluster locus (the local branch has
-      no scheduler) and are OPTIONAL there: name a pair from `cluster_partitions`
-      to place a GPU job yourself, or omit both and let the env's `slurm.gpu`
-      convention — or, failing that, the scheduler — decide. The resulting
-      `gpu_placement` state is reported in the return and the manifest.
-    sealed_workflow: name of a sealed `{name}.workflow.yaml` to check this run's
-      DATA against — the artifacts it binds vs the ones the workflow was
-      validated with. Optional, and deliberately EXPLICIT rather than inferred
-      from `workflow_name`: on disk the real cluster production run is
-      `samtools_flagstat_prod007` while the sealed workflow it corresponds to is
-      `samtools_cluster_rung3`, so a name-based join would silently compare a run
-      against the wrong spec — or, worse, against none while appearing to check.
-      Omitted ⇒ the result says `reference_check.status = not_attempted`, which
-      is a stated third state, not a pass.
+    pipeline:    a name under <workspace>/pipelines/, or a rendered directory's path.
+    run_dir:     an absolute path on the env — the launch directory. Its parent must
+                 exist; it may be in the env's pipelines zone, the agent's scratch, or a
+                 directory the project grants with `upload` and `exec`. A directory that
+                 already holds this pipeline is re-launched (`-resume`), nothing copied.
+    samplesheet: a local CSV, one row per sample, with the columns the pipeline reads
+                 (`sample` first); it becomes the run's samples.csv. Required on the first
+                 launch into a directory; refused on a re-launch.
+    params:      {params.yaml key: value} for this run only, passed on the launch line
+                 and so winning over params.yaml. A path, a word or a number.
+    walltime:    the manager job's SLURM time limit for this submission
+                 (`sbatch --time=…`), overriding the launcher's header. ssh envs only.
     """
     try:
-        access = compute_access.load_access(
-            Path(access_path) if access_path else None)
+        if walltime and not _WALLTIME_RE.match(str(walltime)):
+            raise _refuse("run_production.bad_walltime", f"walltime {walltime!r} is not a SLURM time",
+                          remedy="minutes, MM:SS, HH:MM:SS, D-HH, D-HH:MM or D-HH:MM:SS")
+        access = compute_access.load_access(Path(access_path) if access_path else None)
         project = compute_access.get_project(project_name, access)
         env = compute_access.get_compute_env(compute_env_name, access)
-
-        # Consume the frozen env BY its Layer-1 contract — the serving question,
-        # so a production run can't ship an env whose contract no longer holds.
-        if _env_cache is None:
-            from agent import mcp_server as _ms
-            _env_cache = _ms._env_cache
-        record, violations = _env_cache.lookup_verified(freeze_request_key)
-        if violations:
-            return refused("run_production.env_contract_violated",
-                error=f"the frozen env {freeze_request_key!r} no longer satisfies the "
-                f"Layer-1 honesty contract — re-run freeze() to re-earn it",
-                honesty_violations=violations, violation_count=len(violations))
-        if not record:
-            return refused("run_production.no_frozen_env",
-                error=f"no frozen env for {freeze_request_key!r} — run freeze() first")
-
         env_type = env.get("type")
-
-        # ─── The DATA pins ────────────────────────────────────────────────
-        # Everything above re-anchors the ENV by digest. Nothing re-anchored the
-        # DATA: a workflow validated against gencode.v44 could be production-run
-        # against v39, or against a path that does not exist, and the command
-        # rendered and launched identically. Both halves of a reproducible run
-        # deserve the same treatment.
+        if env_type not in ("local", "ssh"):
+            raise _refuse("run_production.unknown_env_type",
+                          f"compute env {compute_env_name!r} has type={env_type!r}; "
+                          f"run_production_pipeline supports 'local' and 'ssh'")
         locus = "cluster" if env_type == "ssh" else "local"
-        observed = _observe_inputs(inputs, locus=locus, env=env, timeout=timeout)
 
-        # (a) Do the inputs EXIST? Both sibling verbs already fail fast on this
-        # (run_step_on_cluster via remote_paths_exist) and production did not,
-        # so a typo'd path bought a queued SLURM job that died opaquely.
-        missing = _missing_inputs(observed)
-        if missing:
-            return refused("run_production.inputs_missing",
-                error=f"{len(missing)} declared input(s) do not exist at the "
-                f"{locus} locus: {', '.join(missing[:5])}"
-                + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
-                missing_inputs=missing, locus=locus)
+        record, pdir, manifest, edited = _load_pipeline(pipeline)
+        rels = _carried_files(pdir, manifest)
+        normed_dir = submit_workflow._validate_workflow_dir(run_dir)
+        zone = _authorize_run_dir(project, env, compute_env_name, normed_dir)
+        effective, tokens = _effective_params(pdir, params)
+        if env_type == "ssh" and walltime:
+            tokens_sbatch = [f"--time={walltime}"]
+        else:
+            tokens_sbatch = []
+        if env_type == "ssh" and record.compute_env and record.compute_env != compute_env_name:
+            raise _refuse("run_production.rendered_for_other_env",
+                          f"the pipeline was rendered for compute env {record.compute_env!r}, not "
+                          f"{compute_env_name!r}: its nextflow.config names that env's images and modules",
+                          remedy=f"render_pipeline(…, env={compute_env_name!r}, name=…) for this env")
 
-        # (b) Are they the artifacts the workflow was SEALED against?
-        reference_check = {"status": data_pins.NOT_ATTEMPTED,
-                           "reason": "no sealed_workflow was named, so nothing pins "
-                                     "this run's data to a validated one",
-                           "locus": locus}
-        if sealed_workflow:
-            spec, spec_err = _load_sealed_spec(sealed_workflow)
-            if spec_err:
-                return refused("run_production.sealed_workflow_unreadable",
-                               error=spec_err, sealed_workflow=sealed_workflow)
-            reference_check = data_pins.check_bound_inputs(
-                spec, inputs, locus=locus,
-                remote_presence={p: o.get("exists") for p, o in observed.items()},
-                remote_sha256={p: o.get("sha256", "") for p, o in observed.items()})
-            reference_check["sealed_workflow"] = sealed_workflow
-            reference_check["summary"] = data_pins.summarize(reference_check)
+        header: list[str] = []
+        rows: list[dict] = []
+        if samplesheet:
+            header, rows = _read_samplesheet(samplesheet, record)
+        shared, prefixes, cells = _bound_paths(record, effective, rows)
+        # A prefix names a family of files (<prefix>*), never a file of its own.
+        plain = sorted((set(shared.values()) - set(prefixes)) | set(cells))
 
-        if env_type == "local":
-            from agent import mcp_server as _ms
-            return _disclose(_run_local(
-                project=project, project_name=project_name,
-                compute_env_name=compute_env_name, record=record,
-                freeze_request_key=freeze_request_key, workflow_name=workflow_name,
-                tool_name=tool_name, command=command, inputs=inputs, outputs=outputs,
-                workflow_dir=workflow_dir, resources=resources or {}, platform=platform,
-                reference_check=reference_check,
-                _job_manager=_job_manager or _ms._job_manager,
-                _docker_available=_ms._check_docker_available,
-                _daemon_is_remote=_ms._locus.daemon_is_remote), reference_check)
+        # ─── AT THE LOCUS: images, paths, the data pins ─────────────────
         if env_type == "ssh":
-            return _disclose(_run_cluster(
-                project_name=project_name, compute_env_name=compute_env_name,
-                env=env, record=record, freeze_request_key=freeze_request_key,
-                workflow_name=workflow_name, tool_name=tool_name, command=command,
-                inputs=inputs, outputs=outputs, workflow_dir=workflow_dir,
-                resources=resources or {}, access_path=access_path, timeout=timeout,
-                reference_check=reference_check), reference_check)
-        return refused("run_production.unknown_env_type",
-            error=f"compute env {compute_env_name!r} has type={env_type!r}; "
-            f"run_production_pipeline supports 'local' and 'ssh'")
+            _check_images_cluster(record, env, compute_env_name, project_name, timeout)
+            _check_paths_cluster(env, plain, prefixes, timeout=timeout)
+        else:
+            from agent import mcp_server as _ms
+            docker_refusal = _ms._check_docker_available()
+            if docker_refusal:
+                return docker_refusal
+            if not record.local_runtime or not Path(record.local_runtime.activate).is_file():
+                raise _refuse("run_production.no_local_runtime",
+                              "the pipeline was rendered without a local Nextflow runtime for this machine",
+                              remedy="re-render on this machine (render_pipeline records scripts/activate.sh), "
+                                     "or run `source scripts/activate.sh` and launch by hand")
+            _check_images_local(record)
+            _check_paths_local(plain, prefixes)
+        reference_check = _reference_check(record, shared, locus=locus, env=env, timeout=timeout)
 
-    except (ValueError, compute_access.PermissionDenied,
-            compute_access.ConfigError) as e:
-        # Same split, same reason as submit_workflow_job's handler: a gate saying
-        # no before anything is written is `refused` (fix the call and retry),
-        # not `broke` (rebuild). This matters most HERE — run_production_pipeline
-        # is the front door, so it is where a misclassified refusal costs the
-        # most wasted work.
+        # ─── The run directory ──────────────────────────────────────────
+        if env_type == "ssh":
+            placed = _materialize_remote(project_name=project_name, env=env, env_name=compute_env_name,
+                                         run_dir=normed_dir, pdir=pdir, rels=rels, samplesheet=samplesheet,
+                                         access_path=access_path, timeout=timeout)
+        else:
+            placed = _materialize_local(run_dir=normed_dir, pdir=pdir, rels=rels, samplesheet=samplesheet)
+
+        # ─── Launch ─────────────────────────────────────────────────────
+        submitted_at = datetime.now(timezone.utc).isoformat()
+        if env_type == "ssh":
+            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout,
+                                                sbatch_args=tokens_sbatch, script_args=tokens)
+            if "error" in sb:
+                return {**sb, **placed}
+            job_id = sb["job_id"]
+            launch = sb.get("sbatch_command", "")
+            follow_up = {"poll": f"cluster_job_status(project_name={project_name!r}, compute_env_name="
+                                 f"{compute_env_name!r}, job_id={job_id!r}, run_dir={normed_dir!r})",
+                         "results": f"{normed_dir}/{effective.get('outdir', 'results')}/ — download(…) to fetch",
+                         "run_records": f"{normed_dir}/runs/<stamp>/ (params.json, samples.csv, trace.txt, "
+                                        f"report.html, timeline.html, nextflow.log)",
+                         "manager_log": f"{normed_dir}/{record.name}-{job_id}.out"}
+            code = "run_production.submitted"
+        else:
+            from agent import mcp_server as _ms
+            jm = _job_manager or _ms._job_manager
+            launch = f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}" + \
+                     "".join(f" {t}" for t in tokens)
+            started = jm.start(command=launch, job_id=f"pipeline_{record.name}_{_stamp()}",
+                               working_dir=normed_dir, tool="run_production_pipeline")
+            if "error" in started:
+                return {**started, **placed}
+            job_id = started.get("job_id", "")
+            follow_up = {"poll": f"check_job(job_id={job_id!r}, wait_s=300)",
+                         "results": f"{normed_dir}/{effective.get('outdir', 'results')}/",
+                         "run_records": f"{normed_dir}/runs/<stamp>/ (params.json, samples.csv, trace.txt, "
+                                        f"report.html, timeline.html)"}
+            code = "run_production.local_launched"
+
+        manifest_record = {
+            "locus": locus, "project_name": project_name, "compute_env": compute_env_name,
+            "pipeline": record.name, "pipeline_dir": str(pdir),
+            "sealed_workflow": record.sealed_workflow, "sealed_workflow_sha256": record.sealed_workflow_sha256,
+            "cohort_workflows": [cw.sealed_workflow for cw in record.cohort_workflows],
+            "env_digests": list(record.env_digests),
+            "images": _stage_images(record),
+            "run_dir": normed_dir, "run_dir_zone": zone, "job_id": job_id,
+            "reused_run_dir": placed["reused"], **{k: v for k, v in placed.items() if k != "reused"},
+            "samplesheet": ({"source": samplesheet, "rows": len(rows), "columns": header} if samplesheet
+                            else {"source": f"{normed_dir}/{SAMPLESHEET_FILENAME} (already there)"}),
+            "params": effective, "params_overridden": {t[2:]: v for t, v in zip(tokens[::2], tokens[1::2])},
+            "walltime": walltime or None, "launch": launch,
+            "edited_since_render": edited, "reference_check": dict(reference_check),
+            "submitted_at": submitted_at, "follow_up": follow_up,
+        }
+        manifest_path = submit_workflow._write_submission_manifest(
+            project_name=project_name, workflow_name=record.name, job_id=job_id, manifest=manifest_record)
+
+        result = proven(code, success=True, locus=locus, compute_env=compute_env_name,
+                        pipeline=record.name, run_dir=normed_dir, job_id=job_id,
+                        reused_run_dir=placed["reused"],
+                        **{k: v for k, v in placed.items() if k != "reused"},
+                        samplesheet=manifest_record["samplesheet"], params=effective,
+                        launch=launch, submitted_at=submitted_at, manifest_path=manifest_path,
+                        edited_since_render=edited, follow_up=follow_up)
+        return _disclose(result, reference_check)
+
+    except _Refusal as r:
+        return r.result
+    except (ValueError, compute_access.PermissionDenied, compute_access.ConfigError) as e:
         return refused("run_production.refused", error=f"{type(e).__name__}: {e}")
     except (FileNotFoundError, KeyError) as e:
         return broke("run_production.failed", error=f"{type(e).__name__}: {e}")
     except subprocess.TimeoutExpired as e:
-        return broke("run_production.timeout",
-                     error=f"a remote probe timed out after {e.timeout}s")
+        return broke("run_production.timeout", error=f"a remote probe timed out after {e.timeout}s")
+
+
+__all__ = ["run_production_pipeline"]

@@ -137,7 +137,6 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
     _t(tool="globus_task_status", position=PRIMITIVE),
     _t(tool="cluster_job_status", position=PRIMITIVE),
     _t(tool="stage_apptainer_image", position=PRIMITIVE),
-    _t(tool="submit_workflow_job", position=PRIMITIVE),
     _t(tool="run_production_pipeline", position=PRIMITIVE),
     _t(tool="run_step_on_cluster", position=PRIMITIVE),
     _t(tool="render_pipeline", position=PRIMITIVE),
@@ -218,6 +217,19 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
             "so it cannot go stale in the meantime."),
 
     # ---- LOW_LEVEL — below the table, guardrail composed onto the description -------
+    _t(tool="submit_workflow_job", position=LOW_LEVEL,
+       mutates="renders ONE command as a one-process Nextflow workflow, uploads it and "
+               "submits a SLURM job in a project directory",
+       prefer=("run_production_pipeline",),
+       records_more="the run of the RENDERED pipeline: every stage over every sample from "
+                    "the sealed how-to, the images checked at the locus, the references "
+                    "checked against the seal (`reference_check` in the manifest), and "
+                    "run records under runs/<stamp>/ that cluster_job_status reads back "
+                    "task by task — none of which a one-command submission has",
+       direct_use="a one-off single command on the cluster that no sealed workflow "
+                  "describes, in a directory the project grants",
+       note="the pre-pipeline-layer production path; kept as the mechanism until the "
+            "rendered-pipeline path has run on a cluster"),
     _t(tool="run_install_command", position=LOW_LEVEL,
        mutates="runs arbitrary shell inside the conda prefix and appends a hand-typed "
                "install_step",

@@ -39,9 +39,12 @@ def run_argv(argv: list[str], timeout: int, *,
     off the exception, bytes-or-str normalised). Missing binary → rc 127. Any
     other exception propagates — a wrapper that needs never-fatal semantics says
     so at ITS seam (env_manager/docker_builder keep theirs, documented there).
+
+    The child gets no stdin: this process's fd 0 is the MCP transport.
     """
     try:
-        p = subprocess.run(argv, capture_output=True, text=True,
+        p = subprocess.run(argv, stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True,
                            errors="replace", timeout=timeout,
                            cwd=cwd, env=env)
     except subprocess.TimeoutExpired as e:

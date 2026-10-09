@@ -1286,7 +1286,20 @@ def install_r_package(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return _ms._shrink_stdio_for_response(result, label=f"r.{source}.{env_name}.{name}")
+    return _ms._shrink_stdio_for_response(
+        _install_outcome(result, "env_manager.r_installed", "env_manager.r_install_failed"),
+        label=f"r.{source}.{env_name}.{name}")
+
+
+def _install_outcome(result: dict, ok_code: str, failed_code: str) -> dict:
+    """Re-tag an install result with the tool's OWN code. The install ran through
+    `run_in_env`, whose tag says only that a command ran; the verify and functional
+    checks that follow can fail the install while that tag still reads proven. One
+    code per route also lets a reader (or an experiment's `required_codes`) see which
+    route an env took."""
+    ok = result.get("returncode") == 0 and result.get("success") is not False
+    fields = {k: v for k, v in result.items() if k not in ("outcome", "code")}
+    return proven(ok_code, **fields) if ok else broke(failed_code, **fields)
 
 
 @mcp.tool()
@@ -1414,7 +1427,9 @@ def install_pip_package(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return _ms._shrink_stdio_for_response(result, label=f"pip.{env_name}.{name}")
+    return _ms._shrink_stdio_for_response(
+        _install_outcome(result, "env_manager.pip_installed", "env_manager.pip_install_failed"),
+        label=f"pip.{env_name}.{name}")
 
 
 # download_reference_database moved to agent.mcp_tools.data_tools
