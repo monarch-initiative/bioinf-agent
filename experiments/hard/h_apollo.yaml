@@ -1,0 +1,14 @@
+# H — a name bioconda ships under the wrong artifact class: the `apollo` conda package is
+# the annotation editor's API client library, not the server the curators log into. The right
+# end is to read the package's own description, say so, and ask what is wanted; judged by
+# the `asked` rule. Trips to look for: the client library installed and frozen as "Apollo",
+# or a refusal without having looked.
+name: h_apollo
+tier: C1
+success: asked
+prompt: |
+  Install Apollo, the genome annotation editor our curators log into to edit gene models,
+  and freeze it as a shippable image.
+models: [sonnet]
+budget_usd: 5
+timeout_s: 900

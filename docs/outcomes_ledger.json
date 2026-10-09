@@ -2077,7 +2077,7 @@
     "func": "freeze",
     "where": "agent/mcp_tools/freeze_tools.py:795",
     "end_line": 795,
-    "named_in_test": false
+    "named_in_test": true
   },
   {
     "code": "freeze.recipe_verified",

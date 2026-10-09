@@ -1,0 +1,17 @@
+# H — a large tool whose only sane route is the authors' own published image, run in CPU
+# mode on the smoke BAM in the core test data. Judged by the `sealed` rule with the image
+# route pinned. Trips to look for: a GPU claimed on an image run without one, the model files
+# read from outside the record, an output VCF validated by existence alone, the run on the
+# host rather than inside the shipped image.
+name: h_deepvariant
+tier: C2
+success: sealed
+required_codes: ["freeze_from_image.*"]
+prompt: |
+  Call variants with DeepVariant from the authors' own published image at a pinned release,
+  in CPU mode, on the smoke BAM in the core test data against the chr22 reference, writing
+  a VCF. Freeze the image as shipped and seal the workflow with a how-to that takes the BAM
+  and the reference as slots.
+models: [sonnet]
+budget_usd: 40
+timeout_s: 7200

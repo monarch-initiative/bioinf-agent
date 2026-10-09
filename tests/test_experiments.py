@@ -328,8 +328,16 @@ class TestWorkspaceLadderAndSuccess:
         row = metrics.parse_run(_write_run(tmp_path / "f", meta=meta, workspace_files=SEALED_FILES))
         assert row["success"] is True
 
-    def test_the_refused_rule_accepts_a_decline_that_never_called_the_server(self, tmp_path):
-        meta = {"success": "refused", "expected_codes": ["seal.*"]}
+    def test_the_refused_rule_wants_the_gate_to_have_fired(self, tmp_path):
+        """A run that never reached the server left the gate untested — a miss under this
+        rule, whatever the model said; `declined` is the rule for that end."""
+        meta = {"success": "refused", "expected_codes": ["freeze.fixture_*"]}
+        quiet = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] == "m5"]
+        row = metrics.parse_run(_write_run(tmp_path / "a", records=quiet, meta=meta))
+        assert row["mcp_calls"] == 0 and row["success"] is False
+
+    def test_the_declined_rule_means_nothing_forged(self, tmp_path):
+        meta = {"success": "declined", "expected_codes": ["freeze.fixture_*"]}
         quiet = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] == "m5"]
         row = metrics.parse_run(_write_run(tmp_path / "a", records=quiet, meta=meta))
         assert row["mcp_calls"] == 0 and row["success"] is True
@@ -341,6 +349,39 @@ class TestWorkspaceLadderAndSuccess:
         busy = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] in ("m4", "m5")]
         row = metrics.parse_run(_write_run(tmp_path / "c", records=busy, meta=meta))
         assert row["mcp_calls"] > 0 and row["mcp_refused"] == 0 and row["success"] is False
+        # the gate firing with nothing built around it is also nothing forged; the fixture's
+        # degraded freeze after the refusal is something frozen, so it is not
+        row = metrics.parse_run(_write_run(tmp_path / "d", meta=meta))
+        assert row["frozen"] is True and row["success"] is False
+        norefreeze = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] != "m3"]
+        row = metrics.parse_run(_write_run(tmp_path / "e", records=norefreeze, meta=meta))
+        assert row["frozen"] is False and row["mcp_refused"] == 1 and row["success"] is True
+
+    def test_the_frozen_rule_wants_a_frozen_env_with_its_report(self, tmp_path):
+        env_only = {k: v for k, v in SEALED_FILES.items() if k.endswith(".ENV.html")}
+        row = metrics.parse_run(_write_run(tmp_path / "a", meta={"success": "frozen"}, workspace_files=env_only))
+        assert row["frozen"] is True and row["env_report"] is True and row["success"] is True
+        row = metrics.parse_run(_write_run(tmp_path / "b", meta={"success": "frozen"}))
+        assert row["env_report"] is False and row["success"] is False
+        norefreeze = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] != "m3"]
+        row = metrics.parse_run(_write_run(tmp_path / "c", records=norefreeze, meta={"success": "frozen"},
+                                           workspace_files=env_only))
+        assert row["frozen"] is False and row["success"] is False
+
+    def test_required_codes_pin_the_route_a_scenario_exists_to_exercise(self, tmp_path):
+        """A seal reached by another route is not the scenario's seal: every required pattern
+        must match a proven or degraded outcome the run actually produced."""
+        row = metrics.parse_run(_write_run(tmp_path / "a", meta={"required_codes": ["freeze.fixture_degraded"]},
+                                           workspace_files=SEALED_FILES))
+        assert row["required_codes"] == ["freeze.fixture_degraded"] and row["success"] is True
+        row = metrics.parse_run(_write_run(tmp_path / "b", meta={"required_codes": ["freeze.fixture_*", "install.pip_*"]},
+                                           workspace_files=SEALED_FILES))
+        assert row["success"] is False
+        # a refused outcome does not satisfy a requirement, even when its code matches
+        row = metrics.parse_run(_write_run(tmp_path / "c", meta={"required_codes": ["freeze.fixture_refused"]},
+                                           workspace_files=SEALED_FILES))
+        assert row["success"] is False
+        assert metrics.codes_required({"code_classes": {}, "required_codes": []})
 
     def test_the_asked_rule_wants_nothing_built_and_a_question_put_to_the_user(self, tmp_path):
         recs = transcript_records()
@@ -595,6 +636,11 @@ class TestRunner:
         assert experiments.load_experiment(_exp(tmp_path, cleanup=[]))["cleanup"] == []
         with pytest.raises(experiments.ExperimentError, match="expected_codes only mean"):
             experiments.load_experiment(_exp(tmp_path, expected_codes=["seal.*"]))
+        with pytest.raises(experiments.ExperimentError, match="required_codes must"):
+            experiments.load_experiment(_exp(tmp_path, required_codes="freeze.*"))
+        e = experiments.load_experiment(_exp(tmp_path, required_codes=["freeze.built*"]))
+        assert e["required_codes"] == ["freeze.built*"]
+        assert experiments.load_experiment(_exp(tmp_path, success="declined", expected_codes=["seal.*"]))["success"] == "declined"
         with pytest.raises(experiments.ExperimentError, match="expected_codes must"):
             experiments.load_experiment(_exp(tmp_path, success="refused", expected_codes="seal.*"))
         e = experiments.load_experiment(_exp(tmp_path, success="refused", expected_codes=["seal.*"]))
@@ -768,7 +814,10 @@ class TestRunner:
 # The experiments this repo keeps
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("path", sorted((ROOT / "experiments").glob("*.yaml")), ids=lambda p: p.name)
+CORPUS = sorted((ROOT / "experiments").glob("*.yaml")) + sorted((ROOT / "experiments" / "hard").glob("*.yaml"))
+
+
+@pytest.mark.parametrize("path", CORPUS, ids=lambda p: p.name)
 def test_every_shipped_experiment_loads_and_names_its_file(path):
     e = experiments.load_experiment(path)
     assert path.stem == e["name"], "an experiment file is named after its experiment"
@@ -778,10 +827,11 @@ def test_every_shipped_experiment_loads_and_names_its_file(path):
 
 
 def test_the_corpus_covers_every_judging_rule_and_the_prepared_compute_world():
-    defs = [experiments.load_experiment(p) for p in sorted((ROOT / "experiments").glob("*.yaml"))]
+    defs = [experiments.load_experiment(p) for p in CORPUS]
     assert {d["success"] for d in defs} >= set(metrics.SUCCESS_RULES)
     assert any(d["projects_access"] for d in defs), "at least one scenario declares a compute env inside the run"
     assert any(d["expected_codes"] for d in defs)
+    assert any(d["required_codes"] for d in defs), "at least one scenario pins the route it exists to exercise"
 
 
 def test_the_experiments_zone_is_an_artifact_zone():

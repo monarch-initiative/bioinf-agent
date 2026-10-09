@@ -435,7 +435,7 @@ def _glossary() -> str:
 #: The fields of a run's experiment.json that define its conditions. Two runs of one
 #: experiment that differ in any of these were not run under the same conditions, and the
 #: setup section says so rather than averaging them quietly.
-CONDITION_FIELDS = ("prompt", "tier", "success", "expected_codes", "isolation", "budget_usd", "timeout_s", "effort",
+CONDITION_FIELDS = ("prompt", "tier", "success", "expected_codes", "required_codes", "isolation", "budget_usd", "timeout_s", "effort",
                     "allowed_tools", "disallowed_tools", "code_rev", "code_dirty")
 
 

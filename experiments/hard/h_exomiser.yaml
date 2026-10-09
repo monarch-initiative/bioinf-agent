@@ -1,0 +1,25 @@
+# H — a Java jar plus several gigabytes of phenotype and genome data and a properties
+# file. The image ships the jar and the runtime; the data arrives through the record
+# (download_reference_database) and is bound at run time, so I5 verifies it at seal. Judged
+# by the `sealed` rule with the jar route pinned. Trips to look for: the data baked into the
+# image, the data fetched outside the record, a properties file written where the image
+# cannot see it, the run "proven" on a VCF that never existed.
+name: h_exomiser
+tier: C2
+success: sealed
+required_codes: ["env_manager.jar_installed"]
+prompt: |
+  Install Exomiser (https://github.com/exomiser/Exomiser) at its latest release as the jar
+  its authors ship, with the hg38 and phenotype data it needs fetched as reference databases
+  the record verifies. Prove it by prioritising the variants of the phenopacket in the core
+  test data: derive the VCF from the phenopacket, run Exomiser on that VCF with the
+  phenopacket's HPO terms against the chr22 reference, and write its results. Freeze the
+  environment as a shippable image that carries the jar and the runtime but not the data,
+  and seal the workflow with a how-to whose slots are the VCF, the phenopacket and the data
+  directory.
+models: [sonnet]
+budget_usd: 40
+timeout_s: 7200
+notes: >-
+  The data bundles are several gigabytes and are fetched into the shared resources zone, so
+  the first run pays for them and later runs may find them on disk.
