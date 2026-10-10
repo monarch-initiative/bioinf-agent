@@ -428,6 +428,20 @@ class TestClusterLaunch:
         assert "stage_apptainer_image(project_name='demo', compute_env_name='hpc', freeze_request_key=" in r["remedy"]
 
     @pytest.mark.integration
+    def test_rendered_for_a_zone_the_env_no_longer_uses_says_rerender(self, tmp_path, monkeypatch):
+        """The access file moved the env's container zone after the render. Staging writes
+        into the NEW zone, so a "stage it" refusal would never be satisfied; the remedy is
+        the re-render, named with the record's own arguments."""
+        old = {"fr_rnaseq_cli_0001": "/old/containers/rnaseq_counts_abc.sif"}
+        _Remote(existing={"/work/pipelines", "/data/r1.fq"} | _REFS, sifs=set(old.values())).install(monkeypatch)
+        _render(tmp_path, compute_env="hpc", sif_paths=old)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1",
+                     samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["code"] == "run_production.rendered_for_other_zone" and r["container_zone"] == "/work/containers"
+        assert r["sif_paths"] == ["/old/containers/rnaseq_counts_abc.sif"]
+        assert "render_pipeline(sealed_workflow='rnaseq_counts_workflow', name='rnaseq_counts', env='hpc', overwrite=True)" in r["remedy"]
+
+    @pytest.mark.integration
     def test_a_sheet_path_missing_on_the_cluster_refused(self, tmp_path, monkeypatch):
         _Remote(existing={"/work/pipelines"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
         _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
@@ -468,6 +482,12 @@ class TestClusterLaunch:
         assert "run_dir='/work/pipelines/run1'" in r["follow_up"]["poll"]
         assert r["samplesheet"]["rows"] == 2
         assert Path(r["manifest_path"]).is_file()
+        # The index prefix names a family of files: observed as such (compgen), never as a
+        # file that is "not there"; and the seal's own step built it, which the finding says.
+        by_slot = {f["slot"]: f for f in r["reference_check"]["findings"]}
+        assert by_slot["hisat2_index"]["exists"] is True
+        assert by_slot["hisat2_index"]["verdict"] == "unanchored"
+        assert by_slot["hisat2_index"]["reason"].startswith("produced by the sealed workflow's own step ")
 
     @pytest.mark.integration
     def test_a_project_directory_needs_exec_too(self, tmp_path, monkeypatch):

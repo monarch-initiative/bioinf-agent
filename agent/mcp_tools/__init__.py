@@ -32,7 +32,7 @@ The split is by THEME (see CLAUDE.md), not arbitrary. The themes:
                         rendered as a samplesheet-driven directory, plain
                         bash/SLURM by default, Nextflow on request)
   bridge_tools        — upload / download (unified transfer surface) +
-                        stage_apptainer_image / submit_workflow_job /
+                        stage_apptainer_image / run_production_pipeline /
                         run_step_on_cluster / cluster_* (Phase 2 HPC
                         actuators — sibling to observability; same
                         permission gate, same ControlMaster pattern,
@@ -58,7 +58,7 @@ from __future__ import annotations
 # Adding a new submodule = one line here + the submodule file + delete the
 # original tool(s) from mcp_server.py + the back-compat re-export at the
 # bottom of mcp_server.py.
-from . import bridge_tools         # noqa: F401  (upload, download, stage_apptainer_image, submit_workflow_job, run_step_on_cluster, cluster_job_status, cluster_module_avail, globus_task_status)
+from . import bridge_tools         # noqa: F401  (upload, download, stage_apptainer_image, run_production_pipeline, run_step_on_cluster, cluster_job_status, cluster_module_avail, globus_task_status)
 from . import data_tools           # noqa: F401  (download_reference_database, list_available_resources, add_core_test_data, add_core_pod5_data, add_phenopacket, phenopacket_to_vcf, select_test_data, install_pipeline_brief)
 from . import env_tools            # noqa: F401  (search_package, resolve_tool, create_conda_env, install_conda_packages, install_git_repo, synth_fetch, synth_build, install_release_binary, install_perl_package, install_cargo_tool, install_go_tool, install_jar_tool, install_r_package, install_pip_package, run_install_command)
 from . import freeze_tools         # noqa: F401  (freeze, verify_env_recipe, generate_user_guide)

@@ -3,7 +3,7 @@ cluster_job_status — query SLURM job state on a compute env so the
 agent can poll a submitted job to completion.
 
 Why this earns its place:
-  - Phase 2's submit_workflow_job (Step 9) returns a SLURM job_id.
+  - run_production_pipeline returns a SLURM job_id.
     Without a status primitive, the agent can't tell whether the job
     is pending, running, or done — it would have to ssh manually.
   - sacct is the canonical record: covers running AND completed jobs
@@ -313,7 +313,9 @@ def cluster_job_status(project_name: str,
 # (`<pipeline>-<jobid>.out` in the launch directory) before any task starts, and
 # nextflow.config writes `runs/<stamp>/trace.txt` as tasks finish. One ssh hop
 # reads both. Columns are the renderer's TRACE_FIELDS; the parse goes by the header
-# so a reordered trace cannot mislabel a field.
+# so a reordered trace cannot mislabel a field, and by the task_id that opens every
+# record, so a field Nextflow writes over several lines (`script`, in a trace from an
+# older render) continues its record instead of becoming a blank task.
 
 #: Trace statuses a run can leave a task in. Nextflow's own vocabulary.
 TASK_DONE, TASK_FAILED = "COMPLETED", "FAILED"
@@ -331,15 +333,26 @@ def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
     return f"bash -lc {q(script)}"
 
 
+_TRACE_RECORD_RE = re.compile(r"^\d+\t")      # a record opens with its task_id
+
+
 def _parse_trace(text: str) -> list[dict]:
-    """Nextflow's tab-separated trace, by its header line."""
+    """Nextflow's tab-separated trace, by its header line. A record is the line that
+    opens with a task_id; a line that does not continues the record before it (a field
+    written over several lines), and belongs to that record's last column."""
     lines = [ln for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
         return []
     header = lines[0].split("\t")
-    rows = []
+    records: list[str] = []
     for ln in lines[1:]:
-        cells = ln.split("\t")
+        if _TRACE_RECORD_RE.match(ln):
+            records.append(ln)
+        elif records:
+            records[-1] += "\n" + ln.strip()
+    rows = []
+    for ln in records:
+        cells = [c.strip() for c in ln.split("\t")]
         rows.append({header[i]: (cells[i] if i < len(cells) else "") for i in range(len(header))})
     return rows
 

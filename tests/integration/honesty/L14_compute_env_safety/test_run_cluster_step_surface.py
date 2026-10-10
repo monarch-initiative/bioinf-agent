@@ -15,7 +15,7 @@ The wall this pins: SCRATCH ONLY.
     schema validator enforces this in production; we test the
     primitive-level guard directly.)
   - Production runs (against user-declared project directories[])
-    go through submit_workflow_job, not this primitive.
+    go through run_production_pipeline, not this primitive.
 
 Also pinned:
   - sacct Elapsed parser (HH:MM:SS and D-HH:MM:SS)

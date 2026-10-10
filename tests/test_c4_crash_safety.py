@@ -117,10 +117,6 @@ def _battery():
          dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV, task_id="not-a-uuid"), True),
         ("cluster_job_status", B.cluster_job_status,
          dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV, job_id="not-a-digit;rm"), True),
-        ("submit_workflow_job", B.submit_workflow_job,
-         dict(project_name=BAD_PROJ, compute_env_name=BAD_ENV, workflow_dir="/wf",
-              workflow_name="wf", tool_name="t", command="c", inputs={}, outputs={},
-              apptainer_sif="s", apptainer_module="m", nextflow_module="n", slurm={}), True),
         # run_production_pipeline: a nonexistent project → get_project raises
         # KeyError, caught into a tagged broke BEFORE any docker/ssh/dispatch.
         ("run_production_pipeline", B.run_production_pipeline,

@@ -19,7 +19,7 @@ This is the agent's per-project renderer per
      change to main.nf.
 
 The renderer is pure: strings in, strings out. Filesystem writes,
-ssh, and sbatch live in `submit_workflow_job` (Step 2 commit #2).
+ssh, and sbatch live in `submit_workflow` (sbatch_via_ssh) and its callers.
 
 Input shape — `WorkflowSpec` namedtuple-ish dict
 -------------------------------------------------

@@ -77,7 +77,7 @@
     <div class="stat dim"><b>9</b><span>capabilities you can ask for</span></div>
     <div class="stat red"><b>0</b><span>expected verb still MISSING</span></div>
     <div class="stat"><b>23</b><span>decisions the system makes</span></div>
-    <div class="stat amber"><b>6</b><span>IMPROVISED (the determinism backlog)</span></div>
+    <div class="stat amber"><b>5</b><span>IMPROVISED (the determinism backlog)</span></div>
   </div>
 
   <h2>What you can ask this system to do</h2>
@@ -177,7 +177,7 @@
           <div class="verb">verb: <code>run_production_pipeline</code></div>
           <div class="row"><span class="k">You give</span><ul class="needs"><li>a frozen env (freeze_request_key)</li><li>real input data</li><li>a target project dir (directories[] with upload+exec)</li><li>resources (mem/cpus/time)</li></ul></div>
           <div class="row"><span class="k">It decides for you</span><div class="decides"><span class="dchip" style="border-color:#ffb020;color:#ffb020" title="compute_locus (from env.type: local docker / cluster nextflow)">▲&nbsp;compute_locus (from env.type: local docker / cluster nextflow)</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="production_directory (explicit workflow_dir)">▲&nbsp;production_directory (explicit workflow_dir)</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="slurm_sizing (now an explicit `resources` arg, not guessed)">▲&nbsp;slurm_sizing (now an explicit `resources` arg, not guessed)</span> <span class="dchip" style="border-color:#ffb020;color:#ffb020" title="reference_rebind (STILL ungoverned)">▲&nbsp;reference_rebind (STILL ungoverned)</span></div></div>
-          <div class="row"><span class="k">Runs in</span><div>the named env: local docker (background run.sh) OR cluster directories[] via submit_workflow_job</div></div>
+          <div class="row"><span class="k">Runs in</span><div>the named env: a background `nextflow run -profile local` (docker) OR `sbatch launcher.sh` on the cluster, in a project directory or the env&#x27;s pipelines zone</div></div>
           <div class="row"><span class="k">You get</span><div>results in the user&#x27;s project workspace + a submission manifest</div></div>
           <div class="note">REALIZED 2026-07-30 (was THE HOLE). ONE verb, dispatches on env.type; cluster specifics (apptainer/nextflow modules, slurm policy) are ENV PROPERTIES not call args — swap the env, same call. Proven E2E on BOTH loci with one identical command (samtools flagstat): output byte-identical across local and cluster. RESIDUAL (honest): it runs a command against a frozen ENV, NOT a replay of a sealed WorkflowSpec, and nothing checks the reference/inputs a run binds match what a pipeline was sealed against — reference_rebind stays ungoverned (a real v1 hardening item).</div>
         </div></div>
@@ -205,14 +205,6 @@
           <td class="exit"><span style="color:#ff4d6d">NOT caught</span></td>
           <td class="src"><code>agent/skills/compute_access.py</code><div class="muted">cluster half coded via projects_access.yaml directories[]; local production has no defined zone</div>
               <div class="dnote">Other half of the parity policy: execution -&gt; project dirs. Cluster-only today.</div></td>
-        </tr>
-        <tr>
-          <td class="q"><b>At production run time, is the bound reference checked against what the pipeline was SEALED against?</b><div class="did">reference_rebind</div></td>
-          <td class="def">no check (ungoverned)</td>
-          <td><span class="pill" style="border-color:#ffb020;color:#ffb020">▲&nbsp;IMPROVISED</span></td>
-          <td class="exit"><span style="color:#ff4d6d">NOT caught</span></td>
-          <td class="src"><code>agent/skills/submit_workflow.py</code><div class="muted">submit_workflow_job takes concrete input paths; nothing diffs them against the sealed spec&#x27;s pinned references</div>
-              <div class="dnote">REPORTS-NEVER-LIE gap: a pipeline validated against gencode.v44 can be run against gencode.v38 and nothing discloses the divergence. The data analog of the tool requested-vs-installed drift flag we already enforce.</div></td>
         </tr>
         <tr>
           <td class="q"><b>How much time / memory / cpus does a cluster job request?</b><div class="did">slurm_sizing</div></td>
@@ -373,6 +365,14 @@
           <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
           <td class="src"><code>agent/mcp_tools/data_tools.py:44</code><div class="muted">download_reference_database cluster path</div>
               </td>
+        </tr>
+        <tr>
+          <td class="q"><b>At production run time, is the bound reference checked against what the pipeline was SEALED against?</b><div class="did">reference_rebind</div></td>
+          <td class="def">checked at launch: every shared reference the run binds is compared with the seal&#x27;s anchors — match, diverged (the run launches `degraded`, never a bare success), or unanchored (stated: the seal produced it in its own step, or never pinned it)</td>
+          <td><span class="pill" style="border-color:#3ddc84;color:#3ddc84">●&nbsp;CODED · fixed</span></td>
+          <td class="exit"><span style="color:#3ddc84">caught ✓</span></td>
+          <td class="src"><code>agent/skills/run_production.py</code><div class="muted">run_production._reference_check over data_pins.check_bound_inputs; the verdict is in the call&#x27;s result and in the submission manifest</div>
+              <div class="dnote">The data analog of the requested-vs-installed drift flag: a pipeline sealed against one annotation and run against another is disclosed, not silently accepted. On the cluster the comparison reads the `&lt;path&gt;.source.sha256` sidecar the download job leaves; nothing is hashed on the head node.</div></td>
         </tr></tbody>
   </table></div>
 </div></body></html>

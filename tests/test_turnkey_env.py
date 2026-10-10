@@ -133,7 +133,7 @@ def test_a_gpu_job_binds_the_device_into_the_container():
 
 def test_the_env_gpu_convention_reaches_the_header_and_the_exec_line():
     """The layer ABOVE the renderer, which is where a production GPU job actually
-    enters: submit_workflow_job → render_workflow_files → _resolve_slurm_and_email →
+    enters: run_step_on_cluster → render_workflow_files → _resolve_slurm_and_email →
     render_workflow. The merge is what turns `gpus: 1` into the cluster's own
     partition/qos convention, and until now nothing tested its GPU branch at all —
     the live GPU proof went through `render_workflow` with partition/qos hand-passed,

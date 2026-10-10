@@ -254,6 +254,17 @@ def _parse_find_output(stdout: str) -> list[dict]:
     return out
 
 
+#: The env zones a project may list, each with its getter and whether what it lists is
+#: the project's own namespace under the zone (scratch) or the zone itself — the rule
+#: transfer applies to uploads and downloads, so what the agent can write it can see.
+_LISTABLE_ZONES = (
+    ("agent_scratch_target", compute_access.get_agent_scratch_target, True),
+    ("agent_common_data_target", compute_access.get_agent_common_data_target, False),
+    ("container_upload_target", compute_access.get_container_upload_target, False),
+    ("agent_pipelines_target", compute_access.get_agent_pipelines_target, False),
+)
+
+
 def _snapshot_paths_for_env(project: dict, env_name: str,
                             env: dict) -> list[dict]:
     """The list of directories the agent will walk on `env_name` for this
@@ -266,12 +277,13 @@ def _snapshot_paths_for_env(project: dict, env_name: str,
           Phase-1 `check_permission` gate is applied.
 
       {"path": <abs>, "kind": "env_target",
-       "target_kind": "agent_scratch_target" | "agent_common_data_target",
-       "target_block": <dict>}
-        — from the env-level Phase-2 target blocks. The path is the
-          target's path AUTO-PREFIXED with the project name (multi-
-          project isolation: this project sees only its own namespace).
-          The env-implicit `check_env_target_capability` gate is applied.
+       "target_kind": one of _LISTABLE_ZONES, "target_block": <dict>}
+        — from the env-level zone blocks, by the rule transfer applies to
+          uploads and downloads: the scratch zone is the project's own
+          namespace under it (<scratch>/<project>); common_data, the
+          container zone and the pipelines zone are shared, so the zone
+          itself is listed. The env-implicit `check_env_target_capability`
+          gate is applied.
 
     Upload-only dirs (no `file_name_only`) are authorized for upload
     but invisible to the snapshot — they don't appear here."""
@@ -282,13 +294,11 @@ def _snapshot_paths_for_env(project: dict, env_name: str,
             p = d.get("path")
             if isinstance(p, str):
                 out.append({"path": p, "kind": "project_directory"})
-    # Source 2: env-level Phase-2 target blocks — visible if the target's
-    # permissions include `file_name_only`. The walked path is auto-
-    # prefixed by project name so projects don't see each other.
+    # Source 2: the env-level zones — visible if the zone's permissions include
+    # `file_name_only`; the scratch zone as this project's namespace, the rest as
+    # themselves.
     proj_name = project.get("name", "")
-    for target_kind, getter in (
-            ("agent_scratch_target", compute_access.get_agent_scratch_target),
-            ("agent_common_data_target", compute_access.get_agent_common_data_target)):
+    for target_kind, getter, namespaced in _LISTABLE_ZONES:
         blk = getter(env)
         if blk is None:
             continue
@@ -298,7 +308,7 @@ def _snapshot_paths_for_env(project: dict, env_name: str,
         if not root:
             continue
         out.append({
-            "path": f"{root}/{proj_name}",
+            "path": f"{root}/{proj_name}" if namespaced else root,
             "kind": "env_target",
             "target_kind": target_kind,
             "target_block": blk,
@@ -337,7 +347,7 @@ def _deep_listing(project: dict, access: dict, path: str,
 
     # Which envs may walk this path: a project directory covering it whose
     # grant includes file_name_only (check_permission enforces both), or an
-    # env zone — where the covering prefix is the PROJECT-NAMESPACED path,
+    # env zone — the scratch zone only through this project's own namespace,
     # so one project's deep listing can never wander into another's.
     proj_name = project.get("name", "")
     plans: list[tuple[str, dict]] = []
@@ -352,12 +362,10 @@ def _deep_listing(project: dict, access: dict, path: str,
         except compute_access.PermissionDenied as e:
             last_denial = e
         if not authorized:
-            for target_kind, getter in (
-                    ("agent_scratch_target", compute_access.get_agent_scratch_target),
-                    ("agent_common_data_target", compute_access.get_agent_common_data_target)):
+            for target_kind, getter, namespaced in _LISTABLE_ZONES:
                 blk = getter(env)
                 root = ((blk or {}).get("path") or "").rstrip("/")
-                if not root or not _boundary_covers(f"{root}/{proj_name}", path):
+                if not root or not _boundary_covers(f"{root}/{proj_name}" if namespaced else root, path):
                     continue
                 compute_access.check_env_target_capability(
                     project, env_name, blk, "snapshot", target_kind)
@@ -366,9 +374,12 @@ def _deep_listing(project: dict, access: dict, path: str,
         if authorized:
             plans.append((env_name, env))
     if not plans:
-        raise last_denial or compute_access.PermissionDenied(
-            f"path {path!r} is not under any directory project "
-            f"'{proj_name}' may snapshot (file_name_only)")
+        envs = [b.get("compute_env") for b in project.get("compute_env_access") or []]
+        raise compute_access.PermissionDenied(
+            f"path {path!r} is not under any directory project {proj_name!r} may list on "
+            f"its compute envs {envs}: not a directories[] grant with file_name_only, nor "
+            f"an env zone (scratch under <scratch>/{proj_name}/, common_data, containers, "
+            f"pipelines)" + (f" — {last_denial}" if last_denial and len(envs) == 1 else ""))
 
     all_entries: list[dict] = []
     per_env_counts: dict[str, int] = {}

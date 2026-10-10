@@ -34,7 +34,7 @@ def snapshot_project(project_name: str, path: Optional[str] = None,
     `truncated`, then write the CSV from `entries[].path`.
 
     This is the read-only INSPECTION primitive for a user's compute env —
-    `upload` / `download` / `submit_workflow_job` / `run_step_on_cluster` are
+    `upload` / `download` / `run_production_pipeline` / `run_step_on_cluster` are
     the actuators. The shell that runs here is fixed: `find` with a pinned
     printf template (plus `-name <glob> | head -n <cap>` in deep mode) over
     ssh; local envs use no subprocess at all. No file contents are read; no

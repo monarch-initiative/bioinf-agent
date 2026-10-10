@@ -31,6 +31,7 @@ from agent import mcp_server as _ms
 from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke
+from agent.skills.env_manager import _last_line
 
 
 def _record_engine_smoke(result: dict, env_name: str, verify_command: str) -> None:
@@ -317,7 +318,9 @@ def install_git_repo(
     Clones repo_url into {env}/share/{tool_name}, checks out `ref` (branch /
     tag / commit; default HEAD), resolves the commit SHA (the immutable content
     anchor), optionally runs `build_command` (e.g. `pip install -e .`, `make`)
-    and a `verify_command` smoke test inside the env at the clone dir.
+    and a `verify_command` smoke test inside the env at the clone dir. The verify runs
+    under `set -o pipefail`, and many tools exit 1 on a bare usage or --version call, so
+    test the OUTPUT: `test -n "$(TOOL 2>&1 | grep -w Version)"`.
 
     If pipeline_id is supplied, records an install_step (tool=git,
     subcommand=clone) whose installed_packages entry carries
@@ -1068,7 +1071,8 @@ def install_r_package(
     deps_first: list[str] = [],
     functional_check: str = "",
 ) -> dict:
-    """Install an R package end-to-end with category-correct discovery built in.
+    """Install an R package end-to-end with category-correct discovery built in, into an
+    env that EXISTS (create one first: `install_conda_packages(env_name, ['r-base=4.5'])`).
 
     `source` is one of:
       cran          — install.packages("name") from CRAN
@@ -1189,7 +1193,13 @@ def install_r_package(
             f"{functional_check}\""
         )
 
-    # Delegate to run_install_command for the actual install_step plumbing.
+    env_path = _ms._env_mgr.envs_dir / env_name
+    if not env_path.exists():
+        return refused("env_manager.r_env_missing", success=False,
+                       error=f"env not found: {env_path}",
+                       remedy=f"create it first: install_conda_packages(env_name={env_name!r}, "
+                              "packages=['r-base=4.5']) — an install never creates the env it targets, "
+                              "because the R it runs under is your choice and is recorded")
     result = _ms._env_mgr.run_in_env(env_name, command, timeout=1800)
     # On failure, surface every package R complained was missing as a structured
     # field. R logs these in TWO distinct shapes — both load-bearing in the wild:
@@ -1299,6 +1309,9 @@ def _install_outcome(result: dict, ok_code: str, failed_code: str) -> dict:
     route an env took."""
     ok = result.get("returncode") == 0 and result.get("success") is not False
     fields = {k: v for k, v in result.items() if k not in ("outcome", "code")}
+    if not ok and not fields.get("error"):
+        fields["error"] = (_last_line(result.get("stderr")) or _last_line(result.get("stdout"))
+                           or f"exit {result.get('returncode')} with nothing on stderr")
     return proven(ok_code, **fields) if ok else broke(failed_code, **fields)
 
 
@@ -1312,7 +1325,8 @@ def install_pip_package(
     step: int = 0,
     functional_check: str = "",
 ) -> dict:
-    """Install a pip package end-to-end with an auto-verify_command.
+    """Install a pip package end-to-end with an auto-verify_command, into an env that
+    EXISTS (create one first: `install_conda_packages(env_name, ['python=3.12', 'pip'])`).
 
     Equivalent to running pip install + python -c "import name" inside the env.
     The import-check is the load-or-die: if pip says it installed but the
@@ -1349,6 +1363,13 @@ def install_pip_package(
     # We default to the lowercased name; agents can override with verify_command
     # post-hoc if the import path differs.
     import_check_name = name.replace("-", "_").lower()
+    env_path = _ms._env_mgr.envs_dir / env_name
+    if not env_path.exists():
+        return refused("env_manager.pip_env_missing", success=False,
+                       error=f"env not found: {env_path}",
+                       remedy=f"create it first: install_conda_packages(env_name={env_name!r}, "
+                              "packages=['python=3.12', 'pip']) — an install never creates the env it "
+                              "targets, because the Python it runs under is your choice and is recorded")
     _flag_str = " ".join(shlex.quote(f) for f in pip_flags)
     command = " ".join(part for part in (f"pip install", _flag_str, spec) if part)
     verify_command = f"python -c 'import {import_check_name}' || pip show {name} > /dev/null"

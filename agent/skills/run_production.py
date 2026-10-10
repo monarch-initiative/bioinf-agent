@@ -33,7 +33,7 @@ import subprocess
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Mapping, Optional, Collection
 
 import yaml
 
@@ -274,6 +274,20 @@ def _check_images_cluster(record: PipelineRecord, env: dict, env_name: str, proj
         raise _refuse("run_production.rendered_without_cluster",
                       f"the pipeline was rendered without a .sif path for {[im['image'] for im in unrendered]}",
                       remedy=f"render_pipeline(…, env={env_name!r}) so nextflow.config names the staged images")
+    zone = str((compute_access.get_container_upload_target(env) or {}).get("path") or "").rstrip("/")
+    elsewhere = [im for im in images
+                 if zone and not (im["sif_path"] == zone or im["sif_path"].startswith(zone + "/"))]
+    if elsewhere:
+        # Staging writes into the env's CURRENT container zone; a render made before that
+        # zone moved names paths nothing will ever stage to, so "stage it" would loop.
+        cohort = ", cohort=[…] as before (see .pipeline/pipeline.yaml)" if record.cohort_workflows else ""
+        raise _refuse("run_production.rendered_for_other_zone",
+                      f"the pipeline was rendered when {env_name!r} kept its images elsewhere: "
+                      f"{[im['sif_path'] for im in elsewhere]} are not under its container zone {zone!r}",
+                      sif_paths=[im["sif_path"] for im in elsewhere], container_zone=zone,
+                      remedy=f"re-render so nextflow.config names the current zone: render_pipeline("
+                             f"sealed_workflow={record.sealed_workflow!r}, name={record.name!r}, "
+                             f"env={env_name!r}, overwrite=True{cohort})")
     not_staged = [im for im in images
                   if not stage_apptainer._remote_sif_exists(env, im["sif_path"], timeout=min(timeout, 120))]
     if not_staged:
@@ -373,16 +387,24 @@ def _observe_cluster(env: dict, paths: list[str], *, timeout: int) -> dict:
 
 
 def _reference_check(record: PipelineRecord, shared: Mapping[str, str], *, locus: str,
-                     env: dict, timeout: int) -> dict:
+                     env: dict, timeout: int, prefixes: Collection[str] = ()) -> dict:
     """The shared references this run binds against what the workflow was SEALED with.
-    Grouped by the sealed workflow each parameter belongs to; one verdict."""
+    Grouped by the sealed workflow each parameter belongs to; one verdict. A `prefixes`
+    entry names a family of files (an index), observed as such rather than as one file."""
     if not shared:
         return {"status": data_pins.NOT_ATTEMPTED, "reason": "the pipeline binds no shared path parameter",
                 "locus": locus, "findings": []}
     by_spec: dict[str, dict[str, str]] = {}
     for key, path in shared.items():
         by_spec.setdefault(_spec_for(record, key), {})[key] = path
-    observed = _observe_cluster(env, sorted(set(shared.values())), timeout=timeout) if locus == "cluster" else {}
+    observed: dict[str, dict] = {}
+    if locus == "cluster":
+        plain = sorted(set(shared.values()) - set(prefixes))
+        observed = _observe_cluster(env, plain, timeout=timeout) if plain else {}
+        family = sorted(set(shared.values()) & set(prefixes))
+        if family:
+            missing = set(_remote_prefixes_exist(env, family, timeout=timeout)["missing"])
+            observed.update({p: {"exists": p not in missing, "sha256": ""} for p in family})
     findings: list[dict] = []
     unreadable: list[str] = []
     for spec_path, inputs in by_spec.items():
@@ -395,6 +417,16 @@ def _reference_check(record: PipelineRecord, shared: Mapping[str, str], *, locus
             remote_presence={p: o.get("exists") for p, o in observed.items()},
             remote_sha256={p: o.get("sha256", "") for p, o in observed.items()})
         findings += check["findings"]
+    # An artifact the sealed workflow's own step PRODUCED (an index it built, an annotation
+    # it fetched) has no external anchor to compare against; say which step, not merely
+    # that the path is unknown.
+    produced = {p.name.lower(): str(p.source) for p in record.params
+                if str(p.source or "").startswith("sealed_step:")}
+    for f in findings:
+        if f["verdict"] == data_pins.UNANCHORED and f.get("slot") in produced:
+            step = produced[f["slot"]].split(":", 1)[1]
+            f["reason"] = (f"produced by the sealed workflow's own step {step}; the seal recorded no "
+                           f"external anchor for it, so nothing pins the copy at this path")
     counts = {v: sum(1 for f in findings if f["verdict"] == v)
               for v in (data_pins.MATCH, data_pins.DIVERGED, data_pins.UNANCHORED, data_pins.UNVERIFIED)}
     # Four answers, stated apart: a pinned reference that CHANGED (diverged — the run
@@ -625,7 +657,8 @@ def run_production_pipeline(project_name: str,
                                      "or run `source scripts/activate.sh` and launch by hand")
             _check_images_local(record)
             _check_paths_local(plain, prefixes)
-        reference_check = _reference_check(record, shared, locus=locus, env=env, timeout=timeout)
+        reference_check = _reference_check(record, shared, locus=locus, env=env, timeout=timeout,
+                                           prefixes=prefixes)
 
         # ─── The run directory ──────────────────────────────────────────
         if env_type == "ssh":

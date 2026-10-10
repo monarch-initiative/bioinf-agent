@@ -10,7 +10,7 @@ on a compute env so a SLURM job can `apptainer exec` it.
 What it ISN'T
 -------------
 Not a composite. The caller still calls `freeze()` to populate the
-EnvCache and `submit_workflow_job` to run jobs. This primitive is
+EnvCache and `run_production_pipeline` to run jobs. This primitive is
 the irreducible "get the bytes there" step.
 
 How it delivers (local-build-and-ship)
