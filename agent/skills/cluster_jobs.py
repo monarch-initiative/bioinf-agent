@@ -319,7 +319,6 @@ def cluster_job_status(project_name: str,
 
 #: Trace statuses a run can leave a task in. Nextflow's own vocabulary.
 TASK_DONE, TASK_FAILED = "COMPLETED", "FAILED"
-_TASK_LIVE = ("SUBMITTED", "RUNNING", "NEW")
 
 
 def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:

@@ -1,14 +1,10 @@
 """
 env_freeze — the container-native freeze: a spec/draft → a shipped env IMAGE.
 
-This is the C3 teardown bridge that retires the host recipe zoo. The OLD path
-(docker_builder.build_recipe + _recipe_dockerfile + nine `_emit_*`) translated a
-spec's typed install_method records back into Dockerfile RUN steps for the host-
-REPLAY locus (conda at /opt/conda, rustup/go-tarball, conda-activate). This module
-instead routes each install_method to the SINGLE source of per-tier knowledge —
+This module routes each install_method to the SINGLE source of per-tier knowledge —
 the install_commands generators — and builds on the container-native locus
 (EnvBuild: install + validate IN the ship image, one generic bake, validated==
-shipped). One emitter, not nine; the per-tier knowledge lives once (install_commands).
+shipped). One emitter; the per-tier knowledge lives once (install_commands).
 
 Toolchain-coupled tiers (cargo/go/perl) build with the ENGINE's toolchain, so the
 required toolchain conda specs are injected automatically (rust / go / perl +
@@ -23,6 +19,7 @@ the network. `build_env_image` drives a real ContainerBuild and is live-proven.
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
@@ -71,7 +68,8 @@ def _pip_presence_check(name: str) -> str:
     """In-image presence for a pip dist via python's metadata — NOT `pip show`
     (pixi --pypi uses uv, so the env ships no pip binary), and dist-name based
     (robust to an import-name mismatch like pyyaml->yaml)."""
-    return f"python -c \"import importlib.metadata as _m; _m.version('{name}')\""
+    probe = f"import importlib.metadata as _m; _m.version({ic.dq_literal(name)})"
+    return f"python -c {shlex.quote(probe)}"
 
 
 def _r_presence_check(conda_name: str) -> str:
@@ -79,19 +77,19 @@ def _r_presence_check(conda_name: str) -> str:
     library name in R's installed.packages(). The conda channel lowercases the
     name (`bioconductor-deseq2`) but the canonical R library preserves case
     (`DESeq2`); case-sensitive requireNamespace would fail on a healthy install.
-    ignore.case=TRUE on installed.packages() rownames is the robust check — we
-    only care THAT the package is installed; the case-canonical form is the R
-    library's own. Evidence_shape's prefix-stripping (`bioconductor-` / `r-`)
-    means the shape rule sees `deseq2` as the tool token, which is exactly what
-    the grep references."""
+    A case-insensitive EXACT match against installed.packages() rownames is the
+    robust check — we only care THAT the package is installed; the case-canonical
+    form is the R library's own. Evidence_shape's prefix-stripping (`bioconductor-`
+    / `r-`) means the shape rule sees `deseq2` as the tool token, which is exactly
+    the literal the expression names."""
     lib = conda_name
     for pre in ("bioconductor-", "r-"):
         if conda_name.startswith(pre):
             lib = conda_name[len(pre):]
             break
-    expr = (f"q(status=as.integer(length(grep('^{lib}$', "
-            f"rownames(installed.packages()), ignore.case=TRUE)) == 0))")
-    return f'Rscript -e "{expr}"'
+    expr = (f"q(status=as.integer(!(tolower({ic.dq_literal(lib)}) %in% "
+            f"tolower(rownames(installed.packages())))))")
+    return f"Rscript -e {shlex.quote(expr)}"
 
 
 def _conda_pkg_bin_check_sh(name: str) -> str:
@@ -146,12 +144,11 @@ def _conda_pkg_bin_check_sh(name: str) -> str:
     probe cannot see any adopted package whose binary name differs from its package
     name (gatk4, htslib, perl-bioperl), and gating adopt on it false-refuses
     perfectly healthy envs."""
-    # Conda package names use a-z 0-9 - . _ — no shell metachars; safe to
-    # interpolate directly into the subshell body.
+    q = shlex.quote(name)
     body = (
-        f'for f in /opt/conda/envs/*/conda-meta/{name}-*.json '
-        f'/opt/conda/conda-meta/{name}-*.json '
-        f'/usr/local/conda-meta/{name}-*.json; do '
+        f'for f in /opt/conda/envs/*/conda-meta/{q}-*.json '
+        f'/opt/conda/conda-meta/{q}-*.json '
+        f'/usr/local/conda-meta/{q}-*.json; do '
         f'[ -e "$f" ] || continue; '
         f'for b in $(sed -nE \'s|.*"bin/([^"/]+)".*|\\1|p\' "$f" | sort -u); do '
         f'command -v "$b" >/dev/null 2>&1 && exit 0; '
@@ -180,10 +177,11 @@ def _perl_module_check_sh(name: str) -> str:
     Bounded to the first few modules — bioperl ships hundreds, and one successful load is
     the proof we need. The package name appears as a word-boundary token in the
     conda-meta glob, so env_honesty's evidence_shape anchor rule is satisfied."""
+    q = shlex.quote(name)
     body = (
-        f'for f in /usr/local/conda-meta/{name}-*.json '
-        f'/opt/conda/envs/*/conda-meta/{name}-*.json '
-        f'/opt/conda/conda-meta/{name}-*.json; do '
+        f'for f in /usr/local/conda-meta/{q}-*.json '
+        f'/opt/conda/envs/*/conda-meta/{q}-*.json '
+        f'/opt/conda/conda-meta/{q}-*.json; do '
         f'[ -e "$f" ] || continue; '
         f'for m in $(sed -nE \'s|.*"lib/perl5/[^"]*site_perl/([A-Za-z][^"]*)\\.pm".*|\\1|p\' "$f" '
         f'| sed \'s|/|::|g\' | sort -u | head -5); do '
@@ -221,20 +219,22 @@ def _conda_presence_check(name: str) -> str:
     Route those to the R-aware Rscript installed.packages() check first."""
     if name.startswith("bioconductor-") or name.startswith("r-"):
         return _r_presence_check(name)
+    q = shlex.quote(name)
     if name.startswith("perl-"):
         # Same detour as R, same reason: a `perl-*` package is a Perl module library and
         # the three generic clauses cannot see one that ships no binary. The module probe
         # goes LAST so a perl package that DOES ship a binary (perl-bioperl) still
         # short-circuits on the cheap clauses.
         return (
-            f"command -v {name} || "
+            f"command -v {q} || "
             f"{_conda_pkg_bin_check_sh(name)} || "
             f"{_perl_module_check_sh(name)}"
         )
+    probe = f"import importlib.metadata as _m; _m.distribution({ic.dq_literal(name)})"
     return (
-        f"command -v {name} || "
+        f"command -v {q} || "
         f"{_conda_pkg_bin_check_sh(name)} || "
-        f"python -c \"import importlib.metadata as _m; _m.distribution('{name}')\""
+        f"python -c {shlex.quote(probe)}"
     )
 
 
@@ -296,6 +296,12 @@ def _replay_assurance(tier: str, im: dict) -> tuple[str, bool]:
     if tier == "pip":   # only flag-bearing pip reaches a longtail step (flagless → engine lock)
         return "command_pinned", False
     return "unanchored", False
+
+
+# The install_method.type values `_map_install_spec` has a container-native generator
+# for — the roster a refusal of any other type lists.
+_CONTAINER_NATIVE_TYPES = ("jar", "source", "synthesized", "cargo", "go", "perl",
+                           "r_install", "binary")
 
 
 def _map_install(
@@ -557,7 +563,9 @@ def _map_install_spec(
         return {"spec": gen}
 
     return refused("build.unknown_install_type",
-                   error=f"install_method.type {t!r} for '{name}' has no container-native generator")
+                   error=(f"install_method.type {t!r} for '{name}' has no container-native "
+                          f"generator; supported types: {', '.join(_CONTAINER_NATIVE_TYPES)}"),
+                   supported_types=list(_CONTAINER_NATIVE_TYPES))
 
 
 def spec_package_name(spec: str) -> str:
@@ -746,9 +754,9 @@ def build_env_image(
             # code (per the outcomes re-wrap convention) but preserves the SPECIFIC
             # inner code as `inner_code` — the integrity firewall
             # build.binary_integrity_mismatch, asset-unresolved, non-replayable, …
-            # — so a caller can still tell WHY it refused (the old single generic
-            # code hid that, and wrongly forced `refused` even for a `broke` inner
-            # like a network hash failure). Class-preserving: refused stays refused.
+            # — so a caller can still tell WHY it refused (a single generic code
+            # would hide that, and forcing `refused` would be wrong for a `broke`
+            # inner like a network hash failure). Class-preserving: refused stays refused.
             fields = {**m, "success": False, "stage": "map_install",
                       "inner_code": m.get("code")}
             if m["outcome"] == "refused":
@@ -756,7 +764,7 @@ def build_env_image(
             return broke("build.map_install_failed", **fields)
         tool_specs.append(m["spec"])   # provenance (C5 ship assurance) attached by _map_install
 
-    # Append flag-bearing pip installs as engine-coupled long-tail tools (P2 fix).
+    # Append flag-bearing pip installs as engine-coupled long-tail tools.
     # Their versions come from the same installed_packages view as the engine pip
     # path so move-to-end dedup of retry attempts still resolves to the
     # last-successful version.

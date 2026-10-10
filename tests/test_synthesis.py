@@ -546,7 +546,7 @@ def test_install_pip_package_functional_failure_fails_install(monkeypatch):
     (ms._env_mgr.envs_dir / "envx").mkdir(parents=True, exist_ok=True)   # the routes refuse a missing env
     def _run(env, cmd, **k):
         # install + import verify pass; the FUNCTIONAL run fails
-        if cmd.startswith("python -c 'import pysam;"):
+        if cmd.startswith("python -c") and "pysam.AlignmentFile" in cmd:
             return {"returncode": 1, "stdout": "", "stderr": "RuntimeError: missing shared lib"}
         return {"returncode": 0, "stdout": "", "stderr": ""}
     monkeypatch.setattr(ms._env_mgr, "run_in_env", _run, raising=False)

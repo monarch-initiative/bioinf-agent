@@ -15,7 +15,6 @@ the caller's job (via transfer.upload -> container_upload_target).
 """
 from __future__ import annotations
 
-import shlex
 import tempfile
 from pathlib import Path
 

@@ -430,10 +430,11 @@ class TestCommandLine:
 # What renders MUST be what was authored
 #
 # main.nf puts the command inside a Groovy triple-double-quoted string and then
-# inside a `bash -c '…'` argument. Both layers rewrite text. Before these tests
-# all four cases below rendered SILENTLY: the workflow looked well-formed, the
-# upload and the sbatch both succeeded, and the compute node ran a different
-# command (or failed to parse main.nf) hours later.
+# inside a shell-quoted `bash -c` argument. The shell layer carries a single
+# quote faithfully; the Groovy layer rewrites backslashes, bare `$` and `"""`.
+# Before these tests those cases rendered SILENTLY: the workflow looked
+# well-formed, the upload and the sbatch both succeeded, and the compute node
+# ran a different command (or failed to parse main.nf) hours later.
 # ===========================================================================
 
 def _render_command(command: str, **over):
@@ -467,15 +468,17 @@ class TestCommandFidelity:
         assert body.endswith(f"bash -c '{expected}'")
 
     @pytest.mark.integration
-    def test_refuses_single_quote_in_command(self):
-        """`awk '{print $1}'` — the single most common shell idiom in
-        bioinformatics one-liners. The quote closed the `bash -c '…'` argument
-        early and the outer shell re-parsed the remainder."""
-        with pytest.raises(ValueError) as exc:
-            _render_command(
-                "samtools view ${input_bam} | awk \"{print}\" "
-                "| tr -d \"'\" > ${output_bam}")
-        assert "single quote" in str(exc.value)
+    def test_single_quote_is_carried_faithfully(self):
+        """`awk '{print}'` / `tr -d "'"` — single quotes are the most common shell
+        idiom in bioinformatics one-liners. The body is shell-quoted as the one
+        `bash -c` argument, so bash reassembles exactly the authored command."""
+        import shlex
+        command = ("samtools view ${input_bam} | awk '{print}' "
+                   "| tr -d \"'\" > ${output_bam}")
+        body = _script_body(_render_command(command)["main.nf"])
+        argv = shlex.split(body.split(" bash -c ", 1)[1])
+        assert argv == [command.replace("${input_bam}", "${params.input_bam}")
+                               .replace("${output_bam}", "${params.output_bam}")]
 
     @pytest.mark.integration
     def test_refuses_backslash_in_command(self):
@@ -507,8 +510,7 @@ class TestCommandFidelity:
 
     @pytest.mark.integration
     def test_double_quotes_still_allowed(self):
-        """Refusing the single quote is only an EARNED refusal if the obvious
-        workaround the message names actually works."""
+        """Double quotes pass through the shell-quoted body unchanged."""
         body = _script_body(_render_command(
             'samtools view ${input_bam} | grep -v "^@" > ${output_bam}'
         )["main.nf"])

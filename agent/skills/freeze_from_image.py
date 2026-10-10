@@ -57,6 +57,21 @@ def _image_digest(image: str) -> str:
     return r["out"].strip() if r["rc"] == 0 else ""
 
 
+def _local_image_tags(limit: int = 50) -> list[str]:
+    """`repo:tag` for every image the local daemon holds — what a "not local" refusal
+    names so the caller sees what IS here. Bounded and best effort: [] when docker is
+    unavailable or the listing fails."""
+    try:
+        r = _sh(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], timeout=60)
+    except OSError:
+        return []
+    if r["rc"] != 0:
+        return []
+    tags = sorted({ln.strip() for ln in r["out"].splitlines()
+                   if ln.strip() and not ln.startswith("<none>")})
+    return tags[:limit]
+
+
 def _run_in_image(image: str, platform: str, command: str, timeout: int = 300,
                   maxlen: int = 400) -> dict:
     """Run a command in the image, return rc + captured output. Uses `bash -c`, NOT
@@ -192,7 +207,7 @@ def _self_reported_version(image: str, platform: str, tool: str) -> Optional[str
     absence, honestly, never a scraped guess. The one dedicated probe per shipped binary
     is what turns the adopt path's blanket `version: None` into a captured fact when the
     binary states one."""
-    res = _run_in_image(image, platform, f"{tool} --version 2>&1", timeout=60)
+    res = _run_in_image(image, platform, f"{_shq(tool)} --version 2>&1", timeout=60)
     if res["rc"] != 0:
         return None
     return _parse_self_report(tool, res["out"])
@@ -234,8 +249,12 @@ def freeze_from_image(
     # -- BUILT: ensure the image resolves locally (pull if allowed) --
     if not _image_present(image):
         if not pull_if_absent:
+            local = _local_image_tags()
             return broke("freeze_from_image.image_absent",
-                         error=f"image {image!r} is not in the local daemon and pull is disabled")
+                         error=(f"image {image!r} is not in the local daemon and pull is disabled"
+                                + (f"; local images: {local}" if local
+                                   else "; the daemon lists no images (or docker is unavailable)")),
+                         local_images=local)
         pl = _sh(["docker", "pull", "--platform", platform, image], timeout=1800)
         if pl["rc"] != 0 or not _image_present(image):
             return broke("freeze_from_image.pull_failed",
@@ -354,16 +373,13 @@ def freeze_from_image(
     # quay.io/biocontainers/miniprot, the manifest digest is sha256:2eb53fea… and the
     # config-blob digest that `.Id` returns is sha256:65a4f971….
     #
-    # The reason this shipped green is machine-specific luck. On a daemon using the
-    # containerd snapshotter, `.Id` IS the manifest digest, so every adopt recipe this
-    # function produced verified perfectly here. On a classic overlay2 daemon — the common
-    # case, and what a colleague or CI has — `.Id` is the config blob, and the recorded
-    # anchor is a string no one can pull: feeding it to verify_env_recipe returns
+    # Which value `.Id` holds is daemon-specific: under the containerd snapshotter
+    # `.Id` IS the manifest digest, so an anchor taken from it verifies there; on a
+    # classic overlay2 daemon — the common case — `.Id` is the config blob, and an
+    # anchor taken from it is a string no one can pull, so verify_env_recipe returns
     # `broke / freeze.recipe_not_reproduced` for a recipe that is entirely correct.
-    #
-    # container_build.py:209-216 documents this exact confusion as already fixed, and the
-    # block ~70 lines below uses `registry_manifest_digest` for `adopt_image`. The fix
-    # landed on the READER and on the sibling field, and never on this producer.
+    # The adopt branch below therefore records `registry_manifest_digest`, the same
+    # value `adopt_image` carries.
     content_digest = digest
     if mode == "adopt":
         from agent.skills.container_build import registry_manifest_digest
@@ -397,8 +413,8 @@ def freeze_from_image(
     # baked in, so its ONLY observable version is what the binary prints about ITSELF: we
     # probe `<tool> --version` and capture the tool's own first-line token
     # (`_self_reported_version`) — `9cef4057` for Talos's unversioned bcftools fork, `0.2.2`
-    # for echtvar. Its two guards (first line only; first token must be the tool) make the
-    # old htslib-under-bcftools lie STRUCTURALLY impossible; a miss stays None = "unrecorded",
+    # for echtvar. Its two guards (first line only; first token must be the tool) make an
+    # htslib version reported under a bcftools row STRUCTURALLY impossible; a miss stays None = "unrecorded",
     # a captured fact when the binary states one and honest absence when it does not.
     record["shipped_binaries"] = [
         _ShippedBinary(
@@ -431,15 +447,13 @@ def freeze_from_image(
 
     # -- register + deliverables (rendered purely from the record) --
     # ADOPT MUST RECORD WHAT SOMEONE ELSE CAN PULL, NOT WHAT WE HAPPEN TO CALL IT.
-    # This passed `image` through verbatim — a MUTABLE TAG — while the rendered recipe
-    # printed it under "pulling that image BY DIGEST (content-addressed — the digest
-    # guarantees identical bytes)". The tag moves; the sentence doesn't. `freeze()`'s adopt
-    # path has always done this correctly (`adopt.get("image_by_digest", image)`), so this
-    # was one concept with two implementations and the wrong one under the top tier.
+    # `image` verbatim is a MUTABLE TAG, and the rendered recipe prints this value under
+    # "pulling that image BY DIGEST (content-addressed — the digest guarantees identical
+    # bytes)": the tag moves, the sentence doesn't. `freeze()`'s adopt path pins the same
+    # way (`adopt.get("image_by_digest", image)`) — one concept, one implementation.
     # `.Id` is NOT the answer either: it is the daemon's LOCAL content id, not a pullable
-    # reference (see container_build.registry_manifest_digest — the same confusion already
-    # shipped once and reported "recipe not reproduced" for every adopt recipe on any
-    # overlay2 daemon). When no repo digest exists the image was never pulled from a
+    # reference (see container_build.registry_manifest_digest). When no repo digest
+    # exists the image was never pulled from a
     # registry, so there is nothing to pin: say so rather than emit an unpullable string.
     adopt_ref = ""
     if build_method == "adopt-image":

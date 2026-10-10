@@ -51,8 +51,7 @@ from agent.skills import workspace
 # live under a Globus-accessible location ($HOME): Globus Connect Personal only
 # scans its Accessible Folders and refuses a system temp dir like /var/folders.
 # The workspace is required to sit under $HOME. Mirrors
-# submit_workflow._render_stage_dir and run_cluster_step._render_stage_dir (both
-# surfaced by real cluster runs).
+# run_cluster_step._render_stage_dir.
 # A FUNCTION, not a module constant. The location depends on the resolved
 # workspace, and a constant computed at import freezes whatever the environment
 # said at import time — which for a test process is "before the fixture
@@ -616,14 +615,13 @@ def _probe_cluster_path(env: dict, path: str, *,
     q = shlex.quote(path)
     q_side = shlex.quote(f"{path}.source.sha256")
     # Emit three tagged lines so a MOTD banner can't confuse the parse.
-    probe = (
-        f"bash -lc '"
+    body = (
         f"if [ -e {q} ]; then echo EXISTS=1; else echo EXISTS=0; fi; "
         f"if [ -e {q} ]; then du -sb {q} 2>/dev/null | cut -f1 | "
         f"sed \"s/^/SIZE=/\"; fi; "
         f"if [ -f {q_side} ]; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi"
-        f"'"
     )
+    probe = f"bash -lc {shlex.quote(body)}"
     argv = _ssh_argv(env, probe)
     try:
         res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)

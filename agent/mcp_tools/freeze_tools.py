@@ -14,7 +14,6 @@ mcp_server.py (read via `_ms.X`) so this submodule stays purely a tool surface.
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 from typing import Optional
 
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
@@ -178,7 +177,7 @@ def freeze(
 ) -> dict:
     """Freeze an env into a content-addressed, HPC-shippable artifact (Slice 5).
 
-    The re-spine's env-artifact primitive — adopt a pre-built BioContainer by
+    The env-artifact primitive — adopt a pre-built BioContainer by
     digest when one exists, else build our own, and emit the Apptainer/HPC
     delivery contract. Steps:
 
@@ -241,12 +240,12 @@ def freeze(
     if _docker_refusal:
         return _docker_refusal
     parsed = _ms._freeze.parse_tools(tools)
-    # F1 fix (Batch 2): the licenses surface has TWO entry points — the freeze()
+    # The licenses surface has TWO entry points — the freeze()
     # `licenses=[...]` kwarg AND patch_pipeline({licenses, license_gated, …}) on
-    # the draft. An agent that diligently called patch_pipeline but forgot to
-    # re-pass licenses on freeze() would land here with licenses=None, the I13
-    # gate would refuse the gated build, and the diligence would look like a
-    # bug. Merge: caller's licenses wins if non-empty; else fall back to the
+    # the draft. An agent that called patch_pipeline but did not
+    # re-pass licenses on freeze() lands here with licenses=None, and without the
+    # merge the I13 gate would refuse a build whose licenses ARE recorded.
+    # Merge: caller's licenses wins if non-empty; else fall back to the
     # draft's. Same merge for `gated`: an explicit gated=True from the caller
     # wins; absent caller intent, the draft's license_gated promotes us into
     # gated mode (so I13 still fires, but with the licenses the agent recorded).
@@ -256,7 +255,7 @@ def freeze(
             licenses = list(_draft_for_merge.get("licenses") or [])
         if not gated and bool(_draft_for_merge.get("license_gated")):
             gated = True
-    # F2 fix (Batch 2): I13 EARLY GATE. The honesty contract already refuses a
+    # I13 EARLY GATE. The honesty contract already refuses a
     # gated build with empty licenses[] (`I13.gated_license_recorded` in
     # env_honesty), but only AFTER the docker build finishes — the user pays
     # 10-30 min of build time to learn the artifact will be refused. Refuse
@@ -275,13 +274,13 @@ def freeze(
     # wins (richer record); when absent and the caller passed accel="cuda" but no
     # patch_pipeline(accelerator=…), we synthesize the minimum and let I12 catch any
     # missing required metadata (toolkit_version, runtime_probe, min_driver_version) —
-    # the right failure mode is REFUSE-WITH-DIAGNOSTIC, not a vacuous pass. This is
-    # the dorado-stress D3 fix: previously `accel` only fed the cache key and never
-    # reached _check_accelerator, so `accel="cuda"` on a draft with accelerator=None
-    # produced a "POLICY_CLEAN — I12 passed" badge without I12 ever running.
-    # Fetched BEFORE rkey so the cache key can include the policy facets (D5 fix)
-    # AND the install-record version fill (B7 fix — see parsed_filled).
-    # Reuses _draft_for_merge (read above for F1/F2 licenses merge) — same draft.
+    # the right failure mode is REFUSE-WITH-DIAGNOSTIC, not a vacuous pass. `accel`
+    # must reach _check_accelerator, not only the cache key: otherwise `accel="cuda"`
+    # on a draft with accelerator=None earns a "POLICY_CLEAN — I12 passed" badge
+    # without I12 ever running.
+    # Fetched BEFORE rkey so the cache key can include the policy facets
+    # AND the install-record version fill (see parsed_filled).
+    # Reuses _draft_for_merge (read above for the licenses merge) — same draft.
     draft = _draft_for_merge
     _draft_accel = draft.get("accelerator") if isinstance(draft, dict) else None
     effective_accel = _ms._synth_accelerator_from_request(accel, cuda_version, _draft_accel)
@@ -291,10 +290,10 @@ def freeze(
     # (busco==6.0.0 vs busco==5.8.3) collide on ONE cache key, and the second
     # freeze would return the FIRST's image — a wrong-version trust violation.
     parsed_filled = _ms._resolve_versions_from_install_record(parsed, draft)
-    # D5 + D6 fix: request_key now folds in gated, accelerator-policy hash, and
+    # request_key folds in gated, the accelerator-policy hash, and
     # the licenses set hash so policy-distinct artifacts don't collide on the cache
     # key. Platform is canonicalized inside request_key so conda-form ('linux-64')
-    # and Docker-form ('linux/amd64') callers share ONE slot (D6).
+    # and Docker-form ('linux/amd64') callers share ONE slot.
     rkey = _ms._freeze.request_key(
         [(n, v or "") for n, v in parsed_filled], platform, accel,
         gated=gated, accel_policy=effective_accel, licenses=list(licenses or []),
@@ -305,14 +304,7 @@ def freeze(
     # `docker rmi`'d) must not count as a hit — that hands back a stale record with
     # no rebuild and no report re-render. lookup_anchored turns it into a MISS so
     # the build path runs, materializes a fresh image, and re-renders every
-    # deliverable.
-    def _docker_image_present(ref: str) -> bool:
-        r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
-                           capture_output=True, text=True)
-        return r.returncode == 0
-    # cache lookup: lookup_anchored confirms the image is still in the docker
-    # daemon (an evicted image gets re-built rather than returning a dangling
-    # record). On hit we summarize the SBOM in the response only; the cached
+    # deliverable. On hit we summarize the SBOM in the response only; the cached
     # record on disk keeps the full lists for env_report/attestation rendering.
     # AN UNPINNED TOOL MAKES THE KEY AMBIGUOUS, AND A HIT ON IT MUST SAY SO.
     #
@@ -324,14 +316,13 @@ def freeze(
     # `busco|linux/amd64|none`, so the second freeze is served the first's image.
     #
     # This is DISCLOSED rather than refused, because the artifact itself is honest: the
-    # record carries the version freeze OBSERVED in the shipped image (measured: 4 of
-    # the 5 ambiguous entries on hand have one), and the ENV report already renders it
-    # as "requested (any) -> installed 0.7.19". Refusing would force a rebuild on 5 of
-    # 18 real envs to re-derive a fact the artifact already states correctly. What was
-    # missing is at the CALL: nothing told the caller their request did not pin, so a
-    # six-month-old artifact came back looking like a fresh solve.
+    # record carries the version freeze OBSERVED in the shipped image, and the ENV
+    # report renders it as "requested (any) -> installed 0.7.19". Refusing would force
+    # a rebuild to re-derive a fact the artifact already states correctly. The gap is
+    # at the CALL: without this disclosure nothing tells the caller their request did
+    # not pin, and an old artifact comes back looking like a fresh solve.
     unpinned = sorted(n for n, v in parsed_filled if not v)
-    cached = _ms._env_cache.lookup_anchored(rkey, _docker_image_present)
+    cached = _ms._env_cache.lookup_anchored(rkey, _ms._container_build.image_present)
     if cached and unpinned:
         served = {}
         try:
@@ -369,9 +360,9 @@ def freeze(
     # A request-based FALLBACK anchor only. The authoritative content_digest is the
     # 'what was GOT' digest set per-branch below (the EnvBuild lock+longtail digest
     # for a build, the biocontainer manifest digest for an adopt) via
-    # _ms._freeze.record_content_digest. The superseded finalized-spec digest read
-    # fields (packages[]/lock_sha256) a live draft lacks, collapsing to one constant
-    # for every container-native build — see record_content_digest's docstring.
+    # _ms._freeze.record_content_digest. A digest read from fields a live draft
+    # lacks (packages[]/lock_sha256) collapses to one constant for every
+    # container-native build — see record_content_digest's docstring.
     content_digest = _ms._freeze.compute_content_digest({
         "tools": sorted(f"{n}={v or ''}" for n, v in parsed),
         "platform": platform, "accel": accel,
@@ -379,7 +370,7 @@ def freeze(
 
     name = pipeline_name or env_name
     sif = f"{name}.sif"
-    # B1 + B7 fix: adopt lookup consumes `parsed_filled` (versions resolved from
+    # The adopt lookup consumes `parsed_filled` (versions resolved from
     # install_steps[*].installed_packages above) — the same value that fed the
     # cache key, so the adopt-decision and the cache slot agree on what env
     # we're building. The install record is the trust anchor.
@@ -393,16 +384,16 @@ def freeze(
     build_cd = ""                  # the EnvBuild content_digest (the authoritative build anchor)
 
     non_conda = _ms._freeze.non_conda_installs(draft) if draft else []
-    # P3 fix: pipeline_steps that ran `pip install …` via run_in_env mutate the
+    # pipeline_steps that ran `pip install …` via run_in_env mutate the
     # env outside install_steps' structured surface — non_conda_installs misses
     # them, so the adopt gate would otherwise see "pure conda" and ship a
-    # BioContainer that omits the pip install. (pysam-stress: host-built
-    # pysam==0.24.0 via run_in_env → freeze adopted pysam==0.23.3 biocontainer.)
+    # BioContainer that omits the pip install (e.g. a host-built pysam==0.24.0
+    # replaced by a pysam==0.23.3 biocontainer).
     env_mutators = _ms._freeze.env_mutating_pipeline_steps(draft) if draft else []
     # BOTH doors. The line above closes run_in_env (-> pipeline_steps); this one
-    # closes run_install_command (-> install_steps), which was measured landing the
-    # same pysam-stress adopt-a-container-that-lacks-the-tool violation the line
-    # above exists to prevent. Keyed on whether the mutation is ACCOUNTED FOR by
+    # closes run_install_command (-> install_steps), which can land the same
+    # adopt-a-container-that-lacks-the-tool violation. Keyed on whether the
+    # mutation is ACCOUNTED FOR by
     # non_conda_installs or requested_conda_specs, not on the command alone — the
     # typed conda primitive also runs `conda install`, and firing on that would flip
     # every legitimate pure-conda adopt into a build.
@@ -461,8 +452,8 @@ def freeze(
         # point it takes the real native/emulated locus the build path records.
 
     else:
-        # CONTAINER-NATIVE BUILD — the SINGLE build path (Phase E: freeze no longer
-        # uses conda-pack at all). env_freeze installs + validates IN the ship image
+        # CONTAINER-NATIVE BUILD — the SINGLE build path (freeze does not
+        # use conda-pack). env_freeze installs + validates IN the ship image
         # (one generic bake, validated==shipped), covering hand-installed tools
         # (binary/jar/source/cargo/go/perl), pure conda, and pip/R — cross-arch too
         # (build in-container, no host-arch conda-pack and no cross-arch refusal).
@@ -731,18 +722,14 @@ def freeze(
     # tool_identities, and the last of those only land once the record is assembled —
     # gating earlier checks a record that does not exist yet.
     #
-    # That reasoning was written for the ADOPT path and applied only there. The BUILD
-    # path's contract check lives inside `env_build.run()`, which evaluates the BUILD
-    # RESULT — a different dict, assembled ~130 lines before this one. So every field
-    # added during record assembly (shipped_binaries, tool_identities, the merged
-    # accelerator policy, the licenses) reached disk having never been checked, and a
-    # record that could not pass the contract could still be registered and served. That
-    # is the same shape as the defect the adopt comment above describes, one path over:
-    # the gate existed, at one seam, and was never propagated to the other.
+    # This holds for the BUILD path too, not only the adopt path: the contract check
+    # inside `env_build.run()` evaluates the BUILD RESULT — a different dict, assembled
+    # before this one — so every field added during record assembly (shipped_binaries,
+    # tool_identities, the merged accelerator policy, the licenses) is checked only here.
     #
     # Checking the registered bytes is also what makes the check total: `register` asserts
-    # SHAPE, `lookup_verified` asserts the CONTRACT at serve time, and now the write path
-    # asserts it too — so a record on disk can no longer be one the serving path refuses.
+    # SHAPE, `lookup_verified` asserts the CONTRACT at serve time, and the write path
+    # asserts it too — so a record on disk is never one the serving path refuses.
     contract = _ms._env_honesty.evaluate_build(record)
     if contract.violations:
         if mode == "adopt":
@@ -832,7 +819,7 @@ def freeze(
     if locus_advisory:
         out["locus_advisory"] = locus_advisory   # actionable, e.g. "enable Rosetta…"
     # Summarize the bulky SBOM in the live response only. The full SBOM lives
-    # in the EnvCache record (registered above) and in env_reports/{name}.ENV.html
+    # in the EnvCache record (registered above) and in environments/{name}/{name}.ENV.html
     # / .attestation.json — both rendered from the full record before this
     # summarization fires. ~10-15k tokens of SBOM rows eliminated per response
     # with zero loss of accessible information (the agent Reads the HTML when
@@ -842,7 +829,7 @@ def freeze(
 
 @mcp.tool()
 def verify_env_recipe(recipe_path: str) -> dict:
-    """Rebuild an env FROM ITS RECIPE ALONE (env_reports/{name}.recipe.yaml, written by
+    """Rebuild an env FROM ITS RECIPE ALONE (environments/{name}/{name}.recipe.yaml, written by
     freeze) and check it reproduces the recorded content_digest. The recipe is self-
     contained — it carries the conda specs + every non-conda install_method (synthesized
     commands + provenance + commit, jar/binary/source/...), so this rebuild uses NO

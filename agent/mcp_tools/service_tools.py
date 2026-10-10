@@ -220,7 +220,7 @@ def verify_service_dependency(
 
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
-        return refused("service.unknown_pipeline_id", error=f"unknown pipeline_id: {pipeline_id}")
+        return _ms._pipeline_state.unknown_draft_refusal("service.unknown_pipeline_id", pipeline_id)
 
     existing_cmd = ""
     for d in draft.get("service_dependencies", []) or []:

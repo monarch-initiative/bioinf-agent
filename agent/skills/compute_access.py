@@ -385,8 +385,8 @@ def _validate_project(proj: object, idx: int, project_names: set[str],
     lists which compute resources the project may use (this ALSO carries the
     implicit scratch/common_data grant, so a scratch-only project needs no
     directories); `directories` are the explicit user-territory grants, each
-    tagged with the `env` it lives on. The old `compute_env_access[]` wrapper is
-    gone — the loader synthesizes it internally (see _normalize_projects)."""
+    tagged with the `env` it lives on. The loader synthesizes the internal
+    `compute_env_access[]` view from these (see _normalize_projects)."""
     if not isinstance(proj, dict):
         raise ConfigError(f"{path}: projects[{idx}] must be a mapping")
 
@@ -744,15 +744,6 @@ def get_project_directories(project: dict, compute_env_name: str) -> list[dict]:
         if block.get("compute_env") == compute_env_name:
             return list(block.get("directories") or [])
     return []
-
-
-def get_project_compute_envs(project: dict) -> list[str]:
-    """The compute envs this project may use — its plug-and-play set (a project
-    runnable local OR on a cluster lists both). Read from the normalized
-    compute_env_access, so it reflects the flat `compute_envs: [names]` yaml."""
-    return [b.get("compute_env")
-            for b in (project.get("compute_env_access") or [])
-            if isinstance(b, dict) and b.get("compute_env")]
 
 
 # ---------------------------------------------------------------------------

@@ -4,16 +4,11 @@ The pipeline-draft surface (start / show / patch / discard / mark / stage),
 plus the Layer-2 deliverable producer (seal_workflow
 / list_installed_pipelines), plus the R-package DESCRIPTION/dep scanner used
 before installing CRAN/Bioconductor packages from GitHub.
-
-LATENT BUG NOTE — `_scan_r_runtime_installs` originally called `json.loads`
-without `import json` in scope; the bare-except returned `[]` silently, so
-`undeclared_runtime_installs` had been empty for every call. Adding the
-`import json` at the top of THIS module is the fix.
 """
 from __future__ import annotations
 
 import hashlib
-import json   # <-- fix for _scan_r_runtime_installs latent bug (see module docstring)
+import json
 import re
 import urllib.request
 from datetime import datetime, timezone
@@ -42,7 +37,7 @@ from agent.skills import workspace as _workspace
 def _refresh_reference_databases(rdbs: list) -> list:
     """Re-derive available / sha256 / size_bytes from DISK for each declared
     ReferenceDatabase at seal time (the draft's flags are stale — a download
-    is async and finalize was retired). The sha256 comes from the
+    is async, so only the disk knows what landed). The sha256 comes from the
     `<local_path>.source.sha256` sidecar written during download (the hash of
     the bytes the URL served — see download_reference_database), so the sealed
     WorkflowSpec pins each DB by CONTENT, not merely by name+URL. Missing
@@ -209,8 +204,8 @@ def _image_usage_runner(fr: dict, draft: dict):
     usage = draft.get("usage") or {}
     # ONE reading of command_template (str or list[str]) — core_data.usage_commands. This
     # precondition MUST see the same placeholders self_test_usage will resolve, across
-    # every command; reading only the first would re-create the tier-2 bug where a
-    # precondition inspected something other than what the runner actually uses.
+    # every command; reading only the first would let a precondition inspect
+    # something other than what the runner actually uses.
     from agent.models.core_data import usage_commands
     template = "\n".join(usage_commands(usage))
     if not template:
@@ -389,7 +384,7 @@ def _derive_step_dependencies(pipeline_steps: list) -> list:
 def _render_run_dashboard(wf: dict, env_record: dict, out_dir: Path) -> Optional[str]:
     """Render THIS workflow's Layer-2 run dashboard — `{workflow_name}.RUN.html`.
 
-    Two-artifact split (deliberately NOT the old accreting-env-report model): the
+    Two-artifact split: the
     env's `{env}.ENV.html` is a Layer-1 artifact written ONCE at freeze and never
     mutated by a seal; the run dashboard is the Layer-2 artifact, one per sealed
     workflow, that accretes validated evidence per compute locus. Both render
@@ -463,7 +458,7 @@ def _guard_spec_overwrite(wf: dict, out_dir: Path, supersede: bool) -> tuple[boo
     an unguarded re-seal over an existing sealed spec silently DESTROYS a
     digest-pinned provenance artifact. The honesty contract already re-validates
     the NEW spec standalone, so the new file is never a lie — but the SILENT
-    REPLACEMENT of the old one is. The guard belongs at the terminal WRITE, not
+    REPLACEMENT of the existing one is. The guard belongs at the terminal WRITE, not
     on the draft: a draft lock would break locus accretion,
     one-env-many-workflows, and every ad-hoc pipeline_id="" call, and a
     LEGAL_TRANSITIONS table would be a second, drifting definition of ordering.
@@ -557,8 +552,7 @@ def seal_workflow(
     """
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
-        return refused("seal.unknown_pipeline_id", success=False,
-                       error=f"unknown pipeline_id: {pipeline_id}")
+        return _ms._pipeline_state.unknown_draft_refusal("seal.unknown_pipeline_id", pipeline_id)
     # A WorkflowSpec PINS this env by digest and asserts Layer-2 on top of Layer-1.
     # Sealing against a record that can no longer earn its Layer-1 green would make
     # the spec's own foundation unverifiable — so ask the serving question, and say
@@ -601,10 +595,10 @@ def seal_workflow(
                        stage="workflow_invariants",
                        violations=violations, violation_count=len(violations))
 
-    # Typed-record gate, re-run at serve (typed-records Seam A). The draft on
+    # Typed-record gate, re-run at serve. The draft on
     # disk normally cannot violate this — check_draft refuses the write — but a
-    # hand-edited yaml is adopted in-process, and the clauses the types retired
-    # (I6.absolute_paths, I7.resource_usage_recorded) are gone from the walk
+    # hand-edited yaml is adopted in-process, and the clauses the types carry
+    # (I6.absolute_paths, I7.resource_usage_recorded) are not in the walk
     # above. Gating HERE, before the I4 self-test, refuses the cheap way (no
     # container runs spent on a malformed draft) and holds for write=False,
     # where write_workflow_spec's own model_validate never runs.
@@ -735,7 +729,7 @@ def seal_workflow(
     # "why not" needs to know whether this run spans images.)
 
     # The how-to is rendered from the verified `usage` block into the Layer-2 run
-    # dashboard (HTML) below — NOT a markdown guide (retired). We still pull
+    # dashboard (HTML) below. We still pull
     # key_packages for the spec's driver_env record.
     key_packages = _ms._user_guide.key_packages(draft)
 
@@ -1188,7 +1182,7 @@ def show_pipeline_draft(pipeline_id: str) -> dict:
     or finalize anything."""
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
-        return refused("show_draft.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}")
+        return _ms._pipeline_state.unknown_draft_refusal("show_draft.unknown_pipeline", pipeline_id)
     return proven("show_draft.ok", pipeline_id=pipeline_id, draft=draft)
 
 
@@ -1211,8 +1205,10 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     lock_sha256) are rejected — use the dedicated primitive instead so the
     spec stays anchored to observed reality.
 
-    Lists are replaced wholesale (pipeline_steps and install_steps are blocked
-    here anyway; they merge by step number through their own primitives).
+    `reference_databases` merges by `name` (a patch adds or amends records and keeps
+    the ones the download and acquire primitives wrote); every record must fit
+    ReferenceDatabase (`local_path` required, no unknown keys) or the patch is
+    refused with the field named. Other lists are replaced wholesale.
 
     Deletion: pass the literal string "__DELETE__" as a value inside a
     patchable key's subtree to remove that nested key. e.g.
@@ -1233,11 +1229,10 @@ def record_generated_artifact(pipeline_id: str, path: str, role: str,
     (artifact_index | None-for-unknown-pipeline, artifact). Raises OSError if the file
     cannot be read — callers stage files they just observed on disk.
 
-    Extracted so a PRODUCER PRIMITIVE can register its own output (falsifier FD5:
-    `phenopacket_to_vcf` wrote a VCF that no record anywhere anchored, so the step that
-    consumed it was an I8 orphan unless the agent hand-staged it — `select_test_data`
-    already registers what it selects, and a producer that hands back an unanchored path
-    is handing back a seal refusal on delay). `stage_authored_artifact`'s generated_by
+    Extracted so a PRODUCER PRIMITIVE can register its own output: a producer such as
+    `phenopacket_to_vcf` that hands back an unanchored path is handing back an I8-orphan
+    seal refusal on delay, so it anchors what it writes here, just as `select_test_data`
+    registers what it selects. `stage_authored_artifact`'s generated_by
     mode delegates here — one implementation, two doors.
     """
     p = Path(path)
@@ -1289,8 +1284,15 @@ def stage_authored_artifact(
       generated_by mode — supply `generated_by` (the shell command you ran),
                           with the file already on disk at `path`. The runtime
                           records the command as the genesis and sha256s the
-                          bytes. Use for binary outputs (BAM, FASTA, indexed
-                          DB, pickled models).
+                          bytes. Use for a small fixture you produced (a staged
+                          BAM slice, a pickled model). A reference you downloaded
+                          or BUILT — an index, an annotation, a reference subset,
+                          any directory — is a reference database instead:
+                          download_reference_database(name, url) or
+                          download_reference_database(name, url="", local_path=…).
+
+    At render, a content-mode script is carried into the pipeline's bin/; a
+    generated_by file bound to a step input stays a path input pinned by sha256.
 
     Honesty effect:
       - Path is added to the I8 universe of external sources, so downstream
@@ -1318,7 +1320,7 @@ def stage_authored_artifact(
     if not content:
         # generated_by mode: the record construction lives in record_generated_artifact
         # (one implementation — producer primitives like phenopacket_to_vcf ride the
-        # same helper to register their own outputs, falsifier FD5).
+        # same helper to register their own outputs).
         if not p.exists():
             return refused(
                 "stage_artifact.source_missing",
@@ -1338,7 +1340,7 @@ def stage_authored_artifact(
         except OSError as e:
             return broke("stage_artifact.readback_failed", error=f"could not read back artifact for sha256: {e!r}", path=path)
         if idx is None:
-            return refused("stage_artifact.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}", path=path)
+            return _ms._pipeline_state.unknown_draft_refusal("stage_artifact.unknown_pipeline", pipeline_id, path=path)
         return proven(
             "stage_artifact.staged",
             success=True,
@@ -1396,7 +1398,7 @@ def stage_authored_artifact(
 
     idx = _ms._pipeline_state.add_authored_artifact(pipeline_id, artifact)
     if idx is None:
-        return refused("stage_artifact.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}", path=path)
+        return _ms._pipeline_state.unknown_draft_refusal("stage_artifact.unknown_pipeline", pipeline_id, path=path)
 
     return proven(
         "stage_artifact.staged",
@@ -1462,6 +1464,11 @@ def mark_step_validated(
     if ok:
         return proven("mark_validated.set", status="set", pipeline_id=pipeline_id,
                       step=step, validation_status=validation_status)
+    draft = _ms._pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return _ms._pipeline_state.unknown_draft_refusal("mark_validated.unknown_step", pipeline_id, step=step)
+    steps = sorted(int(s.get("step")) for s in (draft.get("pipeline_steps") or [])
+                   if isinstance(s, dict) and str(s.get("step", "")).isdigit())
     return refused("mark_validated.unknown_step",
-                   error="unknown pipeline_id or step out of range",
-                   pipeline_id=pipeline_id, step=step)
+                   error=f"step {step} is not in the draft; recorded steps: {steps or 'none'}",
+                   pipeline_id=pipeline_id, step=step, recorded_steps=steps)

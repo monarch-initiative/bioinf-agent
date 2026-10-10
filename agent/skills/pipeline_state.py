@@ -110,10 +110,10 @@ class PipelineState:
         """Initialize a draft, or resume the existing one (silent resume).
 
         Resume-vs-new is decided from the FILE, inside one lock — not from `self._drafts`.
-        Deciding it from the cache is the create-side of the same staleness bug the
-        mutators had, and it is the destructive one: a second process calling
-        `start("p")` saw "p" missing from its OWN map, created a fresh empty draft, and
-        persisted it over a draft the first process had been filling. Everything already
+        Deciding it from the cache is the destructive form of cache staleness: a
+        second process calling `start("p")` sees "p" missing from its OWN map, creates
+        a fresh empty draft, and persists it over a draft the first process has been
+        filling. Everything already
         recorded — install steps, test data, validations — gone, and reported as a clean
         new pipeline rather than as an error."""
         path = self._draft_path(pipeline_name)
@@ -209,6 +209,15 @@ class PipelineState:
             return self._drafts.get(pipeline_id)
         self._drafts[pipeline_id] = on_disk
         return on_disk
+
+    def unknown_draft_refusal(self, code: str, pipeline_id: str, **fields) -> dict:
+        """The one refusal for a pipeline_id no draft answers to: it lists the drafts
+        that are open, so the caller can pick the right one or start one."""
+        open_ids = sorted(self.all_drafts())
+        where = (f"open drafts: {open_ids}" if open_ids
+                 else "no draft is open — start_pipeline opens one")
+        return refused(code, success=False, pipeline_id=pipeline_id, open_drafts=open_ids,
+                       error=f"unknown pipeline_id: {pipeline_id!r}; {where}", **fields)
 
     def all_drafts(self) -> dict[str, dict]:
         """Every draft, keyed by pipeline_id, re-read from disk.
@@ -624,8 +633,7 @@ class PipelineState:
         if "usage" in patches:
             current = self.get_draft(pipeline_id)
             if current is None:
-                return refused("pipeline_state.unknown_pipeline",
-                               error=f"unknown pipeline_id: {pipeline_id}")
+                return self.unknown_draft_refusal("pipeline_state.unknown_pipeline", pipeline_id)
             merged = copy.deepcopy(current)
             _deep_merge(merged, {"usage": patches["usage"]})
             problems = usage_block_problems(merged.get("usage"))
@@ -638,10 +646,15 @@ class PipelineState:
                     usage_shape=USAGE_SHAPE,
                 )
 
-        ok, _ = self._mutate(pipeline_id, lambda draft: _deep_merge(draft, patches))
+        try:
+            ok, _ = self._mutate(pipeline_id, lambda draft: _deep_merge(draft, patches))
+        except typed_nouns.TypedNounViolation as e:
+            # The write funnel refused the merged draft: a patched record does not fit
+            # its typed model. Nothing landed; the message names the field.
+            return refused("pipeline_state.record_malformed", success=False,
+                           patched_keys=list(patches), error=str(e))
         if not ok:
-            return refused("pipeline_state.unknown_pipeline",
-                           error=f"unknown pipeline_id: {pipeline_id}")
+            return self.unknown_draft_refusal("pipeline_state.unknown_pipeline", pipeline_id)
         return {
             "draft_path":   str(self._draft_path(pipeline_id)),
             "patched_keys": list(patches.keys()),
@@ -699,20 +712,25 @@ class PipelineState:
                 continue
 
 
-# Lists whose elements are merged by their `step` field rather than replaced
-# wholesale. A partial patch like {"pipeline_steps": [{"step": 2, "validation_status": "passed"}]}
-# updates the existing step 2 in place, preserving the rest of its data and any
-# other entries in the list.
-_STEP_KEYED_LISTS = frozenset({"pipeline_steps", "install_steps"})
+# Lists whose elements are merged by a key field rather than replaced wholesale. A
+# partial patch like {"pipeline_steps": [{"step": 2, "validation_status": "passed"}]}
+# updates step 2 in place and keeps every other entry. reference_databases is keyed
+# by name so a patch that adds or amends one record cannot erase the records the
+# download and acquire primitives wrote.
+_KEYED_LISTS: dict[str, str] = {
+    "pipeline_steps":      "step",
+    "install_steps":       "step",
+    "reference_databases": "name",
+}
 
 
 def _deep_merge(target: dict, source: dict) -> None:
     """Recursively merge source into target (mutates target in place).
 
-    Dicts merge recursively. For lists named in _STEP_KEYED_LISTS, elements
-    are merged by their `step` field (existing step N updated; new step N
-    appended) — so a partial patch can update validation_status without
-    clobbering the rest of the step's data. Other lists are replaced wholesale.
+    Dicts merge recursively. For lists named in _KEYED_LISTS, elements are merged
+    by their key field (an existing entry with the same key is updated in place; a
+    new key is appended), so a partial patch cannot clobber the other entries.
+    Other lists are replaced wholesale.
 
     Deletion: set a value to the literal sentinel "__DELETE__" to remove that
     key from target. Lets patch_pipeline express removals (e.g., dropping a
@@ -723,28 +741,28 @@ def _deep_merge(target: dict, source: dict) -> None:
         if val == "__DELETE__":
             target.pop(key, None)
             continue
-        if key in _STEP_KEYED_LISTS and isinstance(val, list) and isinstance(target.get(key), list):
-            _merge_step_keyed_list(target[key], val)
+        if key in _KEYED_LISTS and isinstance(val, list) and isinstance(target.get(key), list):
+            _merge_keyed_list(target[key], val, _KEYED_LISTS[key])
         elif key in target and isinstance(target[key], dict) and isinstance(val, dict):
             _deep_merge(target[key], val)
         else:
             target[key] = val
 
 
-def _merge_step_keyed_list(target: list, source: list) -> None:
-    """Merge `source` entries into `target` by matching on the `step` field."""
-    by_step = {s.get("step"): i for i, s in enumerate(target) if isinstance(s, dict)}
+def _merge_keyed_list(target: list, source: list, key: str) -> None:
+    """Merge `source` entries into `target` by matching on the `key` field."""
+    by_key = {s.get(key): i for i, s in enumerate(target) if isinstance(s, dict)}
     for entry in source:
         if not isinstance(entry, dict):
             target.append(entry)
             continue
-        step = entry.get("step")
-        if step is not None and step in by_step:
-            target[by_step[step]] = {**target[by_step[step]], **entry}
+        k = entry.get(key)
+        if k is not None and k in by_key:
+            target[by_key[k]] = {**target[by_key[k]], **entry}
         else:
             target.append(entry)
-            if step is not None:
-                by_step[step] = len(target) - 1
+            if k is not None:
+                by_key[k] = len(target) - 1
 
 
 # ---------------------------------------------------------------------------
@@ -766,7 +784,6 @@ ENV_FROZEN = "env_frozen"    # a frozen env, RE-EARNED against the honesty contr
 SEALED     = "sealed"        # a WorkflowSpec that matches this pipeline + pins a live env
 
 # Ordering low→high, for a caller that wants to compare progress.
-LIFECYCLE_ORDER = (ABSENT, DRAFT, ENV_BUILT, ENV_FROZEN, SEALED)
 
 
 def current_state(draft: Optional[dict], *, verify_frozen, spec_sealed) -> str:

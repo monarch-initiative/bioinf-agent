@@ -1,13 +1,10 @@
 """
 env_honesty — the container-native Layer-1 honesty contract.
 
-This REPLACES spec_writer's retired env-build invariants (WHICH ones is data, in
-agent/skills/invariants.py; the list spelled out on this line named nine, and four of
-them were never retired at all — two are the Layer-2 run-side clauses, two are the
-POLICY_CLEAN clauses enforced right here in this module)
-for the container-native build locus, learning from what those invariants earned
-but shedding the machinery the locus makes redundant. The honesty model collapses
-because the locus collapsed install-and-ship into ONE event:
+This is the Layer-1 contract for the container-native build locus. Which per-step
+env-build invariants it subsumes is data, in agent/skills/invariants.py. The
+honesty model collapses because the locus collapses install-and-ship into ONE
+event:
 
     host model:   install on host → record sha256/commit → REPLAY in a linux image
                   → re-hash / re-clone / re-verify at finalize (drift could happen
@@ -51,7 +48,7 @@ import re
 from typing import Any, Optional
 
 # The declared shape of the sub-records WELL_FORMED asserts. core_data is a leaf
-# (pydantic/yaml only) so this keeps the module import-cycle-free; it is no longer
+# (pydantic/yaml only) so this keeps the module import-cycle-free; it is not
 # stdlib-pure, which is the price of the contract knowing what a record IS.
 from agent.models import core_data as _core_data
 
@@ -1191,8 +1188,8 @@ def evaluate_build(result: dict) -> BuildContract:
                 f"record discloses nothing about {key}", DISCLOSURE))
 
     # -- BUILT -----------------------------------------------------------
-    # The image existing is the structural anchor for the retired re-anchoring
-    # invariants (agent/skills/invariants.py): every RUN
+    # The image existing is the structural anchor that stands in for the per-step
+    # re-anchoring invariants (agent/skills/invariants.py): every RUN
     # (each with its inline sha256/commit/bake anchor) returned 0, else there is
     # no image. We assert the handles resolve.
     #
@@ -1232,9 +1229,9 @@ def evaluate_build(result: dict) -> BuildContract:
     # THE OBSERVATION IS THE PRODUCER'S; this clause only COMPARES. freeze reads
     # `.Architecture` off the shipped image and writes `image_arch`; here we hold it
     # against `platform`. Those are two different fields — one an observation of the
-    # artifact, one the request — so the comparison means something. (Contrast I5's
-    # laundering bug, where an anchor written at seal was compared against itself
-    # moments later.) Re-deriving the arch here would also put a `docker image
+    # artifact, one the request — so the comparison means something. (An anchor
+    # written at seal and compared against itself moments later proves nothing —
+    # the I5 rule.) Re-deriving the arch here would also put a `docker image
     # inspect` per env inside `list_installed_pipelines`, which re-earns every
     # record's contract on every call.
     recorded_arch = _locus.target_arch(result.get("platform") or "")

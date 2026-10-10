@@ -33,11 +33,11 @@ from typing import Any, Optional
 from agent.skills import store_lock as _store_lock
 
 
-# Platform-spelling canonicalization (D6 fix). The cache contained BOTH
-# 'linux-64' (conda form, freeze()'s public default) and 'linux/amd64' (docker
-# form, EnvBuild's internal default) as DISTINCT keys for the same logical
-# artifact — two writers, two slots, no shared cache. Canonicalize to ONE form
-# at request_key time so both writers land in the same slot.
+# Platform-spelling canonicalization. Without it 'linux-64' (conda form,
+# freeze()'s public default) and 'linux/amd64' (docker form, EnvBuild's internal
+# default) land as DISTINCT keys for the same logical artifact — two writers, two
+# slots, no shared cache. Canonicalize to ONE form at request_key time so both
+# writers land in the same slot.
 _PLATFORM_CANON = {
     "linux-64":      "linux/amd64",
     "linux/amd64":   "linux/amd64",
@@ -125,10 +125,9 @@ def record_content_digest(mode: str, *, build_digest: str = "", adopt_digest: st
     `fallback` (a request-based hash) is used only if the mode-specific digest is
     missing.
 
-    WHY THIS SHAPE (a real regression, kept as a warning): the superseded
-    finalized-spec digest read packages[]/lock_sha256 — fields a live draft does
-    not have — so it hashed the same empty view for every container-native build
-    and returned ONE constant digest for four distinct envs. A content anchor that
+    WHY THIS SHAPE: a digest read from packages[]/lock_sha256 — fields a live
+    draft does not have — hashes the same empty view for every container-native
+    build and returns ONE constant digest for distinct envs. A content anchor that
     collides is worse than none: it silently declares different envs identical.
     Anchor on what was actually GOT (the build/adopt digest), never on fields the
     caller may not have populated yet."""
@@ -416,12 +415,10 @@ def apptainer_delivery(
     content (every command here is the real, runnable delivery path).
     """
     # Every command below runs LOCALLY or on a COMPUTE node — never the head
-    # node. The old archive branch said "transfer the .tar, then on the HPC:
-    # apptainer build …", which is verbatim the head-node unpack+mksquashfs the
-    # no-head-node-builds rule exists to prevent, and it contradicted what the
-    # system itself does (stage_apptainer_image builds the .sif locally and
-    # ships the finished file). Sea-trial F21: a reader followed this advice far
-    # enough to ask whether WE had done it.
+    # node. "transfer the .tar, then on the HPC: apptainer build …" is verbatim
+    # the head-node unpack+mksquashfs the no-head-node-builds rule exists to
+    # prevent, and it is not what the system does (stage_apptainer_image builds
+    # the .sif locally and ships the finished file).
     if mode == "adopt" and image_by_digest:
         get_cmd = (f"# pull on a compute node or locally, then transfer — never on the head node:\n"
                    f"apptainer pull {sif_name} docker://{image_by_digest}")
@@ -539,9 +536,9 @@ class EnvCache:
         to {}. A missing file is a legitimate empty cache and returns {}; a file that
         EXISTS but doesn't parse is corruption, and must stop the world.
 
-        Silently returning {} here was the second half of a silent-data-loss bug: a
+        Silently returning {} here would be silent data loss: a
         corrupt read → {} → the next register() writes {only_the_new_key} over the
-        (now-empty) in-memory dict and every previously frozen env record is gone,
+        (now-empty) in-memory dict and every frozen env record is gone,
         with no exception ever raised. `solve once, pull by digest` cannot rest on a
         store that erases itself on the first bad byte. Refusing here (paired with the
         atomic _save below, which prevents our own writes from ever producing the bad

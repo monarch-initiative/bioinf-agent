@@ -11,8 +11,8 @@ This is THE product; MCP / CLI / skill are faces on top (not here). It sequences
 
 The honesty gate in the container-native model is "validated == shipped": a build
 is accepted only if every declared tool's evidence passes in the exact image we
-ship. That re-anchors the old host-disk invariants (re-hash/clone-check/verify on
-the host) onto the image itself — the bytes the user runs ARE the bytes verified.
+ship. That anchors the re-hash / clone-check / verify invariants on the image
+itself — the bytes the user runs ARE the bytes verified.
 Emits a BuildResult (image + image_digest + content_digest + per-tool evidence).
 
 Pure helpers (content_digest, the build plan) are unit-testable; build()/verify()
@@ -231,7 +231,7 @@ class EnvBuild:
 
         `base` is the runtime FROM (BASE_IMAGE, pinned by @sha256) — the OS
         foundation of the artifact. Including it binds the base layer to the anchor
-        (two builds on different bases no longer collide). NOT included: the apt
+        (two builds on different bases do not collide). NOT included: the apt
         runtime libs (system_packages) — `apt-get update` pulls fresh lists from the
         Debian mirror, so those versions can drift even from a pinned base and would
         make the digest non-reproducible (verify-by-rebuild would spuriously fail).

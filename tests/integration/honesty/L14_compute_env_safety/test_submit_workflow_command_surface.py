@@ -7,7 +7,6 @@ reference-data download job:
     BEFORE any I/O
   - the `sbatch --parsable` parser extracts job_ids from clean and federated stdouts
     and refuses anything else with the raw stdout surfaced
-  - the render staging directory lives in the workspace, never the system temp dir
 """
 from __future__ import annotations
 
@@ -65,27 +64,3 @@ class TestSbatchParsableParser:
     ])
     def test_refuses_unparseable(self, bad):
         assert submit_workflow._parse_sbatch_parsable(bad) is None
-
-class TestSubmitRenderStagingLocation:
-    @pytest.mark.integration
-    def test_render_stage_dir_is_under_home_not_system_temp(self):
-        import tempfile
-        import agent.skills.submit_workflow as sw
-        stage = sw._render_stage_dir().resolve()
-        """Globus Connect Personal only scans its Accessible Folders (default
-        $HOME) and REFUSES a system temp dir — that surfaced as a live
-        `submit.upload_failed` on the first production run. Staging therefore
-        goes to the workspace scratch zone, never to tempfile.gettempdir().
-
-        The zone is checked, not the absolute prefix: under test the workspace IS
-        redirected into pytest's tmp_path, which lives under the system temp dir.
-        What keeps the REAL workspace Globus-readable is the $HOME guard that
-        setup and the doctor share — see
-        tests/test_workspace_resolution.py::test_home_containment_is_one_implementation.
-        """
-        from agent.skills import workspace
-        sys_tmp = Path(tempfile.gettempdir()).resolve()
-        assert stage != sys_tmp and stage.parent != sys_tmp, \
-            f"staging {stage} is a bare system temp dir — Globus refuses to scan it"
-        assert stage.is_relative_to(workspace.scratch_dir()), \
-            f"staging {stage} is outside the workspace scratch zone"

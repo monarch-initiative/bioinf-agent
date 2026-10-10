@@ -63,7 +63,7 @@ def probe(call: dict) -> dict:
     req_v = call.get("version")
     # Does the emitted install_call actually PIN the requested version? A stable boolean, so
     # a version-substitution defect the chosen-tier is blind to becomes visible: chosen='binary'
-    # is identical for a somalier v0.2.15 (correct) or v0.3.3 (the bug) asset — only THIS fact
+    # is identical for a somalier v0.2.15 (requested) or v0.3.3 (substituted) asset — only THIS fact
     # tells them apart. The version must appear as a delimited token (optionally v-prefixed), so
     # a request for 0.2.1 never counts as pinned by a v0.2.15 URL. Opt-in in _is_correct.
     pins_version = bool(req_v) and re.search(

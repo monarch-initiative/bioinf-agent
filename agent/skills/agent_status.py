@@ -22,8 +22,6 @@ Each subsystem query is its own helper so:
 """
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
@@ -353,9 +351,9 @@ def agent_status(
     envs_root = workspace.conda_envs_dir()
 
     out: dict[str, Any] = {
-        # WHERE, first. The workspace split moved every artifact out of the
-        # checkout, so an agent resuming a session with a "look in env_reports/"
-        # habit is looking at a directory that no longer exists. The resolved
+        # WHERE, first. Every artifact lives outside the checkout, under the
+        # resolved workspace zones, so an agent resuming a session must not guess
+        # at a directory. The resolved
         # zones are the first thing this report states, and it names which of
         # the two answers resolution used (env | default) so a surprising path
         # is traceable.

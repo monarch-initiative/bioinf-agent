@@ -105,8 +105,8 @@ def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) ->
     """ONE light read-only ssh: does the .sif already exist on the cluster?
     Used for idempotency (skip a re-stage) WITHOUT any build/pull on the head
     node. Returns False on any ssh failure (caller then builds+ships)."""
-    cmd = (f"bash -lc 'test -f {shlex.quote(sif_remote_abs)} "
-           f"&& echo EXISTS || echo MISSING'")
+    body = f"test -f {shlex.quote(sif_remote_abs)} && echo EXISTS || echo MISSING"
+    cmd = f"bash -lc {shlex.quote(body)}"
     try:
         res = subprocess.run(_ssh_argv(env, cmd), capture_output=True,
                              text=True, timeout=timeout)
@@ -235,16 +235,16 @@ def _build_inspect_cmd(sif_remote_abs: str) -> str:
     provenance. A `---INSPECT---` marker separates the two so the parser
     never confuses a hash line with the JSON body."""
     q = shlex.quote(sif_remote_abs)
-    # `sha256sum` prints `<hash>  <file>`; we extract the first whitespace
-    # token in Python (below) rather than relying on a nested awk/cut inside
-    # the single-quoted `bash -lc` body — one less quoting hazard on the wire.
-    return (
-        f"bash -lc 'module load apptainer >/dev/null 2>&1 || true; "
+    # `sha256sum` prints `<hash>  <file>`; the first whitespace token is extracted
+    # in Python (below) rather than by a nested awk/cut in the remote body.
+    body = (
+        "module load apptainer >/dev/null 2>&1 || true; "
         f"if [ ! -f {q} ]; then echo SIF_MISSING; exit 3; fi; "
         f"sha256sum {q} 2>/dev/null; "
-        f"echo ---INSPECT---; "
-        f"apptainer inspect --json {q} 2>/dev/null || echo INSPECT_FAILED'"
+        "echo ---INSPECT---; "
+        f"apptainer inspect --json {q} 2>/dev/null || echo INSPECT_FAILED"
     )
+    return f"bash -lc {shlex.quote(body)}"
 
 
 def inspect_staged_sif(env: dict, sif_remote_abs: str,
@@ -346,9 +346,12 @@ def stage_apptainer_image(
                 honesty_violations=env_violations,
                 violation_count=len(env_violations))
         if not record:
+            known = sorted(env_cache.all().keys())[:50]
             return refused("stage.not_in_cache",
-                error=f"freeze_request_key {freeze_request_key!r} not in "
-                f"EnvCache. Call freeze() first.")
+                error=(f"freeze_request_key {freeze_request_key!r} not in EnvCache "
+                       + (f"(which holds: {known}). " if known else "(which is empty). ")
+                       + "Call freeze() first."),
+                known_request_keys=known)
 
         # Resolve env + project + auth (env-implicit container_upload perm)
         access = compute_access.load_access(

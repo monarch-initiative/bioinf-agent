@@ -1,13 +1,10 @@
 """
 spec_writer — Layer-2 (workflow) spec + provenance persistence.
 
-The pre-respine combined env+workflow writer (save_pipeline_spec) and its
-env-build invariants have been retired (WHICH ones is data, in
-agent/skills/invariants.py — the list spelled out here named four still-active
-invariants as retired, two of them Layer-2 clauses that refuse real seals): an
-env is now solved once by freeze() and verified IN the shipped image by
-env_honesty.check_build (install==ship). What survives here is the Layer-2
-surface that consumes a frozen env:
+An env is solved once by freeze() and verified IN the shipped image by
+env_honesty.check_build (install==ship); which invariants are env-build ones is
+data, in agent/skills/invariants.py. This module is the Layer-2 surface that
+consumes a frozen env:
 
     write_workflow_spec(workflow, config, env_name=None) -> {workflow_spec_path}
     check_workflow_invariants(spec)         -> run-side violations (roster:
@@ -20,9 +17,7 @@ env-build tiers moved to agent/skills/env_honesty.py.
 
 from __future__ import annotations
 
-import os
 import re
-from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -287,7 +282,7 @@ def load_workflow_spec(path: Any) -> Any:
 
     Returns a validated ``WorkflowSpec``. Raises: ``FileNotFoundError`` if ``path``
     is absent, ``yaml.YAMLError`` on unparseable YAML, ``ValueError`` if the document
-    is not a mapping, ``pydantic.ValidationError`` if the record no longer satisfies
+    is not a mapping, ``pydantic.ValidationError`` if the record does not satisfy
     the model. (``WorkflowSpec`` is ``extra="allow"``, so the runtime-authored extra
     keys — ``detected_outputs``, ``container_image_digest``, … — ride back through
     untouched.)
@@ -837,7 +832,7 @@ def check_invariants(spec: dict) -> list[dict]:
         # the depth, nothing rounds it up.
 
     # ------------------------------------------------------------------
-    # I6.absolute_paths was RETIRED here (typed-records Seam A): step-path
+    # I6.absolute_paths is not a walk clause: step-path
     # absoluteness is enforced at construction by PipelineStep._paths_are_absolute
     # (scoped by core_data.is_path_like), raised at the write funnel
     # (typed_nouns.check_draft) and re-validated when seal builds the
@@ -882,8 +877,8 @@ def check_invariants(spec: dict) -> list[dict]:
                 })
 
     # ------------------------------------------------------------------
-    # I7 — the VALUES half only. Presence (I7.resource_usage_recorded) was
-    # RETIRED here (typed-records Seam A): an rc=0 step without resource_usage
+    # I7 — the VALUES half only. Presence (I7.resource_usage_recorded) is
+    # enforced at construction: an rc=0 step without resource_usage
     # is unconstructible (PipelineStep._rc0_has_resource_usage), refused at the
     # write funnel and again when seal builds the WorkflowSpec. Whether the
     # recorded values are a REAL observation stays a walk check, because only
@@ -952,9 +947,9 @@ def check_invariants(spec: dict) -> list[dict]:
 
     # ------------------------------------------------------------------
     # I8 (authored-artifact integrity): re-hash every staged artifact at
-    # seal time. The respine retired the dedicated I9 because Layer 1 bakes
-    # the artifact into the image bytes — but Layer 2 references artifacts
-    # OUTSIDE the image on disk, so 'install==ship' doesn't cover them. The
+    # seal time. Layer 1 bakes an artifact into the image bytes, but Layer 2
+    # references artifacts OUTSIDE the image on disk, so 'install==ship'
+    # doesn't cover them. The
     # downstream consumer reads the file, not the spec, so the spec's claim
     # about the file (sha256) must keep matching disk up to the seal moment.
     # ------------------------------------------------------------------
@@ -963,8 +958,7 @@ def check_invariants(spec: dict) -> list[dict]:
     # ------------------------------------------------------------------
     # I8 (test-data integrity): the same re-anchoring for the external source
     # the documented protocol actually tells the agent to produce. See
-    # `verify_test_data` — until this existed, test_data was the one input
-    # source whose paths were read only as strings to widen I8's universe.
+    # `verify_test_data`.
     # ------------------------------------------------------------------
     violations.extend(_check_test_data_integrity(spec))
 
@@ -977,29 +971,25 @@ def check_invariants(spec: dict) -> list[dict]:
     violations.extend(_check_lineage_integrity(spec))
 
     # ------------------------------------------------------------------
-    # I10 (service health, restored at Layer 2): every declared service_dependency
-    # must have proven healthy. The respine retired I10 as an ENV-BUILD invariant
-    # (an env doesn't need the service to BUILD) — but VALIDATED_IN_IMAGE says
-    # nothing about whether a RUNTIME service a workflow depends on ever came up,
-    # so it fell through the crack. This restores it at the layer where service
-    # dependencies actually live (the Layer-2 draft), same move as the I9→I8
-    # authored-artifact restoration above.
+    # I10 (service health): every declared service_dependency must have proven
+    # healthy. An env doesn't need the service to BUILD, and VALIDATED_IN_IMAGE
+    # says nothing about whether a RUNTIME service a workflow depends on ever
+    # came up, so the check lives at the layer where service dependencies do
+    # (the Layer-2 draft).
     # ------------------------------------------------------------------
     violations.extend(_check_service_health(spec))
 
     # ------------------------------------------------------------------
-    # I5 (reference-database availability, restored at Layer 2): every declared
+    # I5 (reference-database availability): every declared
     # reference_database.local_path must exist on disk (and, when the record
-    # carries integrity anchors, still match them). The respine retired I5 as an
-    # env-build invariant claiming 'install==ship' subsumes it — but a reference
-    # DB is, by the model's own contract, "mounted at runtime rather than baked
-    # into the Docker image" (tens-to-hundreds of GB), so VALIDATED_IN_IMAGE
-    # provably says nothing about it. It fell through the exact crack I9/I10 did:
-    # a runtime-external artifact a workflow depends on. I8.composition_coherence
-    # even treats a ref-DB's local_path as a valid input source WITHOUT checking
-    # the file is there — so a step could seal green consuming a DB that is absent
-    # or truncated. This restores existence + strengthens it with the sha256 anchor
-    # the model already carries for downstream re-run pinning.
+    # carries integrity anchors, still match them). A reference DB is, by the
+    # model's own contract, "mounted at runtime rather than baked into the Docker
+    # image" (tens-to-hundreds of GB), so VALIDATED_IN_IMAGE says nothing about
+    # it: a runtime-external artifact a workflow depends on. I8.composition_coherence
+    # treats a ref-DB's local_path as a valid input source WITHOUT checking the
+    # file is there, so without this clause a step could seal green consuming a DB
+    # that is absent or truncated. Existence is checked and strengthened with the
+    # sha256 anchor the model carries for downstream re-run pinning.
     # ------------------------------------------------------------------
     violations.extend(_check_reference_database_availability(spec))
 
@@ -1030,17 +1020,16 @@ def check_workflow_invariants(spec: dict) -> list[dict]:
 
 
 def _check_service_health(spec: dict) -> list[dict]:
-    """I10 (restored at Layer 2): every declared service_dependency must have at
+    """I10: every declared service_dependency must have at
     least one HEALTHY probe in its health_check_log — proof the service actually
     came up while the workflow ran.
 
-    The respine retired I10 among the env-build invariants, but it does NOT belong
-    to Layer 1 (an env doesn't need the service running to BUILD) and it was never
-    added to Layer 2 — so a WorkflowSpec could seal green while depending on a
-    service that never became healthy (a status=failed / zero-healthy record). The
-    ServiceDependency docstring even promises 'health_check_log: … I10 requires ≥1
-    healthy', so the firewall was advertised but a no-op. A probe counts healthy
-    when its `healthy` is truthy OR returncode == 0 — the predicate now lives in
+    A Layer-2 clause: an env doesn't need the service running to BUILD, and
+    without this check a WorkflowSpec could seal green while depending on a
+    service that never became healthy (a status=failed / zero-healthy record),
+    with the ServiceDependency docstring promising 'health_check_log: … I10
+    requires ≥1 healthy'. A probe counts healthy
+    when its `healthy` is truthy OR returncode == 0 — the predicate lives in
     `core_data.service_healthy_probes`, because the RUN dashboard needs the same answer
     to badge the service and a hand-copy there would have put the strict form in this
     gate and a looser one in front of the reader. The log is runtime-populated
@@ -1068,17 +1057,15 @@ def _check_service_health(spec: dict) -> list[dict]:
 
 
 def _check_reference_database_availability(spec: dict) -> list[dict]:
-    """I5 (restored at Layer 2): every declared reference_database with a
+    """I5: every declared reference_database with a
     local_path must actually be present — and, when the record carries integrity
     anchors, still match them.
 
-    The retired host-writer I5 checked existence only ('reference DBs without
-    their data don't run'). The respine folded I5 into the env-build collapse on
-    the theory that VALIDATED_IN_IMAGE subsumes it — but the ReferenceDatabase
-    model itself says these are 'mounted at runtime rather than baked into the
-    Docker image' (they can be hundreds of GB), so the image validation cannot
-    speak to them at all. Same crack as the I9->I8 authored-artifact and I10
-    service restorations: a runtime-external dependency a workflow relies on.
+    A Layer-2 clause: the ReferenceDatabase model says these are 'mounted at
+    runtime rather than baked into the Docker image' (they can be hundreds of GB),
+    so the image validation cannot speak to them at all — a runtime-external
+    dependency a workflow relies on, like authored artifacts (I8) and services
+    (I10).
 
     Three tiers of check, each cheap-first so a 200 GB VEP cache never forces a
     pathological seal-time hash:
@@ -1106,7 +1093,10 @@ def _check_reference_database_availability(spec: dict) -> list[dict]:
             continue
         lp = rdb.get("local_path")
         if not lp or not isinstance(lp, str):
-            continue   # not-yet-downloaded declaration; unused ones are harmless
+            # ReferenceDatabase requires local_path and the write funnel enforces it, so
+            # only a record written before enforcement reaches here; its next write
+            # refuses it with the field named, and nothing here can check it.
+            continue
         name = rdb.get("name") or f"reference_databases[{i}]"
         where = f"reference_databases[name={rdb.get('name')}]"
 
@@ -1366,11 +1356,10 @@ def _check_authored_artifact_integrity(spec: dict) -> list[dict]:
     not the spec, so the spec's claim about it has to keep matching reality
     up to the moment we freeze the record.
 
-    Pre-respine I9 enforced this. The respine collapsed I9 because in Layer
-    1 the artifact is BAKED INTO the image and the image bytes are the truth.
-    Layer-2 authored artifacts live OUTSIDE the image on disk, so the
-    'install==ship' collapse does NOT cover them — this check is the Layer-2
-    restoration. Invariant ID is I8.* because the concern is external-source
+    In Layer 1 the artifact is BAKED INTO the image and the image bytes are
+    the truth. Layer-2 authored artifacts live OUTSIDE the image on disk, so
+    'install==ship' does NOT cover them — this check is the Layer-2
+    counterpart. Invariant ID is I8.* because the concern is external-source
     integrity (same family as I8.composition_coherence).
 
     Returns violations for: (a) on-disk path missing, (b) sha256 drift. Skips
@@ -1592,10 +1581,8 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             return True
         if "/" not in p:
             return True
-        low = p.lower()
-        for ext in (".sh", ".py", ".r", ".pl", ".nf", ".smk", ".bash", ".rscript"):
-            if low.endswith(ext):
-                return True
+        if _core_data.is_script_path(p):
+            return True
         if "/envs/" in p:
             return True
         return False
@@ -1635,16 +1622,13 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             # against prior outputs (two steps on the same cluster share a filesystem, so
             # their paths compare directly and need no fallback).
             #
-            # This is what the old `any(Path(u).name == base for u in universe)` was
-            # really load-bearing for — samtools_cluster_rung3 seals on exactly this
-            # shape. But it was written as an unscoped rule and did two wrong things:
-            # it REFUSED the sidecar case its own comment claimed it existed for
-            # (`sample.bam.bai` != `sample.bam` as basenames), and it ACCEPTED any input
-            # anywhere on the local filesystem that merely shared a name with some prior
-            # output — `/somewhere/else/entirely/sample.bam` traced cleanly to
-            # `/run1/sample.bam`, which is the entire class of orphan I8 exists to catch.
-            # Both verified against the live checker; scoping it to the cross-locus case
-            # keeps the real capability and drops the hole.
+            # An UNSCOPED basename match would do two wrong things: it cannot cover
+            # the sidecar case (`sample.bam.bai` != `sample.bam` as basenames), and it
+            # would ACCEPT any input anywhere on the local filesystem that merely shares
+            # a name with some prior output — `/somewhere/else/entirely/sample.bam`
+            # tracing cleanly to `/run1/sample.bam`, which is the entire class of orphan
+            # I8 exists to catch. Scoping it to the cross-locus case keeps the real
+            # capability and drops the hole.
             if _ran_off_host(s) and Path(p).name in external_basenames:
                 continue
             # DIRECTORY CONSUMPTION — a step consumes the DIRECTORY a prior step
@@ -1669,19 +1653,23 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
                 "where":     f"pipeline_steps[step={step_n}].inputs",
                 "orphan_path": p,
                 # THE GATE IS THE GUIDE, and this gate's remedy has TWO shapes. If the
-                # input is a real file the spec merely never anchored, stage it
-                # (stage_authored_artifact) or declare it (select_test_data /
-                # download_reference_database) and re-seal. But if the step itself is
-                # debris — a diagnostic or a dead iteration attempt — no declaration can
-                # make its input honest, and pipeline_steps are runtime-recorded and
-                # unpatchable BY DESIGN: the only exit is discard_pipeline_draft, then
-                # redrive the good steps into a fresh draft (re-stage artifacts, re-patch
-                # usage, re-run).
-                "remedy":    "if this input is a legitimate external file, anchor it "
-                             "(stage_authored_artifact / select_test_data / "
-                             "download_reference_database) and re-seal; if the STEP is "
-                             "iteration debris (a diagnostic, a superseded attempt), "
-                             "pipeline_steps cannot be edited — discard_pipeline_draft "
+                # input is a real file the spec never anchored, declare it by WHAT IT IS
+                # and re-seal — the declaring primitive is chosen by kind, because the
+                # render treats each kind differently (a reference database stays a
+                # path input; an authored script is carried into bin/). But if the step
+                # itself is debris — a diagnostic or a dead iteration attempt — no
+                # declaration can make its input honest, and pipeline_steps are
+                # runtime-recorded and unpatchable BY DESIGN: the only exit is
+                # discard_pipeline_draft, then redrive the good steps into a fresh draft.
+                "remedy":    "if this input is a legitimate external file, declare it by kind "
+                             "and re-seal: data you downloaded or built here (an index, an "
+                             "annotation, a reference subset; a directory is fine) → "
+                             "download_reference_database(name, url) or "
+                             "download_reference_database(name, url='', local_path=<path>); "
+                             "test reads from the core manifests → select_test_data; a file "
+                             "you WROTE (a script, a small fixture) → stage_authored_artifact. "
+                             "If the STEP is iteration debris (a diagnostic, a superseded "
+                             "attempt), pipeline_steps cannot be edited — discard_pipeline_draft "
                              "and redrive the proven steps into a fresh draft",
             })
 

@@ -101,9 +101,8 @@ def _outcome_bar(entries) -> str:
 def _source_stamp() -> str:
     """The commit this page describes, + whether the tree was dirty when it was
     rendered. A number with no idea what code it refers to is how docs rot: the
-    ledger is a CACHE of the code, and a stale cache renders a confident fiction
-    (tier 7 caught the ledger listing 3 terminals that no longer existed while
-    omitting 3 live cache-gates). The stamp lets a reader check, instead of
+    ledger is a CACHE of the code, and a stale cache renders a confident fiction.
+    The stamp lets a reader check, instead of
     trusting. Kept OUT of render() so render stays pure + deterministic."""
     import subprocess
     def _git(*a):
@@ -153,14 +152,12 @@ def render(entries: list[dict], overlay: dict | None, source_stamp: str = "",
     measured = overlay is not None
     # THE OVERLAY IS KEYED ON `file:line`, SO IT GOES STALE ON LINE MOTION ALONE.
     # `_cover_state` maps a key the overlay has never heard of to "dark" — the right call
-    # for one row, and a fabricated blackout when a whole file shifted down by two lines.
-    # Measured on real history: the ledger at 4adf7c8 joined against the overlay from
-    # 513fbbd renders 95/149/310 where the truth is 129/160/265 — a 45-terminal phantom
-    # regression on a page whose entire purpose is to be believed. A CI-blocking test
+    # for one row, and a fabricated blackout when a whole file shifted down by two lines:
+    # a ledger joined against an overlay measured at another commit renders phantom dark
+    # terminals on a page whose entire purpose is to be believed. A CI-blocking test
     # (test_coverage_overlay_keys_resolve_against_the_ledger) stops that reaching main,
     # so this banner is not the trust boundary; it is for the hours BEFORE the push, when
-    # the page is the only thing you are reading and it is quietly lying to you. The
-    # page is the only thing you are reading and it is quietly lying to you.
+    # the page is the only thing you are reading and it is quietly lying to you.
     unjoined = sorted({e["where"] for e in entries} - set(overlay)) if measured else []
     if not measured:
         banner = ('<div class="nocov">⚠ coverage NOT measured — showing the weak grep '

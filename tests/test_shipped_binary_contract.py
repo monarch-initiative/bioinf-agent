@@ -232,7 +232,9 @@ def test_generators_all_emit_the_tool_name_so_it_can_be_recorded():
     HELPERS = {"jar_conda_specs", "java_version_check",
                # the per-tier version probes: they ask an ALREADY-installed artifact
                # its version, so they emit no install spec and name no new tool.
-               "perl_version_probe", "r_version_probe"}
+               "perl_version_probe", "r_version_probe",
+               # a string-literal quoter the probes above and env_freeze/evidence share.
+               "dq_literal"}
     public = {n: f for n, f in vars(IC).items()
               if inspect.isfunction(f) and not n.startswith("_") and f.__module__ == IC.__name__}
     gens = {n: f for n, f in public.items() if n not in HELPERS}

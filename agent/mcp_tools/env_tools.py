@@ -20,6 +20,7 @@ workflow_tools.py.
 """
 from __future__ import annotations
 
+import re
 import shlex
 from pathlib import PurePath as _PurePath
 from typing import Annotated, Any, Optional
@@ -28,10 +29,9 @@ from typing import Annotated, Any, Optional
 # so test monkeypatching on mcp_server reaches us.
 from agent.models.core_data import default_step_tool
 from agent import mcp_server as _ms
-from agent.mcp_server import mcp, StrList, OptStrList  # never monkeypatched
+from agent.mcp_server import mcp, OptStrList  # never monkeypatched
 from agent.skills.backgroundable import backgroundable
-from agent.skills.outcomes import proven, refused, broke
-from agent.skills.env_manager import _last_line
+from agent.skills.outcomes import proven, refused, broke, last_informative_line
 
 
 def _record_engine_smoke(result: dict, env_name: str, verify_command: str) -> None:
@@ -245,7 +245,8 @@ def install_conda_packages(
 ) -> dict:
     """Install conda packages (bioconda / conda-forge / defaults) into a conda env.
     packages: list of {spec: str, channel: str}, e.g. [{spec: 'samtools=1.21', channel: 'bioconda'}]
-    conda-pack is added automatically.
+    Creates the env when it does not exist yet — the one install route that does, because
+    conda IS the runtime being chosen here; every other install route requires an existing env.
 
     If pipeline_id is supplied, an entry is appended to draft.install_steps with
     installed_packages parsed from each spec (spec='samtools=1.21' → name=samtools
@@ -307,6 +308,10 @@ def install_git_repo(
     """Vendor a git repository as a source-installed tool (the clone-and-run
     pattern that conda/pip/jar primitives don't cover — e.g. an academic repo
     you run as `python run_thing.py …`).
+
+    The env must already exist — an install never creates the env it targets, because the
+    runtime it runs under is your choice and is recorded. Create it with create_conda_env, or
+    install_conda_packages(env_name, [{'spec': '<runtime>', 'channel': 'conda-forge'}]).
 
     Two shapes: a COMPILED tool (pass `build_command` + `bin_path`, the relative
     path to the built executable) or a RUN-BY-PATH script collection (pass
@@ -678,6 +683,10 @@ def install_release_binary(
     a HARD FAIL), extracts if it's a tar/zip, chmods the executable, and writes a
     PATH launcher at {env}/bin/{wrapper_name or tool_name}.
 
+    The env must already exist — an install never creates the env it targets, because the
+    runtime it runs under is your choice and is recorded. Create it with create_conda_env, or
+    install_conda_packages(env_name, [{'spec': '<runtime>', 'channel': 'conda-forge'}]).
+
     local_path: THE LICENCE-GATED ROUTE — an artifact the USER already downloaded,
     instead of `url`. Cell Ranger, ANNOVAR, GeneMark, bcl-convert, SignalP and
     friends hand their bytes to a human who accepted a licence and to nobody else,
@@ -788,7 +797,9 @@ def install_release_binary(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return _ms._shrink_stdio_for_response(result, label=f"binary.{env_name}.{tool_name}")
+    return _ms._shrink_stdio_for_response(
+        _install_outcome(result, "env_manager.binary_installed", "env_manager.binary_verify_failed"),
+        label=f"binary.{env_name}.{tool_name}")
 
 
 
@@ -807,6 +818,10 @@ def install_perl_package(
     """Install a Perl/CPAN module via cpanm (Tier: perl) — Ensembl VEP, BioPerl,
     and other Perl tools conda/pip don't cover. Requires perl + cpanm in the env
     (install conda packages `perl` and `perl-app-cpanminus` first).
+
+    The env must already exist — an install never creates the env it targets, because the
+    runtime it runs under is your choice and is recorded. Create it with create_conda_env, or
+    install_conda_packages(env_name, [{'spec': '<runtime>', 'channel': 'conda-forge'}]).
 
     `module` is the Perl package name (e.g. Bio::DB::HTS) used for the
     `perl -M{module} -e1` load-or-die verify — the registry anchor for cpanm
@@ -867,6 +882,10 @@ def install_cargo_tool(
     (defaults to crate) is the cli_which anchor. `git_url` installs from a git
     repo instead of crates.io. Pin `version` for reproducibility.
 
+    The env must already exist — an install never creates the env it targets, because the
+    runtime it runs under is your choice and is recorded. Create it with create_conda_env, or
+    install_conda_packages(env_name, [{'spec': '<runtime>', 'channel': 'conda-forge'}]).
+
     `verify_command` = a SELF-CONTAINED functional smoke that RUNS the built binary
     on inline-generated data and exits 0 (e.g. `cd /tmp && printf '@r\\nACGT\\n+\\nIIII\\n'
     > /tmp/in.fq && nanoq -i /tmp/in.fq -o /tmp/out.fq && test -s /tmp/out.fq`). It is
@@ -914,6 +933,10 @@ def install_go_tool(
     for reproducibility. With pipeline_id, records the install_step + caches the
     verify (I2).
 
+    The env must already exist — an install never creates the env it targets, because the
+    runtime it runs under is your choice and is recorded. Create it with create_conda_env, or
+    install_conda_packages(env_name, [{'spec': '<runtime>', 'channel': 'conda-forge'}]).
+
     `verify_command` = a SELF-CONTAINED functional smoke that RUNS the built binary on
     inline-generated data and exits 0 (e.g. `cd /tmp && printf '>r\\nACGT\\n' > /tmp/r.fa &&
     printf '>q\\nACGA\\n' > /tmp/q.fa && gofasta snps -r /tmp/r.fa -q /tmp/q.fa -o /tmp/o.csv
@@ -954,6 +977,10 @@ def install_jar_tool(
     step: int = 0,
 ) -> dict:
     """Install a Java JAR-based tool end-to-end (Exomiser, Picard, GATK, snpEff, …).
+
+    The env must already exist — an install never creates the env it targets, because the
+    runtime it runs under is your choice and is recorded. Create it with create_conda_env, or
+    install_conda_packages(env_name, [{'spec': '<runtime>', 'channel': 'conda-forge'}]).
 
     `java_version` = the JRE the tool REQUIRES, e.g. "21" for Exomiser 14+ (a bare
     major is the normal form; "21.0.9" also works). Leave it empty and the frozen
@@ -1072,7 +1099,9 @@ def install_r_package(
     functional_check: str = "",
 ) -> dict:
     """Install an R package end-to-end with category-correct discovery built in, into an
-    env that EXISTS (create one first: `install_conda_packages(env_name, ['r-base=4.5'])`).
+    env that EXISTS (create one first: install_conda_packages(env_name, [{'spec': 'r-base=4.5',
+    'channel': 'conda-forge'}]) — an install never creates the env it targets, because the
+    R it runs under is your choice).
 
     `source` is one of:
       cran          — install.packages("name") from CRAN
@@ -1118,42 +1147,41 @@ def install_r_package(
     the caller doesn't have to. The caller installs each missing package then
     retries this install, no string-handling round trip.
     """
-    # NOTE: the executed Rscript is wrapped in `Rscript -e "..."` (outer double
-    # quotes), so every R string literal inside MUST use single quotes — nested
-    # double quotes terminate the outer bash string and Rscript receives the
-    # package name as an unquoted symbol ("object 'X' not found").
+    # Every `Rscript -e` payload below is ONE shell-quoted token, so the R code —
+    # and the agent's functional_check inside it — may use either quote style.
+    # Names the agent supplied become R string literals through _r_str.
     if source.startswith("github:"):
         owner_repo = source[len("github:"):].strip()
         # Pre-install undeclared transitive deps if requested.
         pre_lines = []
         if deps_first:
-            pre = ",".join(f"'{d}'" for d in deps_first)
+            pre = ",".join(_r_str(d) for d in deps_first)
             pre_lines.append(
                 f'BiocManager::install(c({pre}), lib=lib, ask=FALSE, update=FALSE)'
             )
         install_expr = (
-            f"remotes::install_github('{owner_repo}', lib=lib, dependencies=FALSE)"
+            f"remotes::install_github({_r_str(owner_repo)}, lib=lib, dependencies=FALSE)"
         )
         check_name = name
         install_block = "; ".join(pre_lines + [install_expr])
         channel = "github"
         source_url = f"https://github.com/{owner_repo}"
-        im_source = f"remotes::install_github('{owner_repo}')"
+        im_source = f"remotes::install_github({_r_str(owner_repo)})"
     elif source == "cran":
         install_block = (
-            f"install.packages('{name}', lib=lib, repos='https://cloud.r-project.org')"
+            f"install.packages({_r_str(name)}, lib=lib, repos='https://cloud.r-project.org')"
         )
         channel = "cran"
         source_url = f"https://CRAN.R-project.org/package={name}"
-        im_source = f"install.packages('{name}')"
+        im_source = f"install.packages({_r_str(name)})"
         check_name = name
     elif source == "bioconductor":
         install_block = (
-            f"BiocManager::install('{name}', lib=lib, ask=FALSE, update=FALSE)"
+            f"BiocManager::install({_r_str(name)}, lib=lib, ask=FALSE, update=FALSE)"
         )
         channel = "bioconductor"
         source_url = f"https://bioconductor.org/packages/{name}/"
-        im_source = f"BiocManager::install('{name}')"
+        im_source = f"BiocManager::install({_r_str(name)})"
         check_name = name
     else:
         return refused("install.r_unknown_source", success=False,
@@ -1173,33 +1201,25 @@ def install_r_package(
         "if(!requireNamespace('BiocManager',quietly=TRUE)) "
         "install.packages('BiocManager',lib=lib,repos='https://cloud.r-project.org'); "
         f"{install_block}; "
-        f"if(!requireNamespace('{check_name}',quietly=TRUE,lib.loc=lib)) "
-        f"stop('install reported success but {check_name} is not loadable');"
+        f"if(!requireNamespace({_r_str(check_name)},quietly=TRUE,lib.loc=lib)) "
+        f"stop({_r_str(f'install reported success but {check_name} is not loadable')});"
     )
-    command = f"Rscript -e \"{rscript}\""
-    verify_command = (
-        f"Rscript -e \"if(!requireNamespace('{check_name}',quietly=TRUE)) quit(status=1); "
-        f"cat(as.character(packageVersion('{check_name}')))\""
-    )
+    command = f"Rscript -e {_sh_payload(rscript)}"
+    verify_command = "Rscript -e " + _sh_payload(
+        f"if(!requireNamespace({_r_str(check_name)},quietly=TRUE)) quit(status=1); "
+        f"cat(as.character(packageVersion({_r_str(check_name)})))")
     # FUNCTIONAL evidence (optional): actually RUN the package. Wrapped so the tool
     # is loaded then the agent's self-contained expression exercises it; a stop()
     # inside → non-zero → the install is judged FAILED (imports-but-doesn't-run is a
     # real failure). This command is what freeze re-runs for VALIDATED_IN_IMAGE, so
-    # "validated" means "ran". Single-quote R strings only (outer double quotes).
+    # "validated" means "ran".
     functional_command = ""
     if functional_check:
-        functional_command = (
-            f"Rscript -e \"suppressPackageStartupMessages(library('{check_name}')); "
-            f"{functional_check}\""
-        )
+        functional_command = "Rscript -e " + _sh_payload(
+            f"suppressPackageStartupMessages(library({_r_str(check_name)})); {functional_check}")
 
-    env_path = _ms._env_mgr.envs_dir / env_name
-    if not env_path.exists():
-        return refused("env_manager.r_env_missing", success=False,
-                       error=f"env not found: {env_path}",
-                       remedy=f"create it first: install_conda_packages(env_name={env_name!r}, "
-                              "packages=['r-base=4.5']) — an install never creates the env it targets, "
-                              "because the R it runs under is your choice and is recorded")
+    if not (_ms._env_mgr.envs_dir / env_name).exists():
+        return _ms._env_mgr.env_missing_refusal("env_manager.r_env_missing", env_name, needs=("r-base=4.5",))
     result = _ms._env_mgr.run_in_env(env_name, command, timeout=1800)
     # On failure, surface every package R complained was missing as a structured
     # field. R logs these in TWO distinct shapes — both load-bearing in the wild:
@@ -1233,7 +1253,8 @@ def install_r_package(
             result["returncode"] = vresult.get("returncode") or 1
             result["success"]    = False
             result["stderr"]     = (result.get("stderr") or "") + (
-                f"\n[verify failed: {vresult.get('stderr','')[-200:]}]"
+                f"\n[verify failed — {check_name} is not loadable]\n"
+                f"{(vresult.get('stderr') or '')[-200:]}"
             )
         else:
             r_version = (vresult.get("stdout") or "").strip()
@@ -1249,8 +1270,8 @@ def install_r_package(
                     result["success"]    = False
                     result["functional_check_failed"] = True
                     result["stderr"] = (result.get("stderr") or "") + (
-                        f"\n[functional check failed — {check_name} imports but did not run: "
-                        f"{(fresult.get('stderr') or '')[-300:]}]")
+                        f"\n[functional check failed — {check_name} imports but did not run]\n"
+                        f"{(fresult.get('stderr') or '')[-300:]}")
                 else:
                     result["functional_command"] = functional_command
                     result["functional_output"]  = (fresult.get("stdout") or "")[:500]
@@ -1301,16 +1322,36 @@ def install_r_package(
         label=f"r.{source}.{env_name}.{name}")
 
 
+def _sh_payload(code: str) -> str:
+    """One shell token carrying a `-c`/`-e` program the agent wrote.
+
+    Single-quoted when the code has no single quote (the usual Python form); double-
+    quoted when it has single quotes but nothing the shell expands inside double quotes
+    (the usual R form, `library('x')`); otherwise shlex-quoted, which is always correct
+    and merely harder to read. The recorded command stays legible in the common cases
+    and never breaks on a quote."""
+    if "'" not in code:
+        return shlex.quote(code)
+    if not re.search(r'["$`\\]', code):
+        return '"' + code + '"'
+    return shlex.quote(code)
+
+
+def _r_str(s: str) -> str:
+    """An R string literal for agent-supplied text (single-quoted, escapes escaped)."""
+    return "'" + str(s).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 def _install_outcome(result: dict, ok_code: str, failed_code: str) -> dict:
     """Re-tag an install result with the tool's OWN code. The install ran through
     `run_in_env`, whose tag says only that a command ran; the verify and functional
     checks that follow can fail the install while that tag still reads proven. One
     code per route also lets a reader (or an experiment's `required_codes`) see which
     route an env took."""
-    ok = result.get("returncode") == 0 and result.get("success") is not False
+    ok = result.get("success") is not False and result.get("returncode") in (0, None)
     fields = {k: v for k, v in result.items() if k not in ("outcome", "code")}
     if not ok and not fields.get("error"):
-        fields["error"] = (_last_line(result.get("stderr")) or _last_line(result.get("stdout"))
+        fields["error"] = (last_informative_line(result.get("stderr")) or last_informative_line(result.get("stdout"))
                            or f"exit {result.get('returncode')} with nothing on stderr")
     return proven(ok_code, **fields) if ok else broke(failed_code, **fields)
 
@@ -1326,7 +1367,9 @@ def install_pip_package(
     functional_check: str = "",
 ) -> dict:
     """Install a pip package end-to-end with an auto-verify_command, into an env that
-    EXISTS (create one first: `install_conda_packages(env_name, ['python=3.12', 'pip'])`).
+    EXISTS (create one first: install_conda_packages(env_name, [{'spec': 'python=3.12',
+    'channel': 'conda-forge'}, {'spec': 'pip', 'channel': 'conda-forge'}]) — an install
+    never creates the env it targets, because the Python it runs under is your choice).
 
     Equivalent to running pip install + python -c "import name" inside the env.
     The import-check is the load-or-die: if pip says it installed but the
@@ -1334,8 +1377,9 @@ def install_pip_package(
 
     `functional_check` (optional but preferred where import ≠ works): a Python
     expression that actually RUNS the package (it runs as `python -c "import
-    <name>; <functional_check>"`, so it can assume the module is imported) and
-    raises if the result is wrong. It executes after the import check (imports-but-
+    <name>; <functional_check>"`, so it can assume the module is imported; the
+    payload is shell-quoted as a whole, so the expression may use either quote
+    style) and raises if the result is wrong. It executes after the import check (imports-but-
     doesn't-run is a FAILED install) and is recorded as install_method.
     functional_evidence, so freeze's VALIDATED_IN_IMAGE proves the package RAN,
     not merely imported — the pip analog of install_r_package's functional_check
@@ -1346,7 +1390,7 @@ def install_pip_package(
     `--index-url`, etc. PERSISTED on `install_method.pip_flags` so freeze's
     replay path emits the SAME flags inside the shipped image — otherwise
     pip's default wheel substitution would silently downgrade the validated
-    source compile (the pysam-stress P2 trust violation). Pass as a list of
+    source compile. Pass as a list of
     tokens (`['--no-binary', ':all:']`); we shlex-quote each. Flag-bearing
     pip installs land in the freeze build as engine-coupled long-tail steps,
     not via `pixi add --pypi` (uv doesn't honor pip flags).
@@ -1363,19 +1407,18 @@ def install_pip_package(
     # We default to the lowercased name; agents can override with verify_command
     # post-hoc if the import path differs.
     import_check_name = name.replace("-", "_").lower()
-    env_path = _ms._env_mgr.envs_dir / env_name
-    if not env_path.exists():
-        return refused("env_manager.pip_env_missing", success=False,
-                       error=f"env not found: {env_path}",
-                       remedy=f"create it first: install_conda_packages(env_name={env_name!r}, "
-                              "packages=['python=3.12', 'pip']) — an install never creates the env it "
-                              "targets, because the Python it runs under is your choice and is recorded")
+    if not (_ms._env_mgr.envs_dir / env_name).exists():
+        return _ms._env_mgr.env_missing_refusal("env_manager.pip_env_missing", env_name,
+                                                needs=("python=3.12", "pip"))
     _flag_str = " ".join(shlex.quote(f) for f in pip_flags)
-    command = " ".join(part for part in (f"pip install", _flag_str, spec) if part)
-    verify_command = f"python -c 'import {import_check_name}' || pip show {name} > /dev/null"
+    command = " ".join(part for part in (f"pip install", _flag_str, shlex.quote(spec)) if part)
+    verify_command = (f"python -c {_sh_payload(f'import {import_check_name}')} "
+                      f"|| pip show {shlex.quote(name)} > /dev/null")
     functional_command = ""
     if functional_check:
-        functional_command = f"python -c 'import {import_check_name}; {functional_check}'"
+        # The whole -c payload is one shell token, so the expression may use either
+        # quote style; it runs after the import it can assume.
+        functional_command = f"python -c {_sh_payload(f'import {import_check_name}; {functional_check}')}"
 
     result = _ms._env_mgr.run_in_env(env_name, command, timeout=600)
     if result.get("returncode") == 0:
@@ -1397,8 +1440,8 @@ def install_pip_package(
                     result["success"]    = False
                     result["functional_check_failed"] = True
                     result["stderr"] = (result.get("stderr") or "") + (
-                        f"\n[functional check failed — {name} imports but did not run: "
-                        f"{(fresult.get('stderr') or '')[-300:]}]")
+                        f"\n[functional check failed — {name} imports but did not run]\n"
+                        f"{(fresult.get('stderr') or '')[-300:]}")
                 else:
                     result["functional_command"] = functional_command
                     result["functional_output"]  = (fresult.get("stdout") or "")[:500]
@@ -1437,7 +1480,7 @@ def install_pip_package(
         idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
         # Cache the import-check verify so the finalize package derivation
         # attaches it — without this the derived PackageRecord has no
-        # verify_output and fails I2 (same gap fixed for R packages).
+        # verify_output and fails I2 (R packages cache theirs the same way).
         if result.get("success") and result.get("verify_output"):
             _ms._pipeline_state.cache_verification(pipeline_id, name, {
                 "verify_command": result.get("verify_command"),
@@ -1481,6 +1524,10 @@ def run_install_command(
 ) -> dict:
     """Run an install command inside a conda environment (BiocManager::install,
     remotes::install_github, pip install, downloading reference DBs, etc.).
+
+    The env must already exist — an install never creates the env it targets, because the
+    runtime it runs under is your choice and is recorded. Create it with create_conda_env, or
+    install_conda_packages(env_name, [{'spec': '<runtime>', 'channel': 'conda-forge'}]).
 
     This is the install-side mirror of run_in_env: same shape, same semantics,
     but the resulting step lands in draft.install_steps (not pipeline_steps)
@@ -1576,6 +1623,8 @@ def run_install_command(
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
     _label_suffix = tool or subcommand or "cmd"
-    return _ms._shrink_stdio_for_response(result, label=f"install.{env_name}.{_label_suffix}")
+    return _ms._shrink_stdio_for_response(
+        _install_outcome(result, "env_manager.install_command_ok", "env_manager.install_command_failed"),
+        label=f"install.{env_name}.{_label_suffix}")
 
 

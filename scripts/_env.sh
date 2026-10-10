@@ -14,8 +14,8 @@
 #                                      # caller can name a missing env by path
 #
 # "Where is conda" has exactly ONE answer — the repo-private ./.miniforge — and
-# deliberately NO search. Four callers used to search a machine's condas in
-# different orders (the doctor once reported PASS on a conda setup never used),
+# deliberately NO search. Searching a machine's condas gives each caller a
+# different answer (and the doctor a PASS on a conda setup nothing else uses),
 # and any machine conda carries that machine's variance. setup.sh installs the
 # private copy unconditionally; every clone bootstraps identically.
 # Pinned by tests/test_setup_surface_resolution.py.

@@ -24,7 +24,9 @@ The six classes:
     loop      🔁  recoverable, feeds back into a retry
 
 Usage — wrap the terminal dict; existing fields are preserved verbatim, two keys
-(`outcome`, `code`) are added:
+(`outcome`, `code`) are added. A refused/broke/vanished terminal also always carries
+a top-level `error`: when the builder set none, `derive_error` fills it from the
+fields it did set (reason, the first violation, the last informative stderr line):
 
     return refused("seal.no_frozen_env", success=False, error="...")
     return proven("seal.sealed", success=True, workflow_name=wname, ...)
@@ -45,6 +47,8 @@ conditional expression hides both, so the terminal silently drops out of the mod
 """
 from __future__ import annotations
 
+import re
+
 PROVEN   = "proven"
 REFUSED  = "refused"
 BROKE    = "broke"
@@ -58,6 +62,82 @@ OUTCOME_CLASSES = (PROVEN, REFUSED, BROKE, VANISHED, DEGRADED, LOOP)
 HELPER_NAMES = ("proven", "refused", "broke", "vanished", "degraded", "loop")
 
 
+#: Classes whose terminal must say what went wrong. `degraded` did the work and
+#: `loop` hands back for a retry; neither is an error.
+_FAILURE_CLASSES = frozenset({REFUSED, BROKE, VANISHED})
+
+ERROR_LINE_LIMIT = 300
+
+#: Lines a process wrapper prints around the real cause. They carry no information
+#: about the failure, so the line before them is the one to show.
+_WRAPPER_LINE_RE = re.compile(
+    r"^(ERROR conda\.cli\.main_run:execute|\(?See above for error|Traceback \(most recent call last\))")
+
+
+def last_informative_line(text: object, limit: int = ERROR_LINE_LIMIT) -> str:
+    """The last line of a stream that names a cause.
+
+    Skips lines without letters (a stray `]` or `}`), and the wrapper lines a runner
+    prints after the real error. Falls back to the last non-empty line when nothing
+    better exists, and to "" for an empty stream."""
+    if not isinstance(text, str):
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if not re.search(r"[A-Za-z]", ln) or _WRAPPER_LINE_RE.match(ln):
+            continue
+        return ln[:limit]
+    return lines[-1][:limit] if lines else ""
+
+
+def _first_text(*values: object) -> str:
+    for v in values:
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _violations_summary(violations: object) -> str:
+    if not isinstance(violations, list) or not violations:
+        return ""
+    first = violations[0]
+    if isinstance(first, dict):
+        msg = _first_text(first.get("message"), first.get("detail"), first.get("reason"),
+                          first.get("statement"), first.get("error"))
+        head = _first_text(first.get("invariant"), first.get("clause"), first.get("id"))
+        msg = f"{head}: {msg}" if head and msg else (msg or head)
+    else:
+        msg = str(first)
+    n = len(violations)
+    return f"{n} violation{'s' if n != 1 else ''}; first: {msg}" if msg else f"{n} violations"
+
+
+def derive_error(fields: dict, code: str) -> str:
+    """What a failure terminal says when its builder set no `error`.
+
+    In order: a prose field that already names the cause (`reason`, `message`,
+    `detail`), the first of its `violations`, the last informative line of its
+    stderr then stdout (one nested level too — a failed build carries them under
+    `build`), else the code and exit status. Never empty."""
+    text = _first_text(fields.get("reason"), fields.get("message"), fields.get("detail"))
+    if text:
+        return text[:ERROR_LINE_LIMIT]
+    text = _violations_summary(fields.get("violations"))
+    if text:
+        return text[:ERROR_LINE_LIMIT]
+    streams = [fields.get("stderr"), fields.get("stdout")]
+    for key in sorted(fields):
+        inner = fields[key]
+        if isinstance(inner, dict) and ("stderr" in inner or "stdout" in inner):
+            streams += [inner.get("stderr"), inner.get("stdout")]
+    for s in streams:
+        line = last_informative_line(s)
+        if line:
+            return line
+    rc = fields.get("returncode")
+    return f"{code} (exit {rc})" if rc not in (None, "") else code
+
+
 def _tag(kind: str, code: str, fields: dict) -> dict:
     if kind not in OUTCOME_CLASSES:
         raise ValueError(f"unknown outcome class {kind!r}")
@@ -66,6 +146,10 @@ def _tag(kind: str, code: str, fields: dict) -> dict:
     d = dict(fields)
     d["outcome"] = kind
     d["code"] = code
+    # A failure terminal always carries a top-level `error` a reader can act on. The
+    # builder's own text wins; this only fills the key when it was left empty.
+    if kind in _FAILURE_CLASSES and not d.get("error"):
+        d["error"] = derive_error(d, code)
     return d
 
 
@@ -106,7 +190,7 @@ def call_verdict(result: object) -> bool | None:
     reader that treats `.get("success")` as the whole answer converts *no
     statement* into *failure*, which is a verdict manufactured from a field
     nobody wrote. Callers must branch on all three; `if not call_verdict(r)`
-    reintroduces the bug this function exists to remove.
+    reintroduces the fault this function exists to remove.
     """
     if not isinstance(result, dict):
         return None

@@ -8,8 +8,7 @@ PipelineState + env_manager path that user pipelines use.
 Steps:
   1. Install the core_tools conda env (samtools + bcftools + seqkit + bwa)
      via start_pipeline → search_package → install_packages →
-     verify_installation (host env; no spec is written — the combined env-spec
-     writer was retired with the host build path)
+     verify_installation (host env; no spec is written)
   2. Download the reference chromosome FASTA and build fai + bwa indexes
      using the env we just installed
   3. Download the canonical test datasets listed in config/core_datasets.yaml
@@ -202,9 +201,8 @@ def install_core_tools(config: dict) -> dict[str, Any]:
             "verify_output":  (v.get("output") or "")[:500],
         })
 
-    # The env is built and every tool verified. The combined env-spec writer
-    # (save_pipeline_spec) was retired with the host build path — an env is now
-    # solved once by freeze() and verified IN its shipped image (install==ship).
+    # The env is built and every tool verified. No spec is written here: an env
+    # is solved once by freeze() and verified IN its shipped image (install==ship).
     # bootstrap's job is just to stand up the core_tools conda env + test data on
     # the host, so we stop here and clear the draft.
     draft = state.get_draft(pid)

@@ -70,6 +70,9 @@ class TypedNoun:
     noun it walks, so no single seam can delete it early."""
     enforced_at: str = ""
     """ENFORCED only: dotted path of the function that raises on a malformed record."""
+    patchable: bool = False
+    """True when `patch_pipeline` may write this noun directly, so a violation's remedy
+    is "fix the record and re-send it", not "re-run the producer"."""
 
 
 def _tn(**kw) -> TypedNoun:
@@ -78,15 +81,15 @@ def _tn(**kw) -> TypedNoun:
 
 REGISTRY: dict[str, TypedNoun] = {tn.noun: tn for tn in [
     # ---- Layer 2: the pipeline draft / WorkflowSpec ---------------------------------
-    # `retires` attribution is from measurement at spec_writer HEAD: I0.shape_sanity
+    # `retires` names the walk clauses a noun's model subsumes: I0.shape_sanity
     # walks the seven list nouns below; I6.absolute_paths and I7.resource_usage_recorded
     # read only pipeline_steps. I7.resource_usage_captured (all-zeros / sacct_error) and
     # I6.template_placeholders_declared are value/world checks and are claimed by nobody.
     #
-    # pipeline_steps ENFORCED (Seam A): the five producers construct through
+    # pipeline_steps ENFORCED: the five producers construct through
     # PipelineStep.produce, check_draft raises at the write funnel, and seal re-validates
     # via WorkflowSpec. Its two solely-claimed clauses (I6.absolute_paths,
-    # I7.resource_usage_recorded) were deleted from the walk in the same change; the
+    # I7.resource_usage_recorded) are not in the walk; the
     # I0.shape_sanity claim waits on the other six list nouns.
     _tn(noun="pipeline_steps", model="PipelineStep", layer=LAYER_WORKFLOW, mode=ENFORCED,
         enforced_at="agent.skills.typed_nouns.check_draft",
@@ -95,8 +98,14 @@ REGISTRY: dict[str, TypedNoun] = {tn.noun: tn for tn in [
         retires=("I0.shape_sanity",)),
     _tn(noun="packages", model="PackageRecord", layer=LAYER_WORKFLOW, mode=SHADOW,
         retires=("I0.shape_sanity",)),
+    # reference_databases ENFORCED: the record is patchable, so an agent can hand one
+    # in with a wrong key or no path; the model (extra=forbid, local_path required)
+    # refuses that at the write with the field named, where a shadow would have let a
+    # pathless record through to anchor nothing.
     _tn(noun="reference_databases", model="ReferenceDatabase", layer=LAYER_WORKFLOW,
-        mode=SHADOW, retires=("I0.shape_sanity",)),
+        mode=ENFORCED, patchable=True,
+        enforced_at="agent.skills.typed_nouns.check_draft",
+        retires=("I0.shape_sanity",)),
     _tn(noun="runtime_configs", model="RuntimeConfig", layer=LAYER_WORKFLOW,
         mode=SHADOW, retires=("I0.shape_sanity",)),
     _tn(noun="service_dependencies", model="ServiceDependency", layer=LAYER_WORKFLOW,
@@ -211,14 +220,20 @@ def _enforce_one(model, tn: TypedNoun, entry, where: str, source: str) -> None:
     try:
         model.model_validate(entry)
     except Exception as e:
+        if tn.patchable:
+            fix = (f"'{tn.noun}' is patchable: re-send the whole list with {where} fixed — "
+                   f"the error below names the field (its producers write exactly the "
+                   f"fields {tn.model} declares; an unknown key is refused, not kept).")
+        else:
+            fix = (f"'{tn.noun}' is not patchable: re-run the offending record's producer "
+                   f"(replace_step=N overwrites a failed slot), or discard_pipeline_draft "
+                   f"and rebuild.")
         raise TypedNounViolation(
             f"{source}: {where} does not satisfy {tn.model} (noun '{tn.noun}' is "
             f"ENFORCED). This gate validates the WHOLE draft on every write, so the "
             f"violating record may be one ALREADY IN THE DRAFT (hand-edited, or written "
             f"before enforcement) rather than the one this mutation adds — check {where} "
-            f"against the error below. '{tn.noun}' is not patchable: re-run the offending "
-            f"record's producer (replace_step=N overwrites a failed slot), or "
-            f"discard_pipeline_draft and rebuild.\n{e}"
+            f"against the error below. {fix}\n{e}"
         ) from e
 
 

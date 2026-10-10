@@ -463,8 +463,8 @@ class OutputValidator:
         """First `n` DATA lines — streams PAST a comment/meta header of ANY length
         (skipping `comment`-prefixed and blank lines). A fixed head(20) window sampled
         BEFORE filtering comments returns nothing but header for a tool that emits a
-        long meta block: VEP --tab prints ~30 '##' lines before data, so the old
-        _check_tabular rejected a perfectly valid annotated file as 'no data rows'."""
+        long meta block (VEP --tab prints ~30 '##' lines before data) and would
+        reject a perfectly valid annotated file as 'no data rows'."""
         out: list[str] = []
         try:
             opener = gzip.open if path.suffix in (".gz", ".bgz") else open

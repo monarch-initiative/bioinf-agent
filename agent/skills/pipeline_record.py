@@ -42,7 +42,6 @@ Vocabulary
 from __future__ import annotations
 
 import fnmatch
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -653,25 +652,36 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             source=source, format=di.get("format"), description=di.get("description"),
             used_by=[], reason=why))
         notes.append(f"{ph}: {kind} ({why})")
-    # a shared path that is an authored artifact of the workflow is a SCRIPT: carried
-    # verbatim, rendered into bin/, its param defaulting to that relative path
+    # a shared path that is an authored artifact of the workflow is either a SCRIPT —
+    # its full text in the record, carried verbatim into bin/, the param defaulting to
+    # that relative path — or an authored DATA file (staged with generated_by, or too
+    # large to carry): that stays a path input, anchored by the record's sha256. A
+    # script-suffixed path the seal only excerpted is the one shape refused: the render
+    # cannot carry a script it does not have.
     scripts: list[PipelineScript] = []
     authored = [a for a in (spec_d.get("authored_artifacts") or []) if isinstance(a, dict)]
     for p in params:
         if p.kind != "shared" or p.value_kind != "path" or not p.default:
             continue
+        if p.source.startswith(("reference_database:", "test_data:")):
+            continue   # declared data; an authored record at the same path changes nothing
         art = next((a for a in authored if str(a.get("path") or "") == p.default), None)
         if art is None:
             continue
         content = art.get("content_excerpt")
-        if not isinstance(content, str) or int(art.get("size_bytes") or 0) != len(content.encode("utf-8")):
-            raise PipelineDerivationError(
-                "pipeline.script_not_carried",
-                f"{p.name} names the authored artifact {p.default}, but the sealed record does not carry "
-                f"its full text (size {art.get('size_bytes')} bytes)",
-                "stage scripts under 64 KiB in content mode so the seal carries them verbatim; "
-                "a data file (an annotation, an index, a reference subset) is not a script — "
-                "record it as a reference_database instead")
+        carried = isinstance(content, str) and int(art.get("size_bytes") or 0) == len(content.encode("utf-8"))
+        if not carried:
+            if core_data.is_script_path(p.default):
+                raise PipelineDerivationError(
+                    "pipeline.script_not_carried",
+                    f"{p.name} names the authored script {p.default}, but the sealed record does not carry "
+                    f"its full text (size {art.get('size_bytes')} bytes)",
+                    "stage scripts under 64 KiB in content mode so the seal carries them verbatim")
+            bn = Path(p.default).name
+            p.source = f"authored_artifact:{bn}"
+            p.reason += "; an authored data file, kept as a path input and pinned by its sha256"
+            notes.append(f"{p.name}: an authored data file ({bn}), a path input pinned by sha256")
+            continue
         bn = Path(p.default).name
         if any(sc.name == bn for sc in scripts):
             raise PipelineDerivationError(

@@ -23,7 +23,7 @@ Honesty guarantees, made structural:
     (license-gating, accelerator) live in separate, labelled sections.
 
 Self-contained: inline CSS, zero external resources, no JS. Companion-artifact
-links resolve relative to env_reports/ where the file lives. One public fn:
+links resolve relative to environments/<env>/ where the file lives. One public fn:
 render_env_report_html.
 """
 
@@ -527,9 +527,9 @@ def _header_banner(title_html: str, pill_html: str, rows: list[tuple[str, str]])
     )
 
 
-# Re-exported under the historical private name so call sites here don't churn —
-# the canonical helper now lives in env_report (so the .md renderer can share it,
-# the R1 fix point); see env_report.requested_versions docstring.
+# Re-exported under the private name the call sites here use — the canonical
+# helper lives in env_report so the .md renderer can share it; see
+# env_report.requested_versions docstring.
 _requested_versions = _shared_req_versions
 
 
@@ -1287,14 +1287,11 @@ def render_env_report_html(record: dict) -> str:
                  "trust the publisher. Whether the image carries the tool you asked for is the "
                  "<code>VALIDATED_IN_IMAGE</code> row above.</li>")
     else:
-        # PROVENANCE ONLY — no outcome verb. This bullet said "installed and VALIDATED
-        # inside the image that ships … the bytes VALIDATED are the bytes that run on
-        # HPC", branched on build method, emitted unconditionally. That is F2's exact
-        # shape at one-tenth the size, and it was written INTO THE COMMIT THAT FIXED F2,
-        # over a record that may carry zero verifications, with the whole suite green.
-        # Where the bytes came from is a fact about the build; whether anything was
-        # exercised in them is the VALIDATED_IN_IMAGE bullet above, and this section
-        # must not answer that question a second time.
+        # PROVENANCE ONLY — no outcome verb. Where the bytes came from is a fact about
+        # the build; whether anything was exercised in them is the VALIDATED_IN_IMAGE
+        # bullet above, and this section must not answer that question a second time:
+        # a bullet reading "installed and VALIDATED inside the image" would be emitted
+        # unconditionally over a record that may carry zero verifications.
         P.append("<li><b>Built inside the container</b> — these bytes were assembled inside the "
                  "image that ships, not built on this machine and copied in, so install and ship "
                  "are one event. What was exercised in them is the "

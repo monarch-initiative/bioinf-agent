@@ -58,8 +58,8 @@ from agent.skills.env_report_html import (
 )
 
 #: How the three resource states are shown. EXHAUSTIVE over the three
-#: `RESOURCES_*` constants — asserted by a test, because the whole point of F5's
-#: fix is that "measured under emulation" and "nobody recorded" must not render
+#: `RESOURCES_*` constants — asserted by a test, because the rule is that
+#: "measured under emulation" and "nobody recorded" must not render
 #: alike, and a map missing a key would silently collapse them into a KeyError or
 #: a default.
 _RESOURCE_AUTHORITY_BADGE = {

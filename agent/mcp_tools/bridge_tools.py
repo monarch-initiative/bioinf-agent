@@ -9,8 +9,7 @@ ControlMaster ssh pattern.
 Today the surface is:
   upload / download              — unified transfer (zone auto-routed
                                    by where the absolute remote path
-                                   falls); replaces the six retired
-                                   zone-specific primitives
+                                   falls)
   stage_apptainer_image          — get a frozen env's .sif onto a env
   run_production_pipeline        — run a RENDERED pipeline in production (submit-and-document)
   run_step_on_cluster            — validation/seal run in scratch
@@ -43,13 +42,10 @@ All cheat-guards live under
 """
 from __future__ import annotations
 
-# IMPORT-BINDING (see feedback-mcp-tools-conventions): singletons go through
-# `_ms.X` so test monkeypatching on mcp_server attribute names reaches us.
-# `mcp` is the FastMCP app and is never monkeypatched, so a bare import is
-# safe. Same shape as every other agent/mcp_tools/ submodule.
-from pathlib import Path
-
-from agent import mcp_server as _ms
+# `mcp` is the FastMCP app and is never monkeypatched, so a bare import is safe.
+# The bridge primitives reach no mcp_server singleton; a tool here that comes to
+# need one goes through `_ms.X` like every other agent/mcp_tools/ submodule (see
+# feedback-mcp-tools-conventions).
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 
 

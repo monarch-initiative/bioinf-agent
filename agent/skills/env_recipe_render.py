@@ -158,7 +158,7 @@ def render_step_commands(step: dict) -> list[str]:
         # Rendering `curl -fL -o x.tar '<binary_url>'` unconditionally hands an
         # operator-supplied install a URL that is a path on the agent's own laptop
         # (`file:///...scratch...`) — a copy-pasteable line that cannot work anywhere
-        # else, in a scratch dir that no longer exists. The same doctrine stated below
+        # else, in a scratch dir that is gone by the time anyone reads it. The same doctrine stated below
         # for an unpinned source checkout applies verbatim here: an instruction you
         # can paste is worse than none, because it looks like one.
         if im.get("artifact_source") == "operator_supplied":
@@ -397,16 +397,16 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
         # reconstructed one, because only the first is evidence of how these bytes
         # came to exist.
         #
-        # TWO routes land here, and the old text asserted the wrong one: it
-        # said the env "was frozen before the build transcript was captured" and
-        # prescribed a re-freeze — on an artifact a cold-start reader had frozen four
-        # minutes earlier, for whom the remedy costs a rebuild and reproduces this
-        # exact warning. An install routed through the engine's conda/PyPI layer (a
-        # plain `pip install`) NEVER produces a RUN transcript; its provenance is the
-        # lock. Only a RUN-baked tier that predates transcript capture is the case
-        # the old sentence described. The recipe cannot always tell the two apart,
-        # so the warning now states the observable fact (no transcript IN THIS
-        # RECIPE) and explains both routes instead of asserting an age.
+        # TWO routes land here, and the warning must not assert the wrong one. An
+        # install routed through the engine's conda/PyPI layer (a plain `pip install`)
+        # NEVER produces a RUN transcript; its provenance is the lock. Only a RUN-baked
+        # tier that predates transcript capture is the "frozen before the build
+        # transcript was captured" case, for which a re-freeze is the remedy — and
+        # prescribing that remedy to a reader whose artifact took the engine route
+        # minutes ago costs them a rebuild that reproduces this exact warning. The
+        # recipe cannot always tell the two apart, so the warning states the
+        # observable fact (no transcript IN THIS RECIPE) and explains both routes
+        # instead of asserting an age.
         lock_note = (
             " — but an install routed through the engine's conda/PyPI layer (a plain "
             "`pip install`) never produces one: its exact bytes are pinned by the "

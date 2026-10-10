@@ -168,12 +168,14 @@ class PackageSearch:
     # -----------------------------------------------------------------------
 
     def _conda_search(self, package_name: str, requested_version: str) -> dict:
-        channels_args = " ".join(f"-c {c}" for c in CHANNEL_PRIORITY)
         version_suffix = f"={requested_version}" if requested_version != "latest" else ""
-        cmd = f"conda search {channels_args} {package_name}{version_suffix} --json"
+        argv = ["conda", "search"]
+        for c in CHANNEL_PRIORITY:
+            argv += ["-c", c]
+        argv += [f"{package_name}{version_suffix}", "--json"]
 
         try:
-            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
             data = json.loads(proc.stdout)
         except Exception:
             return {"found": False}

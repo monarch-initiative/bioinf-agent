@@ -21,7 +21,7 @@ from agent.skills import evidence
 from agent.skills import workspace
 from agent.skills import store_lock
 from agent.skills import _proc
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.outcomes import proven, refused, broke, last_informative_line
 
 #: How much of a step's stdout/stderr travels back into the agent's context.
 #:
@@ -150,12 +150,6 @@ def parse_conda_spec(spec: str) -> dict:
         "constraint": m.group("op") or "",
         "version":    (m.group("version") or "").strip(),
     }
-
-
-def _last_line(text: str, limit: int = 200) -> str:
-    """The last non-empty line of a stream, capped — the one that names the cause."""
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
-    return lines[-1][:limit] if lines else ""
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
@@ -376,13 +370,6 @@ class EnvManager:
         for ch in channels:
             channel_args += ["-c", ch]
 
-        # (Historical: conda-pack was auto-added here to tarball the env for the
-        # host Docker build. That build path is RETIRED — freeze is container-native
-        # and never conda-packs, per freeze_tools/docker_builder — so we no longer
-        # install conda-pack into every env. The filter-it-out guards in env_tools /
-        # resources / spec_writer stay as a defensive no-op for envs that still have
-        # it from bootstrap_core or a manual install.)
-
         cmd = (
             [self._conda_exe, "install", "--prefix", str(env_path), "--yes", "--quiet"]
             + channel_args
@@ -425,9 +412,9 @@ class EnvManager:
         """Universal mutation primitive — run a command that changes the env and
         capture it as a Mutation.
 
-        This is the single chokepoint the install re-spine routes through:
-        install() (and, as the re-spine proceeds, every other
-        install tier) delegates execution here so the capture shape — command,
+        This is the single chokepoint every install tier routes through:
+        install() and the other install tiers delegate execution here so the
+        capture shape — command,
         returncode, success, stdout/stderr, and (in-env) resource usage +
         detected outputs — is produced in exactly ONE place rather than
         re-derived per method. Pairing a Mutation with an evidence strategy
@@ -679,10 +666,38 @@ class EnvManager:
         if result["returncode"] == 0:
             return proven("env_manager.run_in_env_ok", **run_fields)
         return broke("env_manager.run_in_env_failed",
-                     error=_last_line(_err) or f"exit status {result['returncode']}", **run_fields)
+                     error=last_informative_line(_err) or f"exit status {result['returncode']}", **run_fields)
 
     def env_path(self, env_name: str) -> Path:
         return self.envs_dir / env_name
+
+    def existing_envs(self) -> list[str]:
+        """The env names under envs_dir, sorted — what a refusal lists when a name misses."""
+        if not self.envs_dir.exists():
+            return []
+        return sorted(p.name for p in self.envs_dir.iterdir() if p.is_dir())
+
+    def env_missing_refusal(self, code: str, env_name: str, *, needs: tuple[str, ...] = (),
+                            hint: str = "") -> dict[str, Any]:
+        """The one refusal for an install into an env that does not exist.
+
+        An install never creates the env it targets: the runtime it runs under is the
+        caller's choice and is recorded. The refusal names the envs that do exist and
+        gives the create call in the shape `install_conda_packages` takes — a list of
+        {spec, channel} dicts, with `needs` as the specs — or `create_conda_env` when
+        the route needs nothing from conda."""
+        if needs:
+            pkgs = ", ".join(f"{{'spec': {s!r}, 'channel': 'conda-forge'}}" for s in needs)
+            call = f"install_conda_packages(env_name={env_name!r}, packages=[{pkgs}])"
+        else:
+            call = f"create_conda_env(env_name={env_name!r})"
+        remedy = f"create it first: {call}"
+        if hint:
+            remedy += f" ({hint})"
+        remedy += " — an install never creates the env it targets; the runtime it runs under is your choice and is recorded"
+        return refused(code, success=False, env_name=env_name,
+                       error=f"env not found: {self.envs_dir / env_name}",
+                       existing_envs=self.existing_envs(), remedy=remedy)
 
     def install_jar_tool(
         self,
@@ -714,10 +729,8 @@ class EnvManager:
         """
         env_path  = self.envs_dir / env_name
         if not env_path.exists():
-            return refused("env_manager.jar_env_missing",
-                           success=False, error=f"env not found: {env_path}",
-                           remedy=f"create it first: install_conda_packages(env_name={env_name!r}, "
-                                  "packages=[the runtime the jar needs, e.g. 'openjdk=17'])")
+            return self.env_missing_refusal("env_manager.jar_env_missing", env_name,
+                                            needs=("openjdk=17",), hint="the Java the jar requires")
 
         share_dir = env_path / "share" / tool_name
         bin_dir   = env_path / "bin"
@@ -738,7 +751,7 @@ class EnvManager:
             # curl in normal mode (progress bar to stderr) — watchdog-friendly.
             curl = self.run_in_env(
                 env_name,
-                f"curl -L --progress-bar -o {download_target} '{jar_url}'",
+                f"curl -L --progress-bar -o {shlex.quote(str(download_target))} {shlex.quote(jar_url)}",
                 timeout=3600,
             )
             log.append(f"curl rc={curl['returncode']}")
@@ -750,7 +763,8 @@ class EnvManager:
             if is_zip:
                 unz = self.run_in_env(
                     env_name,
-                    f"cd {share_dir} && unzip -o {download_target.name} && rm {download_target.name}",
+                    f"cd {shlex.quote(str(share_dir))} && unzip -o {shlex.quote(download_target.name)} "
+                    f"&& rm {shlex.quote(download_target.name)}",
                     timeout=600,
                 )
                 log.append(f"unzip rc={unz['returncode']}")
@@ -836,10 +850,9 @@ class EnvManager:
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return refused("env_manager.git_env_missing",
-                           success=False, error=f"env not found: {env_path}",
-                           remedy=f"create it first: install_conda_packages(env_name={env_name!r}, "
-                                  "packages=[the build and runtime deps, e.g. 'make', 'zlib'])")
+            return self.env_missing_refusal("env_manager.git_env_missing", env_name,
+                                            needs=("make",),
+                                            hint="name the build and runtime deps the repository needs")
 
         share_dir = env_path / "share" / tool_name
         log: list[str] = []
@@ -871,7 +884,7 @@ class EnvManager:
                 return broke("env_manager.git_checkout_failed",
                              success=False,
                              error=f"git checkout {ref} failed: "
-                                   f"{_last_line(co.get('stderr') or '') or 'no such ref'}",
+                                   f"{last_informative_line(co.get('stderr') or '') or 'no such ref'}",
                              stderr=(co.get("stderr") or "")[-500:], log=log)
 
         rev = self.run_in_env(
@@ -945,7 +958,7 @@ class EnvManager:
                 verify_ok = vr["returncode"] == 0
                 log.append(f"verify_command rc={vr['returncode']}")
             else:
-                verify_command = f"git -C {share_dir} rev-parse HEAD"
+                verify_command = f"git -C {shlex.quote(str(share_dir))} rev-parse HEAD"
                 verify_output  = commit_sha
                 verify_ok      = True
         else:
@@ -981,7 +994,7 @@ class EnvManager:
                                      "knows what to wrap in the image",
                                commit_sha=commit_sha,
                                clone_path=str(share_dir), log=log)
-            verify_command = f"git -C {share_dir} rev-parse HEAD"
+            verify_command = f"git -C {shlex.quote(str(share_dir))} rev-parse HEAD"
             verify_output  = commit_sha
             verify_ok      = True
 
@@ -1005,7 +1018,7 @@ class EnvManager:
         if verify_ok:
             return proven("env_manager.git_installed", **git_fields)
         return broke("env_manager.git_verify_failed",
-                     error=f"verify_command exited non-zero: {_last_line(verify_output)}",
+                     error=f"verify_command exited non-zero: {last_informative_line(verify_output)}",
                      remedy="the wrapper runs under `set -o pipefail`, and many tools exit 1 when "
                             "printing usage; verify by testing the output instead, e.g. "
                             "test -n \"$(TOOL 2>&1 | grep -w Version)\"",
@@ -1328,8 +1341,7 @@ class EnvManager:
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return refused("env_manager.binary_env_missing",
-                           success=False, error=f"env not found: {env_path}")
+            return self.env_missing_refusal("env_manager.binary_env_missing", env_name)
 
         from urllib.parse import urlparse
         share_dir = env_path / "share" / tool_name
@@ -1482,8 +1494,8 @@ class EnvManager:
         """
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return refused("env_manager.perl_env_missing",
-                           success=False, error=f"env not found: {env_path}")
+            return self.env_missing_refusal("env_manager.perl_env_missing", env_name,
+                                            needs=("perl", "perl-app-cpanminus"))
         target = distribution or module
         flags  = cpanm_flags or "--notest"
         prefix = f"{build_env} " if build_env.strip() else ""
@@ -1534,8 +1546,7 @@ class EnvManager:
         presence (cli_which) is the honest anchor here."""
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return refused("env_manager.cargo_env_missing",
-                           success=False, error=f"env not found: {env_path}")
+            return self.env_missing_refusal("env_manager.cargo_env_missing", env_name, needs=("rust",))
         bin_name = binary_name or crate
         if git_url:
             src = f"--git {shlex.quote(git_url)}"
@@ -1582,8 +1593,7 @@ class EnvManager:
         (cli_which) is the anchor (a locally-built binary can't be wrong-arch)."""
         env_path = self.envs_dir / env_name
         if not env_path.exists():
-            return refused("env_manager.go_env_missing",
-                           success=False, error=f"env not found: {env_path}")
+            return self.env_missing_refusal("env_manager.go_env_missing", env_name, needs=("go",))
         bin_name = binary_name or package.rstrip("/").split("/")[-1]
         spec = f"{package}@{version}" if version else package
         log: list[str] = []
@@ -1777,7 +1787,8 @@ class EnvManager:
         log_file = pid_dir / f"{service_name}.log"
 
         wrapped = (
-            f"nohup bash -c {repr(start_command)} > {log_file} 2>&1 & echo $! > {pid_file}"
+            f"nohup bash -c {shlex.quote(start_command)} > {shlex.quote(str(log_file))} 2>&1 "
+            f"& echo $! > {shlex.quote(str(pid_file))}"
         )
         cmd = ["conda", "run", "--prefix", str(env_path), "--no-capture-output",
                "/bin/bash", "-c", wrapped]
@@ -1833,7 +1844,7 @@ class EnvManager:
         Prefers signalling the whole process group so child processes die too,
         but NEVER signals this server's own process group — if the service was
         somehow launched into our group (detachment failed), fall back to
-        signalling the single PID. A regression here previously killed the
+        signalling the single PID. Signalling our own group would kill the
         server itself; this guard makes that impossible.
         """
         import signal as _signal

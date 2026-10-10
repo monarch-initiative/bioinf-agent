@@ -72,11 +72,6 @@ def _display_cmd(argv: list) -> str:
     return " ".join(shlex.quote(str(a)) for a in argv)
 
 
-class TransferError(Exception):
-    """A provider's transfer raised an error (timeout, sha mismatch,
-    auth, endpoint deactivated). Caller surfaces as `{error: ...}`."""
-
-
 class TransferProvider:
     """Base class. Each concrete provider implements upload_one +
     download_one. Providers are stateless; the env dict is passed on
@@ -165,8 +160,7 @@ class ScpHeadNodeProvider(TransferProvider):
         # We accept them so callers don't have to special-case the
         # provider when threading the flag through.
         from agent.skills.transfer import (
-            _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
-            TransferError as ScratchPathError)
+            _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output)
         from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
         # Build the scp dst (user@host:abs_remote_path), with shell-safety
@@ -378,10 +372,9 @@ class ScpHeadNodeProvider(TransferProvider):
 # task level; the ONLY way to tell them apart is to fetch the task's
 # event list and read which endpoint reported the error. The classifier
 # (_classify_permission_denied → _permission_denied_error) does exactly
-# that and routes the actionable hint by classification. Until we had
-# this, our error message always pointed at #2 — which would mislead
-# users hitting #1 or #3 into running a `--gcs` login that wouldn't
-# fix anything.
+# that and routes the actionable hint by classification. Without it the
+# hint would always point at #2 — misleading users hitting #1 or #3 into
+# running a `--gcs` login that fixes nothing.
 # ---------------------------------------------------------------------------
 
 _GLOBUS_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED"}
@@ -405,12 +398,6 @@ _UUID_RE = _re.compile(
 # GCP refuses to scan paths outside its Accessible Folders config with
 # this exact FTP-style body. Distinctive enough to key off of.
 _GCP_PATH_BLOCK_BODY_RE = _re.compile(r"path not allowed", _re.IGNORECASE)
-
-
-class GlobusError(TransferError):
-    """A Globus CLI call failed (cli missing, auth, endpoint state,
-    task failed). Returned as `{error: ..., hint?: ...}` from the
-    provider methods."""
 
 
 class GlobusProvider(TransferProvider):
@@ -1056,9 +1043,7 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     WHERE THE task_id COMES FROM: the SYNC transfer path. Every successful
     globus upload/download journals its `globus_task_id` into the transfer
     manifest (transfer.py's _journal), so any transfer record is a valid input
-    here. This is NOT an async-only tool — async submit was removed in tier 7
-    (it never once ran across 92 real transfers); 80 of those 92 records carry
-    a live task_id, all minted synchronously.
+    here. This is NOT an async-only tool: every task_id is minted synchronously.
 
     THE FAILURE IT ANSWERS: a sync wait is capped at _SYNC_WAIT_S_DEFAULT and
     `timeout` is not on the MCP surface, so a transfer past that cap returns

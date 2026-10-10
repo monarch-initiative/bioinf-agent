@@ -64,6 +64,7 @@ from typing import Optional
 
 from agent.skills import compute_access
 from agent.skills.outcomes import refused
+from agent.skills.transfer import _under
 
 
 # The single shell shape this module emits. Pinned by a test.
@@ -316,12 +317,6 @@ def _snapshot_paths_for_env(project: dict, env_name: str,
     return out
 
 
-def _boundary_covers(base: str, path: str) -> bool:
-    """Name-boundary-safe prefix: /a/b covers /a/b and /a/b/c, never /a/bc."""
-    b = base.rstrip("/")
-    return path == b or path.startswith(b + "/")
-
-
 def _deep_listing(project: dict, access: dict, path: str,
                   name_glob: Optional[str], max_entries: int,
                   timeout: int) -> dict:
@@ -365,7 +360,7 @@ def _deep_listing(project: dict, access: dict, path: str,
             for target_kind, getter, namespaced in _LISTABLE_ZONES:
                 blk = getter(env)
                 root = ((blk or {}).get("path") or "").rstrip("/")
-                if not root or not _boundary_covers(f"{root}/{proj_name}" if namespaced else root, path):
+                if not root or not _under(f"{root}/{proj_name}" if namespaced else root, path):
                     continue
                 compute_access.check_env_target_capability(
                     project, env_name, blk, "snapshot", target_kind)

@@ -28,15 +28,12 @@ import os
 import re
 import shlex
 import subprocess
-import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
 
 from agent.skills import compute_access, transfer, workflow_render
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.outcomes import broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
-from agent.skills import workspace
 
 
 # A SLURM job_id as parsed from `sbatch --parsable`: digits, length-capped.
@@ -57,22 +54,6 @@ _MANIFEST_ROOT = "job_submissions"
 
 def _manifest_root() -> Path:
     return transfer._record_root() / _MANIFEST_ROOT
-
-
-# Where the rendered workflow files are staged locally before upload. MUST live
-# under a Globus-accessible location: Globus Connect Personal only scans its
-# Accessible Folders (default $HOME) and REFUSES a system temp dir like macOS's
-# /var/folders (which tempfile.TemporaryDirectory() defaults to) — that surfaced
-# as a live `submit.upload_failed` on the first production run. The workspace is
-# required to sit under $HOME, so the scratch zone works for BOTH transports (scp
-# doesn't care where the source is). Mirrors run_cluster_step._render_stage_dir.
-# A FUNCTION, not a module constant. The location depends on the resolved
-# workspace, and a constant computed at import freezes whatever the environment
-# said at import time — which for a test process is "before the fixture
-# redirected it", so every staged file would land in the developer's real
-# workspace.
-def _render_stage_dir():
-    return workspace.scratch_dir("submit_render_staging")
 
 
 def _validate_workflow_dir(workflow_dir: str) -> str:
@@ -190,9 +171,9 @@ def _resolve_slurm_and_email(per_job_slurm: Mapping,
         else:
             merged.pop(slot, None)
     # env.slurm.partition is the CPU DEFAULT, so it fills only a CPU job's empty
-    # slot. Letting it fill a GPU job's would take the one outcome the old refusal
-    # existed to prevent — a GPU request landing on a CPU partition — and make it
-    # the silent default. `undeclared` has to mean no --partition line at all.
+    # slot. Letting it fill a GPU job's would make the one outcome this guard
+    # exists to prevent — a GPU request landing on a CPU partition — the silent
+    # default. `undeclared` has to mean no --partition line at all.
     if placement["state"] == "not_applicable" and not merged.get("partition") \
             and sl.get("partition"):
         merged["partition"] = sl["partition"]
@@ -267,9 +248,9 @@ def sbatch_via_ssh(env: dict, workflow_dir: str, *,
     launcher = f"{workflow_dir}/launcher.sh"
     parts = ["sbatch", "--parsable", *[str(a) for a in sbatch_args], "launcher.sh",
              *[str(a) for a in script_args]]
-    sbatch_cmd = (
-        f"bash -lc 'cd {shlex.quote(workflow_dir)} && "
-        f"{' '.join(shlex.quote(x) for x in parts)}'")
+    body = (f"cd {shlex.quote(workflow_dir)} && "
+            f"{' '.join(shlex.quote(x) for x in parts)}")
+    sbatch_cmd = f"bash -lc {shlex.quote(body)}"
     argv = _ssh_argv(env, sbatch_cmd)
     try:
         res = subprocess.run(argv, capture_output=True, text=True,

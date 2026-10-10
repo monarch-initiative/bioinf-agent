@@ -15,11 +15,8 @@ starts it automatically.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
-import urllib.request
-from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import yaml
@@ -96,7 +93,6 @@ from agent.skills import env_report_html as _env_report_html
 from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
 from agent.skills import synthesis as _synth
-from agent.skills import provenance as _prov
 from agent.skills import env_recipe as _env_recipe
 from agent.skills import container_build as _container_build
 from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
@@ -108,6 +104,7 @@ from agent.validators.output_validator import OutputValidator
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
 from agent.skills.pipeline_state import PipelineState
+from agent.skills.outcomes import refused
 from agent.skills.job_manager import JobManager
 
 _pkg_search     = PackageSearch(config)
@@ -166,7 +163,7 @@ def docker_platform(value: str) -> str:
 # ---------------------------------------------------------------------------
 # Response-shape helpers — truncation/summarization ONLY at the LLM-facing
 # response surface. The truth surface (install_step record, EnvCache record,
-# env_reports/{name}.ENV.html, attestation, recipe) is NEVER touched by
+# environments/{name}/{name}.ENV.html, attestation, recipe) is NEVER touched by
 # these. The contract is: disk is the source of truth; the response is just
 # what fits comfortably in the agent's context. On failure or when more detail
 # is needed, the response carries a `log_path` (install) or
@@ -230,8 +227,8 @@ def _summarize_sbom_in_response(out: dict) -> dict:
     counts + a primary-tools-resolved subset.
 
     Truth surface unchanged — full SBOM is preserved in the EnvCache record
-    (stored on disk in env_reports/_env_cache.json BEFORE this is called) and
-    in env_reports/{name}.ENV.html + .attestation.json on disk. env_report_html
+    (stored on disk in environments/_env_cache.json BEFORE this is called) and
+    in environments/{name}/{name}.ENV.html + .attestation.json on disk. env_report_html
     and attestation continue to render from the record (which contains full
     lists), untouched. This affects ONLY the live MCP response shape — ~10-15k
     tokens of SBOM rows eliminated per freeze response. If the agent wants the
@@ -290,12 +287,12 @@ def _resolve_versions_from_install_record(
     parsed: list[tuple[str, Optional[str]]],
     draft: Optional[dict],
 ) -> list[tuple[str, Optional[str]]]:
-    """B1 fix: fill a version slot from `install_steps[*].installed_packages`
+    """Fill a version slot from `install_steps[*].installed_packages`
     when the caller passed a bare tool name. The install record is the
     authoritative answer to "what version did we actually install and validate"
     — the biocontainer adopt-decision must consult it, else it picks whatever
-    tag ranks highest (the BUSCO-stress 3.0.2 vs 6.0.0 wrong-version trust
-    violation, where ranking-by-build-number elevated an older major version).
+    tag ranks highest, and ranking by build number can elevate an older major
+    version over the one that was installed.
 
     An EXPLICIT caller pin (busco=5.4) is honored verbatim — the install record
     only fills the None slot. Same trust-anchor pattern: when the user/install
@@ -396,7 +393,6 @@ def _check_disk_failsafe(min_gb: Optional[int] = None) -> Optional[dict]:
     free_gb = usage.free / (1024 ** 3)
     if free_gb >= min_gb:
         return None
-    from agent.skills.outcomes import refused
     return refused(
         "freeze.low_disk",
         success=False, stage="disk_failsafe",
@@ -442,36 +438,30 @@ def _check_docker_available() -> Optional[dict]:
             ["docker", "version", "--format", "{{.Server.Version}}"],
             capture_output=True, text=True, timeout=20)
     except FileNotFoundError:
-        return {
-            "success": False, "outcome": "refused",
-            "stage": "docker_preflight", "code": "docker.not_installed",
-            "message": (
+        return refused(
+            "docker.not_installed", success=False, stage="docker_preflight",
+            message=(
                 "refusing to start — the `docker` CLI was not found on PATH. This "
                 "operation builds/adopts and validates a container image and needs a "
                 "working Docker daemon. Install Docker (or Docker Desktop) and make "
-                "sure `docker` is on PATH, then retry."),
-        }
+                "sure `docker` is on PATH, then retry."))
     except subprocess.TimeoutExpired:
-        return {
-            "success": False, "outcome": "refused",
-            "stage": "docker_preflight", "code": "docker.daemon_unavailable",
-            "message": (
+        return refused(
+            "docker.daemon_unavailable", success=False, stage="docker_preflight",
+            message=(
                 "refusing to start — `docker version` timed out probing the daemon "
                 "(20s). The Docker daemon appears unresponsive; start or restart it "
-                "and retry."),
-        }
+                "and retry."))
     if r.returncode != 0:
         detail = (r.stderr or r.stdout or "").strip().splitlines()
         detail = detail[0][:300] if detail else "(no diagnostic)"
-        return {
-            "success": False, "outcome": "refused",
-            "stage": "docker_preflight", "code": "docker.daemon_unavailable",
-            "message": (
+        return refused(
+            "docker.daemon_unavailable", success=False, stage="docker_preflight",
+            message=(
                 "refusing to start — the `docker` CLI is installed but the daemon "
                 "could not be reached (is Docker running?). This operation builds/"
                 "adopts and validates a container image and needs a live daemon.\n"
-                f"  docker said: {detail}"),
-        }
+                f"  docker said: {detail}"))
     return None
 
 

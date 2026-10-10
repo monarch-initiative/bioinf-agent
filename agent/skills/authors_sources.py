@@ -347,8 +347,8 @@ def discover_authors_sources(
     # author-published image: ask the REGISTRY whether we can pull it, anonymously.
     # A publicly pullable ghcr image under the repo's own owner, named for the repo, is a
     # strong "the authors ship an image" signal — and, unlike a package *listing*, it is
-    # the exact fact we need (see _default_probe_ghcr_image for why the old GitHub-index
-    # probe was both unauthorized and asking the wrong question). Docker Hub / quay are
+    # the exact fact we need (see _default_probe_ghcr_image for why GitHub's package
+    # index is both unauthorized and the wrong question). Docker Hub / quay are
     # checked by the caller when a ref is declared; we don't brute-force registries here.
     img = probe_image(owner, repo)
     if isinstance(img, dict) and img.get("error"):

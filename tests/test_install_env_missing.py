@@ -26,7 +26,10 @@ def test_pip_into_a_missing_env_is_refused_before_anything_runs(monkeypatch, tmp
     ran = _no_envs(monkeypatch, tmp_path)
     r = env_tools.install_pip_package(env_name="no_such_env", name="pysam")
     assert r["outcome"] == "refused" and r["code"] == "env_manager.pip_env_missing"
-    assert "install_conda_packages(env_name='no_such_env'" in r["remedy"] and "python=" in r["remedy"]
+    # the remedy is in the shape install_conda_packages takes: a list of {spec, channel}
+    assert ("install_conda_packages(env_name='no_such_env', packages=[{'spec': 'python=3.12', "
+            "'channel': 'conda-forge'}, {'spec': 'pip', 'channel': 'conda-forge'}])") in r["remedy"]
+    assert r["existing_envs"] == [] and r["env_name"] == "no_such_env"
     assert ran == []
 
 
@@ -34,8 +37,28 @@ def test_r_into_a_missing_env_is_refused_before_anything_runs(monkeypatch, tmp_p
     ran = _no_envs(monkeypatch, tmp_path)
     r = env_tools.install_r_package(env_name="no_such_env", name="DESeq2", source="bioconductor")
     assert r["outcome"] == "refused" and r["code"] == "env_manager.r_env_missing"
-    assert "install_conda_packages(env_name='no_such_env'" in r["remedy"] and "r-base=" in r["remedy"]
+    assert "packages=[{'spec': 'r-base=4.5', 'channel': 'conda-forge'}]" in r["remedy"]
     assert ran == []
+
+
+def test_every_route_refuses_a_missing_env_with_the_create_call_and_lists_the_envs(monkeypatch, tmp_path):
+    _no_envs(monkeypatch, tmp_path)
+    (tmp_path / "envs" / "have_this").mkdir(parents=True)
+    em = ms._env_mgr
+    cases = [
+        (em.install_jar_tool("no_such_env", "picard", "https://x/p.jar"), "jar", "openjdk=17"),
+        (em.install_git_repo("no_such_env", "t", "https://x/t.git"), "git", "make"),
+        (em.install_perl_package("no_such_env", "Bio::DB::HTS"), "perl", "perl-app-cpanminus"),
+        (em.install_cargo_tool("no_such_env", "crate"), "cargo", "rust"),
+        (em.install_go_tool("no_such_env", "github.com/x/y"), "go", "go"),
+    ]
+    for r, route, spec in cases:
+        assert r["outcome"] == "refused" and r["code"] == f"env_manager.{route}_env_missing", route
+        assert f"{{'spec': '{spec}', 'channel': 'conda-forge'}}" in r["remedy"], route
+        assert r["existing_envs"] == ["have_this"]
+    r = em.install_release_binary("no_such_env", "mosdepth", url="https://x/m")
+    assert r["code"] == "env_manager.binary_env_missing"
+    assert "create_conda_env(env_name='no_such_env')" in r["remedy"]     # a binary needs nothing from conda
 
 
 def test_an_existing_env_is_left_alone_by_the_gate(monkeypatch, tmp_path):

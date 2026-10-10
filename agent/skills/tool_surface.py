@@ -146,10 +146,10 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
     # cheap to make visible) or is the ONLY tool for its job, which makes a "prefer X
     # instead" note impossible to write truthfully.
     _t(tool="agent_status", position=PRIMITIVE,
-       note="query-only. Reads drafts, EnvCache, env_reports, data manifests, "
+       note="query-only. Reads drafts, EnvCache, the environments/ zone, data manifests, "
             "projects_access.yaml, ssh ControlMaster sockets and JobManager status, plus "
             "read-only git. The 'where am I' tool — the one an agent resuming a session "
-            "most needs and could not previously find."),
+            "most needs."),
     _t(tool="interpret_request", position=PRIMITIVE,
        note="query-only. The typed front door: RequestIntent -> completeness gate -> rail."),
     _t(tool="plan_request", position=PRIMITIVE,

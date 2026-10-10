@@ -17,11 +17,11 @@ Two phases:
 
 THE ENGINE IS A STRATEGY, NOT A MARRIAGE. The LOCUS (build-in-container +
 verbatim long-tail bake) is engine-agnostic. HOW the conda/pip env is declared,
-solved, locked, and invoked is an `EnvEngine` — pixi by default, micromamba+
-explicit-lock as the conservative alternative, and an org could drop in conda-lock
-or (later) nix. "We are the universal adapter" — one level down. A single-platform
-explicit lock is fully reproducible (we always target one ship platform), so
-reproducibility does NOT depend on any one engine.
+solved, locked, and invoked is an `EnvEngine` — pixi is the one shipped; an org
+could drop in micromamba+explicit-lock, conda-lock or nix. "We are the universal
+adapter" — one level down. A single-platform explicit lock is fully reproducible
+(we always target one ship platform), so reproducibility does NOT depend on any
+one engine.
 
 Host-agnostic by construction: everything runs in a linux/{arch} container via
 buildx — qemu on a non-linux/amd64 host (e.g. Apple Silicon), native on linux-x86
@@ -266,11 +266,6 @@ _CONDA_META_SCAN = (
     'done;'
 )
 
-# docker platform → conda subdir token (for engines that need it in a URL).
-_PLATFORM_SUBDIR = {"linux/amd64": "linux-64", "linux/arm64": "linux-aarch64",
-                    "linux/arm64/v8": "linux-aarch64"}
-
-
 def _docker_repo(name: str) -> str:
     """Sanitize an image repository name to docker's rules: lowercase, and only
     [a-z0-9._-] (a pipeline name like 'VEP_annotate' is otherwise rejected)."""
@@ -280,11 +275,16 @@ def _docker_repo(name: str) -> str:
 def image_present(ref: str) -> bool:
     """Is `ref` (a tag or sha256:… digest) present in the local docker daemon?
     The real backing for EnvCache.lookup_anchored — a cache hit is only honest if
-    the image it points at still exists to be shipped."""
+    the image it points at still exists to be shipped. A daemon that cannot be
+    asked (no `docker`, or an inspect that hangs) answers "not present": the
+    caller then rebuilds or refuses instead of trusting a record it cannot check."""
     if not ref:
         return False
-    p = subprocess.run(["docker", "image", "inspect", ref],
-                       capture_output=True, text=True, timeout=60)
+    try:
+        p = subprocess.run(["docker", "image", "inspect", ref],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
     return p.returncode == 0
 
 
@@ -445,73 +445,6 @@ class PixiEngine(EnvEngine):
         if r["returncode"] == 0:
             return proven("container_build.install_from_lock_ok", success=True, stderr=(r["stderr"] or "")[-800:])
         return broke("container_build.install_from_lock_failed", success=False, stderr=(r["stderr"] or "")[-800:])
-
-
-class MicromambaEngine(EnvEngine):
-    """Conservative alternative. environment.yml → one solve → an EXPLICIT lock
-    (`micromamba env export --explicit`: URLs+sha256, bit-reproducible for the
-    ship platform). `micromamba run -n env` invokes. Proves the locus is engine-
-    agnostic and that reproducibility doesn't require pixi."""
-    name = "micromamba"
-    _ROOT = "/opt/micromamba"
-
-    def __init__(self, platform: str = "linux/amd64"):
-        self.platform = platform
-        self.subdir = _PLATFORM_SUBDIR.get(platform, "linux-64")
-
-    def exec_env(self) -> str:
-        return f'export MAMBA_ROOT_PREFIX={self._ROOT}; export PATH="/usr/local/bin:$PATH"'
-    def install_commands(self) -> str:
-        # static micromamba binary for the ship arch → /usr/local/bin
-        return (f"curl -Ls https://micro.mamba.pm/api/micromamba/{self.subdir}/latest "
-                f"| tar -xj -C /usr/local bin/micromamba")
-    def setup(self, cb):
-        return proven("container_build.micromamba_setup_ok", success=True)  # env.yml is written at add()
-    def add(self, cb, specs, channels):
-        chans = "\n".join(f"  - {c}" for c in channels)
-        deps = "\n".join(f"  - {s}" for s in specs)
-        yml = f"name: env\nchannels:\n{chans}\ndependencies:\n{deps}\n"
-        # write environment.yml, solve into a named env, then EXPORT an explicit lock
-        cb.exec(f"mkdir -p {self.workdir}", timeout=60)
-        w = cb.exec(f"cat > {self.workdir}/environment.yml <<'YML'\n{yml}YML", timeout=60)
-        if w["returncode"] != 0:
-            return broke("container_build.micromamba_write_yml_failed", success=False, stage="write_yml", stderr=w["stderr"][-400:])
-        s = cb.exec(f"micromamba create -y -n env -f {self.workdir}/environment.yml", timeout=1800)
-        if s["returncode"] != 0:
-            return broke("container_build.micromamba_solve_failed", success=False, stage="solve", stderr=(s["stderr"] or "")[-800:])
-        e = cb.exec(f"micromamba env export -n env --explicit > {self.workdir}/env.lock", timeout=120)
-        if e["returncode"] == 0:
-            return proven("container_build.micromamba_add_ok", success=True, stderr=(e["stderr"] or "")[-400:])
-        return broke("container_build.micromamba_export_failed", success=False, stderr=(e["stderr"] or "")[-400:])
-    def add_pypi(self, cb, specs):
-        # micromamba's explicit lock (URLs+sha256) can't capture PyPI, so a pip
-        # install here would NOT replay in the materialized image — refuse honestly
-        # rather than silently drop it. PyPI specs ⇒ use the pixi engine (default).
-        return refused("container_build.micromamba_pypi_unsupported", success=False, reason="PyPI specs are not supported by the micromamba "
-                "engine (its explicit lock can't capture pip, so they wouldn't materialize in "
-                "the shipped image) — use the pixi engine (the default) for PyPI.")
-    def run(self, tool_cmd):
-        return f"micromamba run -n env bash -c {shlex.quote(tool_cmd)}"
-    def bootstrap_lines(self):
-        return [f"RUN {self.install_commands()}", f'ENV MAMBA_ROOT_PREFIX={self._ROOT}', ""]
-    def materialize_lines(self):
-        return [f"WORKDIR {self.workdir}", "COPY env.lock ./",
-                "RUN micromamba create -y -n env --file env.lock && micromamba clean -afy", ""]
-    def env_prefix(self) -> str:
-        return f"{self._ROOT}/envs/env"   # the named env's conda prefix
-    def runtime_lines(self):
-        # COPY the named env from the builder at the SAME root prefix (paths are
-        # baked into conda prefixes); the micromamba binary rides the generic
-        # /usr/local COPY. Build toolchain stays in the builder. SELF-ACTIVATING:
-        # the env bin on PATH (+ CONDA_PREFIX) so plain `apptainer exec image <tool>`
-        # reaches the conda tools — not only via `micromamba run`.
-        ep = self.env_prefix()
-        return [f"COPY --from=builder {self._ROOT} {self._ROOT}",
-                f'ENV MAMBA_ROOT_PREFIX={self._ROOT}',
-                f'ENV PATH="{ep}/bin:$PATH"',
-                f'ENV CONDA_PREFIX="{ep}"', ""]
-    def lock_artifacts(self):
-        return ["environment.yml", "env.lock"]
 
 
 def emit_dockerfile(
@@ -951,7 +884,7 @@ class ContainerBuild:
                         version_probe=spec.get("version_probe", ""), timeout=timeout)
 
     def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
-        """Invoke a conda-env tool via the engine's run wrapper (pixi run / micromamba run)."""
+        """Invoke a conda-env tool via the engine's run wrapper (`pixi run`)."""
         return self.exec(self.engine.run(tool_cmd), timeout=timeout)
 
     # -- MATERIALIZE -------------------------------------------------------
