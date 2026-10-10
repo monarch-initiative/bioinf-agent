@@ -9,8 +9,10 @@ project root so envs are portable and easy to locate.
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shlex
+import struct
 import shutil
 import subprocess
 import time
@@ -150,6 +152,63 @@ def parse_conda_spec(spec: str) -> dict:
         "constraint": m.group("op") or "",
         "version":    (m.group("version") or "").strip(),
     }
+
+
+_ELF_MACHINES = {0x03: "i386", 0x28: "arm", 0x3E: "x86_64", 0xB7: "aarch64", 0xF3: "riscv64", 0x15: "ppc64"}
+_MACHO_CPUTYPES = {0x01000007: "x86_64", 0x0100000C: "arm64", 0x00000007: "i386", 0x0000000C: "arm"}
+
+
+def executable_format(path: object) -> dict[str, str]:
+    """What kind of executable a file is, read off its header: {format, arch}.
+
+    format is one of elf (Linux), macho (macOS), pe (Windows), script (`#!`), or
+    unknown; arch names the CPU the header declares when the format carries one."""
+    try:
+        with open(str(path), "rb") as fh:
+            head = fh.read(64)
+    except (OSError, TypeError):
+        return {"format": "unknown", "arch": ""}
+    if head[:2] == b"#!":
+        return {"format": "script", "arch": ""}
+    if head[:4] == b"\x7fELF" and len(head) >= 20:
+        order = "<" if head[5] == 1 else ">"
+        machine = struct.unpack_from(order + "H", head, 18)[0]
+        return {"format": "elf", "arch": _ELF_MACHINES.get(machine, f"0x{machine:x}")}
+    if head[:4] in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe") and len(head) >= 8:
+        cpu = struct.unpack_from("<I", head, 4)[0]
+        return {"format": "macho", "arch": _MACHO_CPUTYPES.get(cpu, f"0x{cpu:x}")}
+    if head[:4] in (b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce") and len(head) >= 8:
+        cpu = struct.unpack_from(">I", head, 4)[0]
+        return {"format": "macho", "arch": _MACHO_CPUTYPES.get(cpu, f"0x{cpu:x}")}
+    if head[:4] in (b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca"):
+        return {"format": "macho", "arch": "universal"}
+    if head[:2] == b"MZ":
+        return {"format": "pe", "arch": ""}
+    return {"format": "unknown", "arch": ""}
+
+
+_HOST_ARCH_ALIASES = {"amd64": "x86_64", "x64": "x86_64", "arm64": "aarch64", "aarch64": "aarch64"}
+
+
+def host_can_execute(fmt: dict) -> Optional[bool]:
+    """Can THIS host run an executable of that format? True / False / None (cannot say).
+
+    A Linux ELF on macOS, or a Mach-O on Linux, is False whatever its arch. On Linux an
+    ELF for another CPU is False. A script is True. macOS runs x86_64 Mach-O on arm64
+    through Rosetta, so a Mach-O is True on macOS. unknown and pe give None."""
+    kind = fmt.get("format")
+    if kind == "script":
+        return True
+    system = platform.system()
+    if kind == "elf":
+        if system != "Linux":
+            return False
+        want = _HOST_ARCH_ALIASES.get(fmt.get("arch", ""), fmt.get("arch", ""))
+        have = _HOST_ARCH_ALIASES.get(platform.machine().lower(), platform.machine().lower())
+        return None if not want or want.startswith("0x") else want == have
+    if kind == "macho":
+        return system == "Darwin"
+    return None
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
