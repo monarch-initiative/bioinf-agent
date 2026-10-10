@@ -896,6 +896,22 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
 # ── the one entry point ────────────────────────────────────────────────────
 
 
+def form_problems(record: PipelineRecord) -> list[str]:
+    """Every stage sizing the Nextflow files cannot carry, in one list — so a caller who
+    wrote `mem: '8 GB'` and `time: '2h'` hears about both at once, not one per render."""
+    problems: list[str] = []
+    for s in record.stages:
+        for field, conv in (("mem", _nf_memory), ("time", _nf_time)):
+            value = getattr(s.resources, field, None)
+            if value is None:
+                continue
+            try:
+                conv(value)
+            except ValueError as e:
+                problems.append(f"stage {s.name}: {e}")
+    return problems
+
+
 def render_nextflow(record: PipelineRecord, *, env: Optional[dict] = None) -> dict[str, str]:
     """Render the Nextflow files of `record`: `{relative path: content}` for main.nf,
     nextflow.config, params.yaml, samples.csv and launcher.sh. `env` is a compute-env
@@ -904,6 +920,9 @@ def render_nextflow(record: PipelineRecord, *, env: Optional[dict] = None) -> di
     render for a cluster with no policy. Raises ValueError, naming the remedy, on
     anything the files cannot carry."""
     _check_record(record)
+    problems = form_problems(record)
+    if problems:
+        raise ValueError("; ".join(problems))
     ctx = _Context(record, env or {})
     files = {
         "main.nf": _render_main(record, ctx),

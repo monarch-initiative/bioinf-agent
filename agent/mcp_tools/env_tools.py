@@ -20,6 +20,7 @@ workflow_tools.py.
 """
 from __future__ import annotations
 
+import platform
 import re
 import shlex
 from pathlib import PurePath as _PurePath
@@ -31,7 +32,8 @@ from agent.models.core_data import default_step_tool
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp, OptStrList  # never monkeypatched
 from agent.skills.backgroundable import backgroundable
-from agent.skills.outcomes import proven, refused, broke, last_informative_line
+from agent.skills.outcomes import proven, refused, broke, degraded, last_informative_line
+from agent.skills import env_manager as _env_manager
 
 
 def _record_engine_smoke(result: dict, env_name: str, verify_command: str) -> None:
@@ -712,7 +714,10 @@ def install_release_binary(
 
     A smoke verify runs after install ({tool} --version/--help by default, or
     your verify_command) — this is what catches a wrong-ARCHITECTURE binary that
-    is present on disk (and so passes I14) but cannot execute. With pipeline_id,
+    is present on disk (and so passes I14) but cannot execute. A binary this host
+    cannot run AT ALL (a Linux ELF on a macOS host, read off its header) is not a
+    failure: the install is `degraded env_manager.binary_host_unverifiable`, the
+    sha256 pins the bytes, and freeze proves it inside the shipped image. With pipeline_id,
     records an install_step (install_method.type="binary" + binary_url + sha256 +
     local_path) and caches the verify so the derived PackageRecord satisfies I2.
 
@@ -741,12 +746,25 @@ def install_release_binary(
     result["verify_command"] = vcmd
     result["verify_output"]  = verify_output
     if not verify_ok:
-        result["success"] = False
-        result["verify_failed"] = True
-        result["stderr"] = (result.get("stderr") or "") + (
-            f"\n[verify failed: `{vcmd}` rc={vres.get('returncode')} — the binary is on disk "
-            f"but did not execute; likely the wrong architecture/libc for this platform]"
-        )
+        fmt = _env_manager.executable_format(result.get("binary_path"))
+        if _env_manager.host_can_execute(fmt) is False:
+            # Not a failed install: the binary is an executable this host cannot run at all
+            # (a Linux ELF on macOS, an ELF for another CPU). The sha256 pins the bytes; the
+            # proof that it RUNS is freeze's in-image validation, which this record states.
+            result["host_verify"] = "not_applicable"
+            result["binary_format"] = fmt
+            result["stderr"] = (result.get("stderr") or "") + (
+                f"\n[host verify not applicable: the binary is {fmt['format']}/{fmt['arch'] or '?'} and "
+                f"this host is {platform.system()}/{platform.machine()}; `{vcmd}` cannot run here. "
+                f"freeze proves it inside the shipped image]"
+            )
+        else:
+            result["success"] = False
+            result["verify_failed"] = True
+            result["stderr"] = (result.get("stderr") or "") + (
+                f"\n[verify failed: `{vcmd}` rc={vres.get('returncode')} — the binary is on disk "
+                f"but did not execute; likely the wrong architecture/libc for this platform]"
+            )
 
     if pipeline_id:
         install_method = result.get("install_method") or {
@@ -797,9 +815,11 @@ def install_release_binary(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
-    return _ms._shrink_stdio_for_response(
-        _install_outcome(result, "env_manager.binary_installed", "env_manager.binary_verify_failed"),
-        label=f"binary.{env_name}.{tool_name}")
+    tagged = _install_outcome(result, "env_manager.binary_installed", "env_manager.binary_verify_failed")
+    if result.get("host_verify") == "not_applicable":
+        tagged = degraded("env_manager.binary_host_unverifiable",
+                          **{k: v for k, v in tagged.items() if k not in ("outcome", "code")})
+    return _ms._shrink_stdio_for_response(tagged, label=f"binary.{env_name}.{tool_name}")
 
 
 

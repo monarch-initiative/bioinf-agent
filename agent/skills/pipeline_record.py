@@ -795,11 +795,18 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 elif tok in produced_by:
                     consumers.setdefault(tok, []).append(ti)
                 else:
+                    head = tmpl if len(tmpl) <= 90 else tmpl[:87] + "..."
                     raise PipelineDerivationError(
                         "pipeline.orphan_artifact",
-                        f"how-to command {ti + 1} names `{tok}` inside an output slot, but no "
-                        f"earlier command produces it and no sealed step confirms it",
-                        "name the artifact after the command that writes it, or declare it as an input")
+                        f"no sealed step matched how-to command {ti + 1} (`{head}`), so what it writes "
+                        f"was never observed; it names `{tok}` inside an output slot, no earlier command "
+                        f"produces `{tok}`, and the command text does not show it as an output target "
+                        f"(`> {{SLOT}}/{tok}`, `-o {{SLOT}}/{tok}` or `--out…={{SLOT}}/{tok}`)",
+                        "make the how-to command the literal command a sealed step ran, with placeholders "
+                        "where the trial values were, so the seal's record of that step's outputs confirms "
+                        "the artifact; or write the output through `>`, `-o` or `--out…` so the producer "
+                        "is read off the command text; or, if an earlier command writes it, name it after "
+                        "that command")
             else:
                 parent = _sidecar_of(tok, produced_by)
                 if parent is not None:
