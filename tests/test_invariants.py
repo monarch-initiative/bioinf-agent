@@ -4442,6 +4442,7 @@ def test_install_r_package_surfaces_missing_packages_on_failure(monkeypatch):
     Both must be captured. The package WE were trying to install is NOT
     in missing_packages — its own load-or-die already telegraphs that."""
     import agent.mcp_server as m
+    (m._env_mgr.envs_dir / "x").mkdir(parents=True, exist_ok=True)   # the route refuses a missing env
 
     # Simulate the exact stderr shape we see in the wild from a failed
     # remotes::install_github('jiabowang/GAPIT') when snpStats is missing.
@@ -6113,6 +6114,7 @@ def test_install_pip_package_persists_pip_flags_on_install_method(monkeypatch, t
     # Stub env_manager.run_in_env so we don't actually install. Capture the
     # install_step that gets merged into the pipeline state.
     from agent import mcp_server as ms
+    (ms._env_mgr.envs_dir / "any").mkdir(parents=True, exist_ok=True)   # the route refuses a missing env
 
     captured = {"cmds": []}
 

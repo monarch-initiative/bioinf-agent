@@ -12,7 +12,7 @@ Today the surface is:
                                    falls); replaces the six retired
                                    zone-specific primitives
   stage_apptainer_image          — get a frozen env's .sif onto a env
-  submit_workflow_job            — production submit-and-document
+  run_production_pipeline        — run a RENDERED pipeline in production (submit-and-document)
   run_step_on_cluster            — validation/seal run in scratch
   cluster_job_status             — sacct job-state poll
   cluster_module_avail           — Lmod discovery
@@ -332,75 +332,6 @@ def cluster_job_status(project_name: str,
 
 
 @mcp.tool()
-def submit_workflow_job(project_name: str,
-                        compute_env_name: str,
-                        workflow_dir: str,
-                        workflow_name: str,
-                        tool_name: str,
-                        command: str,
-                        inputs: dict,
-                        outputs: dict,
-                        apptainer_sif: str,
-                        apptainer_module: str,
-                        nextflow_module: str,
-                        slurm: dict) -> dict:
-    """Production cluster submission: render → upload → sbatch → local manifest → return
-    `job_id`. No polling: the agent may be gone before a production job ends. Poll later
-    with `cluster_job_status`, fetch with `download`. For validation/seal runs use
-    `run_step_on_cluster`. Not a composite: freeze the env and stage the .sif
-    (`stage_apptainer_image`) first.
-
-    Authorization: the project needs `compute_env_access` for the env, and `workflow_dir`
-    must fall under a `directories[]` entry (longest prefix) whose permissions include
-    both `upload` and `exec`.
-
-    Inputs:
-      workflow_dir      absolute remote per-run dir under a `directories[]` grant. A second
-                        submit to the same dir is refused (no overwrite): use a fresh subdir.
-      workflow_name     safe token ≤64 chars: the sbatch job name, the render tag and the
-                        manifest name.
-      tool_name         safe token for process_name and comments.
-      command           ONE line with `${name}` placeholders bound to inputs/outputs. Every
-                        `$` must open a declared placeholder; single quotes, backslashes and
-                        triple double quotes are refused (main.nf would rewrite them). Put
-                        awk/sed programs in a script baked into the image.
-      inputs            {placeholder: remote absolute path}.
-      outputs           {placeholder: bare filename}, written to the working dir.
-      apptainer_sif     absolute remote path of the staged .sif.
-      apptainer_module / nextflow_module   Lmod tokens, e.g. "apptainer/1.4.1".
-      slurm             the per-job request, closed keys: `time` + `mem` required; `cpus`,
-                        `ntasks`, `gpus`, `partition`, `qos`, `account` optional.
-
-    `gpus: N` renders `--gres=gpu:N` and runs with `--nv`. Partition and QoS come from the
-    job's `slurm`, else the env's `slurm.gpu` convention, else neither; the result is
-    reported as `gpu_placement: {state: not_applicable | declared | partially_declared |
-    undeclared, partition, partition_source, qos, qos_source}` and noted in the launcher,
-    never guessed. `cluster_partitions` names a real pair.
-
-    Returns `{success, compute_env, job_id, workflow_dir, files_uploaded, submitted_at,
-    upload_started, gpu_placement, manifest_path:
-    "job_submissions/<project>/<workflow_name>_<job_id>.submission.json"}`; on any refusal
-    or failure `{"error": …}`, with `files_uploaded` when sbatch failed after the upload.
-    """
-    from agent.skills import submit_workflow
-    return submit_workflow.submit_workflow_job(
-        project_name=project_name,
-        compute_env_name=compute_env_name,
-        workflow_dir=workflow_dir,
-        workflow_name=workflow_name,
-        tool_name=tool_name,
-        command=command,
-        inputs=inputs,
-        outputs=outputs,
-        apptainer_sif=apptainer_sif,
-        apptainer_module=apptainer_module,
-        nextflow_module=nextflow_module,
-        slurm=slurm,
-        access_path=_resolve_access_path(),
-    )
-
-
-@mcp.tool()
 def run_production_pipeline(project_name: str,
                             compute_env_name: str,
                             pipeline: str,
@@ -530,7 +461,7 @@ def run_step_on_cluster(pipeline_id: str,
 
     Scratch only: workflow_dir is `<env.agent_scratch_target.path>/<project>/<workflow_name>/`
     and there is no knob to point elsewhere; production runs against project workspaces go
-    through `submit_workflow_job`. The env must declare `agent_scratch_target` with `exec`.
+    through `run_production_pipeline`. The env must declare `agent_scratch_target` with `exec`.
 
     Composes: `stage_apptainer_image` (idempotent) → render + upload the three workflow
     files (main.nf, nextflow.config, launcher.sh) → `sbatch --parsable` → poll

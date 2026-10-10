@@ -25,6 +25,30 @@ def test_the_trace_is_parsed_by_its_header():
     assert cj._parse_trace("") == [] and cj._parse_trace("header only\n") == []
 
 
+MULTILINE_TRACE = "\n".join([
+    "task_id\tnative_id\tname\tstatus\texit\tsubmit\tstart\tcomplete\trealtime\t%cpu\tpeak_rss\tcontainer\tworkdir\tscript",
+    "3\t4430692\tHISAT2 (S12)\tCOMPLETED\t0\t2026-10-09 19:33:26\t2026-10-09 19:34:34\t2026-10-09 19:34:35\t821ms\t84.5%\t11.1 MB\t/w/c.sif\t/w/run1/work/d4/04\t",
+    "    hisat2 -p 4 -x chr22 -U s12.fastq.gz | samtools sort -o aligned.bam",
+    "    ",
+    "4\t4430693\tHISAT2 (S13)\tCOMPLETED\t0\t2026-10-09 19:33:26\t2026-10-09 19:34:34\t2026-10-09 19:34:35\t835ms\t86.6%\t10.6 MB\t/w/c.sif\t/w/run1/work/55/ba\t",
+    "    hisat2 -p 4 -x chr22 -U s13.fastq.gz | samtools sort -o aligned.bam",
+    "    ",
+])
+
+
+def test_a_field_written_over_several_lines_continues_its_record():
+    """Nextflow writes `script` over several lines: the command on its own indented line,
+    then a blank one, the record line ending in the tab that opens the field. Read line by line, a finished 14-task run came back as 14 tasks and
+    14 blank ones, with the verdict `running`. The record is the line that opens with a
+    task_id; what follows belongs to it."""
+    rows = cj._parse_trace(MULTILINE_TRACE)
+    assert [r["name"] for r in rows] == ["HISAT2 (S12)", "HISAT2 (S13)"]
+    assert all(r["status"] == "COMPLETED" for r in rows)
+    assert rows[0]["script"].startswith("hisat2 -p 4 -x chr22 -U s12.fastq.gz")
+    tasks = [cj._task_view(r) for r in rows]
+    assert cj._pipeline_verdict(tasks, [{"verdict": cj.SUCCEEDED}]) == "succeeded"
+
+
 def test_a_task_view_carries_the_work_dir_only_when_it_did_not_complete():
     done, failed, live = (cj._task_view(r) for r in cj._parse_trace(TRACE))
     assert set(done) == {"name", "native_id", "status", "exit", "realtime", "peak_rss"}

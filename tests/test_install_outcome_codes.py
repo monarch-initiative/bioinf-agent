@@ -12,6 +12,11 @@ import agent.mcp_server as ms
 from agent.mcp_tools import data_tools, env_tools
 
 
+def _env_exists(name: str) -> None:
+    """The install routes refuse an env that is not there; these test the install."""
+    (ms._env_mgr.envs_dir / name).mkdir(parents=True, exist_ok=True)
+
+
 def _fake_run_in_env(script):
     def run_in_env(env_name, command, timeout=0):
         return script(command)
@@ -19,6 +24,7 @@ def _fake_run_in_env(script):
 
 
 def test_pip_install_that_verifies_is_pip_installed(monkeypatch):
+    _env_exists("e")
     monkeypatch.setattr(ms._env_mgr, "run_in_env", _fake_run_in_env(
         lambda cmd: {"returncode": 0, "stdout": "ok", "stderr": "", "command": cmd,
                      "outcome": "proven", "code": "env_manager.run_in_env_ok"}))
@@ -28,6 +34,7 @@ def test_pip_install_that_verifies_is_pip_installed(monkeypatch):
 
 
 def test_pip_install_whose_import_fails_is_pip_install_failed(monkeypatch):
+    _env_exists("e")
     def script(cmd):
         if "pip install" in cmd:
             return {"returncode": 0, "stdout": "", "stderr": "", "command": cmd,
@@ -40,6 +47,7 @@ def test_pip_install_whose_import_fails_is_pip_install_failed(monkeypatch):
 
 
 def test_r_install_that_loads_is_r_installed(monkeypatch):
+    _env_exists("e")
     monkeypatch.setattr(ms._env_mgr, "run_in_env", _fake_run_in_env(
         lambda cmd: {"returncode": 0, "stdout": "1.2.3", "stderr": "", "command": cmd,
                      "outcome": "proven", "code": "env_manager.run_in_env_ok"}))
@@ -49,6 +57,7 @@ def test_r_install_that_loads_is_r_installed(monkeypatch):
 
 
 def test_r_install_that_does_not_load_is_r_install_failed(monkeypatch):
+    _env_exists("e")
     monkeypatch.setattr(ms._env_mgr, "run_in_env", _fake_run_in_env(
         lambda cmd: {"returncode": 1, "stdout": "", "command": cmd,
                      "stderr": "Error : Package 'S4Vectors' not available after install attempt",

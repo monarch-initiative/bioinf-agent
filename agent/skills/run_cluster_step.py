@@ -17,7 +17,7 @@ There is NO knob to point it elsewhere. The scratch sandbox is what
 keeps the agent inside its own walls: it can mess around freely
 inside scratch to prove a build works on the cluster; production
 runs (against the user's project workspace) go through the separate
-submit_workflow_job primitive with project.directories[] auth.
+run_production_pipeline primitive with project.directories[] auth.
 
 Auth via the env-level agent_scratch_target (check_env_target_capability
 + exec permission). If the env has no scratch target, this primitive

@@ -925,3 +925,53 @@ def test_deep_listing_bad_args_are_clean_refusals_and_traversal_is_denied(_local
         "myproj", path=str(proj_dir), max_entries=0, **kw)
     with pytest.raises(PermissionDenied):
         snapshot.snapshot_project("myproj", path=str(proj_dir) + "/../other", **kw)
+
+
+# ---------------------------------------------------------------------------
+# Env zones: what the actuators may write, the listing may see — on the env the
+# path belongs to.
+# ---------------------------------------------------------------------------
+
+
+def _two_env_access(tmp_path: Path) -> Path:
+    """A local env with a project directory AND an ssh env whose pipelines zone grants
+    file_name_only; the project spans both."""
+    proj_dir = tmp_path / "proj"; proj_dir.mkdir()
+    return _write_access(tmp_path, {
+        "compute_envs": [
+            {"name": "laptop", "type": "local", "container_upload_target": None},
+            {"name": "hpc", "type": "ssh", "host": "fake.example.com", "user": "u",
+             "agent_pipelines_target": {"path": "/work/pipelines",
+                                        "permissions": ["file_name_only", "upload", "download", "exec"]}},
+        ],
+        "projects": [{"name": "myproj", "compute_envs": ["laptop", "hpc"],
+                      "directories": [{"path": str(proj_dir), "permissions": ["file_name_only"],
+                                       "description": "d", "env": "laptop"}]}],
+    })
+
+
+@pytest.mark.integration
+def test_deep_listing_under_the_pipelines_zone_runs_on_the_env_that_owns_it(tmp_path, monkeypatch):
+    """A rendered pipeline runs in the env's pipelines zone; the first cluster drive could
+    not list its own run directory because the listing knew two zones where the actuators
+    accept four. One ssh `find`, on the ssh env only."""
+    access_path = _two_env_access(tmp_path)
+    seen: list[list[str]] = []
+    def _spy(argv, *a, **kw):
+        seen.append(list(argv)); return MagicMock(returncode=0, stdout="", stderr="")
+    monkeypatch.setattr(subprocess, "run", _spy)
+    out = snapshot.snapshot_project("myproj", path="/work/pipelines/rnaseq_run1", access_path=str(access_path))
+    assert out["mode"] == "deep_listing" and out["compute_envs"] == ["hpc"]
+    assert len(seen) == 1 and seen[0][0] == "ssh"
+
+
+@pytest.mark.integration
+def test_a_path_under_no_grant_names_the_project_and_every_env_it_spans(tmp_path, monkeypatch):
+    """The refusal used to repeat the LAST env's denial — "not authorized ... on
+    compute_env 'laptop'" for a cluster path. It names the project and the envs tried."""
+    access_path = _two_env_access(tmp_path)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("no subprocess on a refusal"))
+    with pytest.raises(compute_access.PermissionDenied) as ei:
+        snapshot.snapshot_project("myproj", path="/elsewhere/run1", access_path=str(access_path))
+    msg = str(ei.value)
+    assert "'myproj'" in msg and "'laptop'" in msg and "'hpc'" in msg and "pipelines" in msg

@@ -160,7 +160,7 @@ class TestHappyPath:
 
     @pytest.mark.integration
     def test_param_keys_returned_for_caller(self):
-        # The caller (submit_workflow_job) needs the param list to
+        # The caller (run_step_on_cluster) needs the param list to
         # decide what to upload, etc.
         out = _demo_render()
         assert set(out["param_keys"]) == {

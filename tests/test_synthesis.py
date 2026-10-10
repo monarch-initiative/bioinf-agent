@@ -475,6 +475,7 @@ def test_install_r_package_records_functional_evidence(monkeypatch):
     it into install_method.functional_evidence (so freeze can re-run it)."""
     from agent.mcp_tools import env_tools as E
     import agent.mcp_server as ms
+    (ms._env_mgr.envs_dir / "envx").mkdir(parents=True, exist_ok=True)   # the routes refuse a missing env
     calls = []
     def _run(env, cmd, **k):
         calls.append(cmd)
@@ -500,6 +501,7 @@ def test_install_r_package_functional_failure_fails_the_install(monkeypatch):
     """Imports-but-doesn't-run must be a FAILED install, not a silent green."""
     from agent.mcp_tools import env_tools as E
     import agent.mcp_server as ms
+    (ms._env_mgr.envs_dir / "envx").mkdir(parents=True, exist_ok=True)   # the routes refuse a missing env
     def _run(env, cmd, **k):
         # install + import verify pass; the FUNCTIONAL run fails (tool doesn't work)
         if "library('GAPIT')" in cmd and "packageVersion" not in cmd:
@@ -518,6 +520,7 @@ def test_install_pip_package_records_functional_evidence(monkeypatch):
     functional_evidence (so freeze proves the pkg RAN, not just imported)."""
     from agent.mcp_tools import env_tools as E
     import agent.mcp_server as ms
+    (ms._env_mgr.envs_dir / "envx").mkdir(parents=True, exist_ok=True)   # the routes refuse a missing env
     calls = []
     def _run(env, cmd, **k):
         calls.append(cmd)
@@ -540,6 +543,7 @@ def test_install_pip_package_functional_failure_fails_install(monkeypatch):
     """Imports-but-doesn't-run must FAIL a pip install too (no silent green)."""
     from agent.mcp_tools import env_tools as E
     import agent.mcp_server as ms
+    (ms._env_mgr.envs_dir / "envx").mkdir(parents=True, exist_ok=True)   # the routes refuse a missing env
     def _run(env, cmd, **k):
         # install + import verify pass; the FUNCTIONAL run fails
         if cmd.startswith("python -c 'import pysam;"):

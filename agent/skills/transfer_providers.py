@@ -55,6 +55,7 @@ bytes arrived intact:
 from __future__ import annotations
 
 import shlex
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -1019,6 +1020,17 @@ class GlobusProvider(TransferProvider):
         """Translate common globus-cli error patterns to actionable hints."""
         msg = (res.stderr or "") + " " + (res.stdout or "")
         msg_l = msg.lower()
+        # A collection that requires a recent login with a given identity answers with
+        # `authorization_parameters`; the domain it names is the argument of the command
+        # that satisfies it.
+        if "session_required" in msg_l or "reauthentication required" in msg_l:
+            domains = re.findall(r'"session_required_single_domain":\s*\[([^\]]*)\]', msg)
+            names = re.findall(r'"([^"]+)"', domains[0]) if domains else []
+            target = " ".join(names) if names else ""
+            return (f"the endpoint requires a recent login with your {target} identity — run "
+                    f"`globus session update {target}` (browser), then retry" if target else
+                    "the endpoint requires a recent login — run `globus session update` "
+                    "(browser), then retry")
         if "no globus login" in msg_l or "missing tokens" in msg_l or \
            "no valid auth" in msg_l:
             return "run `globus login` to authenticate first"

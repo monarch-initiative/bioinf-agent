@@ -363,7 +363,7 @@ class TestSshHappyPathMock:
 # ===========================================================================
 # 6. Each returned row STATES whether the job worked.
 #
-# This is the only window a PRODUCTION run has. submit_workflow_job is
+# This is the only window a PRODUCTION run has. run_production_pipeline is
 # submit-and-document — nobody polls on the caller's behalf, nobody classifies
 # for them — so a bare `TIMEOUT | 0:0` row invites exactly the reading the
 # validation poller used to make: the rc is zero, so the job must be fine.

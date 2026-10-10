@@ -103,20 +103,15 @@ OPERATION_REQUIRES: dict[str, str] = {
     # primitives. The operation name IS the required token.
     "upload":   "upload",
     "download": "download",
-    # The dir that an sbatched SLURM job runs in must declare `exec` so
-    # the job is allowed to write its own outputs in-place during
-    # execution (distinct from the agent's single-shot `upload`).
-    "submit_workflow_job":        "exec",
     # run_step_on_cluster runs the validation/seal job inside the agent's
     # scratch sandbox. Goes through the env-level agent_scratch_target
     # (via check_env_target_capability), NOT project.directories[].
     "run_step_on_cluster":        "exec",
-    # run_production_pipeline lands a PRODUCTION run in a user-declared
-    # project dir. On the LOCAL locus it writes run.sh (needs `upload`,
-    # checked separately) then runs the frozen image there; on the CLUSTER
-    # locus it delegates to submit_workflow_job. Either way the dir must
-    # declare `exec` so the run may write its outputs in-place — same
-    # posture as submit_workflow_job.
+    # run_production_pipeline lands a PRODUCTION run in a directory the
+    # project grants (or an env zone): the dir must declare `exec` so the
+    # run — a background nextflow locally, an sbatched manager on the
+    # cluster — may write its outputs in-place during execution (distinct
+    # from the agent's single-shot `upload`, checked separately).
     "run_production_pipeline":     "exec",
 }
 
@@ -257,7 +252,7 @@ _ENV_ALLOWED_KEYS: frozenset[str] = frozenset({
     # zone of its own: it sits beside the image under container_upload_target/<env>/.
     "agent_pipelines_target",
     # Container-runtime module names for the CLUSTER production path
-    # (run_production_pipeline / submit_workflow_job): the Lmod modules the
+    # (run_production_pipeline): the Lmod modules the
     # launcher `module load`s to get apptainer + nextflow on the compute node.
     # ssh+apptainer envs only — a local (docker) env has no module system and
     # declares neither. Read by compute_access.get_container_modules; a

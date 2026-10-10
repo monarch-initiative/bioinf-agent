@@ -126,7 +126,7 @@ compute_envs:
 
     # Lmod modules a CLUSTER production run loads to get the container runtime +
     # workflow engine on the compute node. Read by run_production_pipeline's ssh
-    # branch (and submit_workflow_job). ssh+apptainer envs only — a local
+    # branch. ssh+apptainer envs only — a local
     # (docker) machine declares neither (it has no module system).
     apptainer_module: apptainer/1.5.0
     nextflow_module:  nextflow/25.04.7

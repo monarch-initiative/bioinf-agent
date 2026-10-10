@@ -696,6 +696,31 @@ class TestCliMissing:
         assert "globus transfer" in out["error"]
         assert out.get("hint") == "run `globus login` to authenticate first"
 
+    @pytest.mark.integration
+    def test_a_session_that_needs_reauthentication_names_the_command(self, monkeypatch, tmp_path):
+        """The collection answered PermissionDenied with `authorization_parameters` naming
+        the identity domain it wants a recent login for. The first production drive hit
+        exactly this with `hint: null`; the domain IS the argument of the fix."""
+        def fake_run(*a, **kw):
+            mock = MagicMock(); mock.returncode = 1
+            mock.stdout = ""
+            mock.stderr = ('{\n  "authorization_parameters": {\n    "session_message": '
+                           '"Session reauthentication required (Globus Transfer)",\n'
+                           '    "session_required_identities": [],\n'
+                           '    "session_required_mfa": false,\n'
+                           '    "session_required_single_domain": [\n      "example.edu"\n    ]\n  },\n'
+                           '  "code": "PermissionDenied",\n'
+                           '  "message": "Error validating login to endpoint \'Site DataMover\'"\n}')
+            return mock
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        f = tmp_path / "x.txt"; f.write_text("hi")
+        out = _provider().upload_one(
+            env=_env_ssh(), local_path=f, abs_remote_path="/work/u/x.txt",
+            local_sha256="0"*64, timeout=60)
+        assert "error" in out and "PermissionDenied" in out["error"]
+        assert out["hint"] == ("the endpoint requires a recent login with your example.edu identity — "
+                               "run `globus session update example.edu` (browser), then retry")
+
 
 # ===========================================================================
 # globus_task_status — the public poll primitive. Its task_ids come from the

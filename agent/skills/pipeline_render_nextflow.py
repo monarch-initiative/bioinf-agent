@@ -128,9 +128,10 @@ RUN_RECORDS = (
 )
 RUN_RECORD_FILES = tuple(name for name, _, _ in RUN_RECORDS)
 #: The trace's columns: which task, which SLURM job, how it ended, when, how long, what it
-#: cost, where it ran, and the command it ran.
+#: cost, where it ran. One line per task: `script` is left out because Nextflow writes it
+#: over several lines, and the command is in the task's .command.sh and on the page.
 TRACE_FIELDS = ("task_id,native_id,name,status,exit,submit,start,complete,realtime,%cpu,peak_rss,"
-                "container,workdir,script")
+                "container,workdir")
 #: THE RUN RECORDS — the standard of every rendered pipeline: two blocks, verbatim. The
 #: config names the run (one stamp, a params entry because the strict config parser allows
 #: no variables) and points Nextflow's three observers into runs/<stamp>/; the workflow
@@ -139,7 +140,7 @@ TRACE_FIELDS = ("task_id,native_id,name,status,exit,submit,start,complete,realti
 #: nothing else about a run's records lives anywhere else.
 RUN_RECORD_CONFIG = f"""\
 // One directory per run, runs/<stamp>/, named by its launch time and never overwritten:
-// trace.txt (every task: status, when, how long, resources, work dir, command), then
+// trace.txt (every task: status, when, how long, resources, work dir), then
 // report.html and timeline.html at the end; main.nf adds params.json and the samplesheet
 // as read, before any task runs; launcher.sh adds Nextflow's own log by taking the stamp
 // first and passing it as --run_stamp, which wins over the one set here.

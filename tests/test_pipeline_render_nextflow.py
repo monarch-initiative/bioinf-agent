@@ -593,7 +593,7 @@ class TestConfig:
                 f"    fields = '{TRACE_FIELDS}'\n}}") in cfg
         # which task, which SLURM job, how it ended, when, how long, what it cost, where, and the command
         assert TRACE_FIELDS == ("task_id,native_id,name,status,exit,submit,start,complete,realtime,%cpu,peak_rss,"
-                                "container,workdir,script")
+                                "container,workdir")
         assert 'report {\n    enabled = true\n    file = "runs/${params.run_stamp}/report.html"\n}' in cfg
         assert 'timeline {\n    enabled = true\n    file = "runs/${params.run_stamp}/timeline.html"\n}' in cfg
         assert "dag {" not in cfg                          # the page's picture is the DAG; Nextflow's needs a CDN
