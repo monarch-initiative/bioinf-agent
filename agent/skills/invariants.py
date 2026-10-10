@@ -204,22 +204,8 @@ def active(layer: int = 0) -> list[Invariant]:
     return sorted(out, key=lambda i: int(i.id[1:]))
 
 
-def retired() -> list[Invariant]:
-    return sorted((i for i in REGISTRY.values() if i.status == RETIRED),
-                  key=lambda i: int(i.id[1:]))
-
-
 def enforced_by(fn_path: str) -> set[str]:
     """The ids a given enforcer is responsible for — what the lint compares against the
     ids that function actually emits."""
     return {i.id for i in REGISTRY.values()
             if i.status == ACTIVE and i.enforced_by == fn_path}
-
-
-def describe(invariant_id: str) -> str:
-    """One line for a violation message / a report cell, or a clear miss."""
-    inv = REGISTRY.get(invariant_id.split(".", 1)[0])
-    if inv is None:
-        return f"{invariant_id} (not in the invariant registry)"
-    tag = "" if inv.status == ACTIVE else " [RETIRED]"
-    return f"{inv.id}{tag}: {inv.statement}"

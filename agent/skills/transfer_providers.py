@@ -72,11 +72,6 @@ def _display_cmd(argv: list) -> str:
     return " ".join(shlex.quote(str(a)) for a in argv)
 
 
-class TransferError(Exception):
-    """A provider's transfer raised an error (timeout, sha mismatch,
-    auth, endpoint deactivated). Caller surfaces as `{error: ...}`."""
-
-
 class TransferProvider:
     """Base class. Each concrete provider implements upload_one +
     download_one. Providers are stateless; the env dict is passed on
@@ -165,8 +160,7 @@ class ScpHeadNodeProvider(TransferProvider):
         # We accept them so callers don't have to special-case the
         # provider when threading the flag through.
         from agent.skills.transfer import (
-            _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
-            TransferError as ScratchPathError)
+            _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output)
         from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
         # Build the scp dst (user@host:abs_remote_path), with shell-safety
@@ -404,12 +398,6 @@ _UUID_RE = _re.compile(
 # GCP refuses to scan paths outside its Accessible Folders config with
 # this exact FTP-style body. Distinctive enough to key off of.
 _GCP_PATH_BLOCK_BODY_RE = _re.compile(r"path not allowed", _re.IGNORECASE)
-
-
-class GlobusError(TransferError):
-    """A Globus CLI call failed (cli missing, auth, endpoint state,
-    task failed). Returned as `{error: ..., hint?: ...}` from the
-    provider methods."""
 
 
 class GlobusProvider(TransferProvider):

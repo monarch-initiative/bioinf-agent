@@ -746,15 +746,6 @@ def get_project_directories(project: dict, compute_env_name: str) -> list[dict]:
     return []
 
 
-def get_project_compute_envs(project: dict) -> list[str]:
-    """The compute envs this project may use — its plug-and-play set (a project
-    runnable local OR on a cluster lists both). Read from the normalized
-    compute_env_access, so it reflects the flat `compute_envs: [names]` yaml."""
-    return [b.get("compute_env")
-            for b in (project.get("compute_env_access") or [])
-            if isinstance(b, dict) and b.get("compute_env")]
-
-
 # ---------------------------------------------------------------------------
 # Phase 2 — env-level lookups
 #

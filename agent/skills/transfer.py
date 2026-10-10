@@ -100,7 +100,6 @@ import hashlib
 from agent.skills import workspace
 import json
 import os
-import re
 import shlex
 import shutil
 import subprocess
@@ -110,7 +109,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
-from agent.skills.outcomes import proven, refused, broke, loop
+from agent.skills.outcomes import proven, refused, broke
 
 
 # ---------------------------------------------------------------------------
@@ -133,9 +132,6 @@ _MAX_REMOTE_PATH_LEN: int = 4096
 # whitespace would corrupt ssh argv assembly downstream.
 _FORBIDDEN_PATH_CHARS: frozenset[str] = frozenset(
     "\x00\n\r\t ;|&$`<>(){}[]*?\"'\\")
-
-# Hash chunk size for sha256: balances syscalls vs RSS on multi-GB files.
-_HASH_CHUNK: int = 1024 * 1024  # 1 MiB
 
 # The synthesized one-off project. Recognized name; never lives in YAML.
 AD_HOC_PROJECT_NAME = "_ad_hoc"

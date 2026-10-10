@@ -22,8 +22,6 @@ Each subsystem query is its own helper so:
 """
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 from pathlib import Path
 from typing import Any, Optional

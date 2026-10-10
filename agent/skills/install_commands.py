@@ -61,6 +61,7 @@ Pure (params in → command string out), unit-testable.
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from pathlib import PurePosixPath
@@ -80,6 +81,15 @@ STAGED = "/opt/staged"
 # string-matching a step's human-facing `purpose`.
 _JRE_APT = "default-jre-headless"
 _ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
+
+
+def dq_literal(s: str) -> str:
+    """`s` as a double-quoted string literal that Python AND R read back as `s`
+    (json.dumps: `"` and `\\` backslash-escaped, control characters as `\\n` /
+    `\\uXXXX`). For a name spliced into a `python -c` / `Rscript -e` payload that is
+    then shlex-quoted as a whole: the single quotes shlex adds and the double quotes
+    the literal uses never collide, so an ordinary name renders cleanly."""
+    return json.dumps(s)
 
 
 def _jar_select_sh(dest: str, name: str) -> str:
@@ -109,7 +119,7 @@ def _jar_select_sh(dest: str, name: str) -> str:
             'END{print best}')
     awk = (f"awk -F/ -v n={shlex.quote(name)} {shlex.quote(prog)}" if name
            else f"awk -F/ {shlex.quote(prog)}")
-    return f"find {dest} -name '*.jar' | {awk}"
+    return f"find {shlex.quote(dest)} -name '*.jar' | {awk}"
 
 
 def release_binary(name: str, url: str, *, sha256: str = "", binary_in_archive: str = "",
@@ -121,20 +131,21 @@ def release_binary(name: str, url: str, *, sha256: str = "", binary_in_archive: 
     asset = url.rsplit("/", 1)[-1]
     is_archive = asset.lower().endswith(_ARCHIVE_SUFFIXES)
     dest = f"{_TOOLS}/{name}"
-    parts = [f"mkdir -p {dest}", "cd /tmp", f"curl -fsSL -o {asset} {shlex.quote(url)}"]
+    q_asset, q_dest, q_wrap = shlex.quote(asset), shlex.quote(dest), shlex.quote(wrap)
+    parts = [f"mkdir -p {q_dest}", "cd /tmp", f"curl -fsSL -o {q_asset} {shlex.quote(url)}"]
     if sha256:
-        parts.append(f'echo "{sha256.lower()}  {asset}" | sha256sum -c -')
+        parts.append(f"echo {shlex.quote(f'{sha256.lower()}  {asset}')} | sha256sum -c -")
     if is_archive:
-        parts.append(f"unzip -o {asset} -d {dest}" if asset.lower().endswith(".zip")
-                     else f"tar -xf {asset} -C {dest}")
+        parts.append(f"unzip -o {q_asset} -d {q_dest}" if asset.lower().endswith(".zip")
+                     else f"tar -xf {q_asset} -C {q_dest}")
         base = PurePosixPath(binary_in_archive or name).name
-        parts += [f'BIN="$(find {dest} -type f -name {shlex.quote(base)} | head -n1)"',
+        parts += [f'BIN="$(find {q_dest} -type f -name {shlex.quote(base)} | head -n1)"',
                   'test -n "$BIN"',
-                  f'chmod +x "$BIN"', f'ln -sf "$BIN" /usr/local/bin/{wrap}']
+                  'chmod +x "$BIN"', f'ln -sf "$BIN" /usr/local/bin/{q_wrap}']
     else:
-        parts.append(f"install -m 0755 {asset} /usr/local/bin/{wrap}")
+        parts.append(f"install -m 0755 {q_asset} /usr/local/bin/{q_wrap}")
     cmd = "set -eux; " + "; ".join(parts)
-    ev = evidence or f"{wrap} --version 2>&1 || {wrap} version 2>&1 || command -v {wrap}"
+    ev = evidence or f"{q_wrap} --version 2>&1 || {q_wrap} version 2>&1 || command -v {q_wrap}"
     return {"command": cmd, "evidence": ev, "tool": wrap, "purpose": f"{name} (release binary)",
             "runtime_packages": []}
 
@@ -163,21 +174,22 @@ def local_artifact(name: str, artifact_name: str, *, sha256: str = "",
     is_archive = artifact_name.lower().endswith(_ARCHIVE_SUFFIXES)
     dest = f"{_TOOLS}/{name}"
     src = f"{STAGED}/{artifact_name}"
-    parts = [f"mkdir -p {dest}", f"test -f {shlex.quote(src)}"]
+    q_src, q_dest, q_wrap = shlex.quote(src), shlex.quote(dest), shlex.quote(wrap)
+    parts = [f"mkdir -p {q_dest}", f"test -f {q_src}"]
     if sha256:
-        parts.append(f'echo "{sha256.lower()}  {src}" | sha256sum -c -')
+        parts.append(f"echo {shlex.quote(f'{sha256.lower()}  {src}')} | sha256sum -c -")
     if is_archive:
-        parts.append(f"unzip -o {shlex.quote(src)} -d {dest}"
+        parts.append(f"unzip -o {q_src} -d {q_dest}"
                      if artifact_name.lower().endswith(".zip")
-                     else f"tar -xf {shlex.quote(src)} -C {dest}")
+                     else f"tar -xf {q_src} -C {q_dest}")
         base = PurePosixPath(binary_in_archive or name).name
-        parts += [f'BIN="$(find {dest} -type f -name {shlex.quote(base)} | head -n1)"',
+        parts += [f'BIN="$(find {q_dest} -type f -name {shlex.quote(base)} | head -n1)"',
                   'test -n "$BIN"',
-                  'chmod +x "$BIN"', f'ln -sf "$BIN" /usr/local/bin/{wrap}']
+                  'chmod +x "$BIN"', f'ln -sf "$BIN" /usr/local/bin/{q_wrap}']
     else:
-        parts.append(f"install -m 0755 {shlex.quote(src)} /usr/local/bin/{wrap}")
+        parts.append(f"install -m 0755 {q_src} /usr/local/bin/{q_wrap}")
     cmd = "set -eux; " + "; ".join(parts)
-    ev = evidence or f"{wrap} --version 2>&1 || {wrap} version 2>&1 || command -v {wrap}"
+    ev = evidence or f"{q_wrap} --version 2>&1 || {q_wrap} version 2>&1 || command -v {q_wrap}"
     return {"command": cmd, "evidence": ev, "tool": wrap,
             "purpose": f"{name} (operator-supplied artifact)", "runtime_packages": []}
 
@@ -246,9 +258,13 @@ def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | No
     Default evidence proves the wrapper is installed AND the JRE runs; the jar's own
     execution is proven at workflow-run time (run_step_in_container)."""
     wrap = wrapper or name
-    flags = " ".join(java_flags or ["-Xmx4g"])
+    # Each flag is ONE argument of the wrapper's `exec java` line, quoted for the
+    # wrapper's own shell; the whole line is quoted again below for the build shell.
+    flags = " ".join(shlex.quote(f) for f in (java_flags or ["-Xmx4g"]))
     asset = jar_url.rsplit("/", 1)[-1] or f"{name}.jar"
     dest = f"{_TOOLS}/{name}"
+    jar_path = f"{dest}/{asset}"
+    q_dest, q_jar, q_wrap = shlex.quote(dest), shlex.quote(jar_path), shlex.quote(wrap)
     coupled = bool(jar_conda_specs(java_version))
     parts = [] if coupled else [
         'command -v java >/dev/null 2>&1 || { apt-get update && '
@@ -256,24 +272,28 @@ def jar(name: str, jar_url: str, *, sha256: str = "", java_flags: list[str] | No
         'rm -rf /var/lib/apt/lists/*; }',
     ]
     parts += [
-        f"mkdir -p {dest}",
-        f"curl -fsSL -o {dest}/{asset} {shlex.quote(jar_url)}",
+        f"mkdir -p {q_dest}",
+        f"curl -fsSL -o {q_jar} {shlex.quote(jar_url)}",
     ]
     if sha256:
-        parts.append(f'echo "{sha256.lower()}  {dest}/{asset}" | sha256sum -c -')
+        parts.append(f"echo {shlex.quote(f'{sha256.lower()}  {jar_path}')} | sha256sum -c -")
     if asset.lower().endswith(".zip"):
+        # The selected jar's path is expanded by the BUILD shell (`"$JAR"`) and lands
+        # in the wrapper as written; `"$@"` stays literal for the wrapper's shell.
+        head = shlex.quote(f"exec java {flags} -jar ")
         parts += [
-            f"unzip -o {dest}/{asset} -d {dest}",
+            f"unzip -o {q_jar} -d {q_dest}",
             f'JAR="$({_jar_select_sh(dest, name)})"',
             f'JAR="${{JAR:-$({_jar_select_sh(dest, "")})}}"', 'test -n "$JAR"',
-            f"printf '#!/bin/sh\\nexec java {flags} -jar %s \"$@\"\\n' \"$JAR\" > /usr/local/bin/{wrap}",
+            f"printf '%s\\n' '#!/bin/sh' {head}\"$JAR\"' \"$@\"' > /usr/local/bin/{q_wrap}",
         ]
     else:
+        runline = f'exec java {flags} -jar {q_jar} "$@"'
         parts.append(
-            f"printf '#!/bin/sh\\nexec java {flags} -jar {dest}/{asset} \"$@\"\\n' > /usr/local/bin/{wrap}")
-    parts.append(f"chmod +x /usr/local/bin/{wrap}")
+            f"printf '%s\\n' '#!/bin/sh' {shlex.quote(runline)} > /usr/local/bin/{q_wrap}")
+    parts.append(f"chmod +x /usr/local/bin/{q_wrap}")
     cmd = "set -eux; " + "; ".join(parts)
-    return {"command": cmd, "evidence": evidence or f"command -v {wrap} && java -version",
+    return {"command": cmd, "evidence": evidence or f"command -v {q_wrap} && java -version",
             "tool": wrap, "purpose": f"{name} (java jar)", "engine_coupled": coupled,
             # The conda route ships its JRE inside the env prefix the runtime stage
             # copies, so declaring the apt one too would install a SECOND, older java
@@ -296,21 +316,22 @@ def source(name: str, repo_url: str, *, ref: str = "", build_command: str = "mak
     src = f"{_TOOLS}/{name}/src"
     binp = bin_path or name
     wrap = wrapper or name
-    parts = [f"_swh_clone {shlex.quote(repo_url)} {shlex.quote(ref)} {src}",
-             f"cd {src}"]
+    q_src, q_bin, q_wrap = shlex.quote(src), shlex.quote(f"{src}/{binp}"), shlex.quote(wrap)
+    parts = [f"_swh_clone {shlex.quote(repo_url)} {shlex.quote(ref)} {q_src}",
+             f"cd {q_src}"]
     if ref:
         parts.append(f"git checkout {shlex.quote(ref)}")
     parts += [build_command,
-              f"test -f {src}/{binp}",
-              f"install -m 0755 {src}/{binp} /usr/local/bin/{wrap}"]
+              f"test -f {q_bin}",
+              f"install -m 0755 {q_bin} /usr/local/bin/{q_wrap}"]
     cmd = "set -eux; " + "; ".join(parts)
     # N3: wrapper-smoke evidence — INVOKE the binary to prove it
     # runs, not just that the file exists. A C source build CAN produce a
     # binary that runs into shared-lib failures at exec time; `command -v`
     # passed those cases silently. Chain mirrors release_binary's default.
     ev = evidence or (
-        f"{wrap} --help >/dev/null 2>&1 || {wrap} --version >/dev/null 2>&1 || "
-        f"{wrap} -h >/dev/null 2>&1 || command -v {wrap}"
+        f"{q_wrap} --help >/dev/null 2>&1 || {q_wrap} --version >/dev/null 2>&1 || "
+        f"{q_wrap} -h >/dev/null 2>&1 || command -v {q_wrap}"
     )
     return {"command": cmd, "evidence": ev, "tool": wrap,
             "purpose": f"{name} (source @ {ref or 'HEAD'})",
@@ -332,10 +353,11 @@ def cargo(name: str, crate: str = "", *, version: str = "", git_url: str = "",
     # that the file exists. Cargo's --root produces a binary in /usr/local/bin
     # that's self-contained AT BUILD TIME, but a botched build or a binary
     # with missing dynamic deps would silently pass `command -v`.
+    q_bin = shlex.quote(binp)
     return {"command": f"cargo install {src} --root /usr/local --locked",
             "evidence": evidence or (
-                f"{binp} --help >/dev/null 2>&1 || {binp} --version >/dev/null 2>&1 || "
-                f"{binp} -h >/dev/null 2>&1 || command -v {binp}"),
+                f"{q_bin} --help >/dev/null 2>&1 || {q_bin} --version >/dev/null 2>&1 || "
+                f"{q_bin} -h >/dev/null 2>&1 || command -v {q_bin}"),
             "tool": binp,
             "purpose": f"{name} (cargo, via engine rust)", "engine_coupled": True,
             "runtime_packages": []}
@@ -347,11 +369,12 @@ def go(name: str, package: str, *, version: str = "latest", binary_name: str = "
     ['go'] first), output to /usr/local/bin via GOBIN. Self-contained at runtime."""
     binp = binary_name or package.rstrip("/").split("/")[-1]
     spec = f"{package}@{version}" if version else package
+    q_bin = shlex.quote(binp)
     return {"command": f"GOBIN=/usr/local/bin GOFLAGS=-mod=mod go install {shlex.quote(spec)}",
             # N3: same smoke-test treatment as cargo/source/script_repo.
             "evidence": evidence or (
-                f"{binp} --help >/dev/null 2>&1 || {binp} --version >/dev/null 2>&1 || "
-                f"{binp} -h >/dev/null 2>&1 || command -v {binp}"),
+                f"{q_bin} --help >/dev/null 2>&1 || {q_bin} --version >/dev/null 2>&1 || "
+                f"{q_bin} -h >/dev/null 2>&1 || command -v {q_bin}"),
             "tool": binp,
             "purpose": f"{name} (go, via engine go)", "engine_coupled": True,
             "runtime_packages": []}
@@ -376,7 +399,7 @@ def perl_cpanm(module: str, *, distribution: str = "", cpanm_flags: str = "--not
     pre = f"{build_env} " if build_env.strip() else ""
     shim = 'printf "#include <locale.h>\\n" > "$CONDA_PREFIX/include/xlocale.h" 2>/dev/null || true'
     return {"command": f"{shim}; {pre}cpanm {cpanm_flags} {shlex.quote(target)}",
-            "evidence": evidence or f"perl -M{module} -e1", "tool": module,
+            "evidence": evidence or f"perl {shlex.quote('-M' + module)} -e1", "tool": module,
             "purpose": f"{module} (cpanm, via engine perl)", "engine_coupled": True,
             "version_probe": perl_version_probe(module),
             "runtime_packages": []}
@@ -502,9 +525,8 @@ def pip_install_with_flags(name: str, *, version: str = "",
     # Dist-metadata probe (same shape as env_freeze._pip_presence_check): robust
     # to import-name mismatches like pyyaml→yaml. Anchored on the package name
     # so the env_honesty shape rule (word-boundary tool-token) still binds.
-    ev = evidence or (
-        f"python -c \"import importlib.metadata as _m; _m.version({name!r})\""
-    )
+    probe = f"import importlib.metadata as _m; _m.version({dq_literal(name)})"
+    ev = evidence or f"python -c {shlex.quote(probe)}"
     return {"command": cmd, "evidence": ev, "tool": name,
             "purpose": f"{name} (pip with flags)", "engine_coupled": True,
             "runtime_packages": []}
@@ -570,19 +592,22 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     clone = f"{_TOOLS}/{name}"
     wrap = wrapper or name
     entry = f"{clone}/{script_rel}" if script_rel else f"{clone}/{name}"
+    q_clone, q_entry, q_wrap = shlex.quote(clone), shlex.quote(entry), shlex.quote(wrap)
     # SWH-fallback clone (see `source` for the contract).
-    parts = [f"_swh_clone {shlex.quote(repo_url)} {shlex.quote(ref)} {clone}",
-             f"cd {clone}"]
+    parts = [f"_swh_clone {shlex.quote(repo_url)} {shlex.quote(ref)} {q_clone}",
+             f"cd {q_clone}"]
     if ref:
         parts.append(f"git checkout {shlex.quote(ref)}")
     # OPTIONAL build: runs at the clone dir before the wrapper is written,
     # so the wrapper points at assets the build actually produced.
     if build_command:
         parts.append(build_command)
-    parts.append(f"chmod +x {entry} 2>/dev/null || true")
-    runline = f"{interpreter} {entry}".strip()
-    parts.append(f"printf '#!/bin/sh\\nexec {runline} \"$@\"\\n' > /usr/local/bin/{wrap}")
-    parts.append(f"chmod +x /usr/local/bin/{wrap}")
+    parts.append(f"chmod +x {q_entry} 2>/dev/null || true")
+    # `interpreter` is a command prefix (it may carry its own flags) and is written as
+    # given, as env_manager's host wrapper spells it; the entry path is one argument.
+    runline = f'exec {interpreter} {q_entry} "$@"' if interpreter else f'exec {q_entry} "$@"'
+    parts.append(f"printf '%s\\n' '#!/bin/sh' {shlex.quote(runline)} > /usr/local/bin/{q_wrap}")
+    parts.append(f"chmod +x /usr/local/bin/{q_wrap}")
     cmd = "set -eux; " + "; ".join(parts)
     # N3: wrapper-smoke evidence — actually INVOKE the wrapper to
     # prove it runs, not just that the file exists. Mirrors release_binary's
@@ -591,8 +616,8 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
     # null + chain on || tolerates either exit code as long as exec didn't
     # crash before the binary started).
     ev = evidence or (
-        f"{wrap} --help >/dev/null 2>&1 || {wrap} --version >/dev/null 2>&1 || "
-        f"{wrap} -h >/dev/null 2>&1 || command -v {wrap}"
+        f"{q_wrap} --help >/dev/null 2>&1 || {q_wrap} --version >/dev/null 2>&1 || "
+        f"{q_wrap} -h >/dev/null 2>&1 || command -v {q_wrap}"
     )
     # ENGINE COUPLING (Talos, batch-N): a run-by-path repo whose interpreter is a
     # CONDA-PROVIDED language runtime (python/Rscript/perl) needs the conda env

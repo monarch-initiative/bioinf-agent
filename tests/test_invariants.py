@@ -2711,26 +2711,6 @@ def test_container_native_dockerfile_bakes_recorded_commands():
     assert "RUN curl -fsSL x.tgz | tar -xz -C /usr/local/bin seqkit" in df2
 
 
-def test_container_native_engine_is_swappable():
-    """The locus is engine-agnostic: swap pixi→micromamba and ONLY the env-layer
-    lines change; the long-tail bake + base are identical. Proves we're not married
-    to pixi ('universal adapter' one level down)."""
-    from agent.skills.container_build import emit_dockerfile, PixiEngine, MicromambaEngine
-    steps = [{"command": "install -m0755 /tmp/mosdepth /usr/local/bin/", "purpose": "mosdepth"}]
-    dp = emit_dockerfile("debian:bookworm-slim", engine=PixiEngine(), has_env_layer=True, longtail_steps=steps)
-    dm = emit_dockerfile("debian:bookworm-slim", engine=MicromambaEngine(), has_env_layer=True, longtail_steps=steps)
-    # pixi-specific vs micromamba-specific env layers
-    assert "pixi install --locked" in dp and "micromamba" not in dp
-    assert "micromamba create -y -n env --file env.lock" in dm and "pixi" not in dm
-    assert 'env_engine="pixi"' in dp and 'env_engine="micromamba"' in dm
-    # identical locus: same base + same verbatim long-tail bake regardless of engine
-    assert "FROM debian:bookworm-slim" in dp and "FROM debian:bookworm-slim" in dm
-    assert "RUN install -m0755 /tmp/mosdepth /usr/local/bin/" in dp
-    assert "RUN install -m0755 /tmp/mosdepth /usr/local/bin/" in dm
-    # micromamba's explicit lock is single-platform but reproducible (URLs+sha)
-    assert "env.lock" in MicromambaEngine().lock_artifacts()
-
-
 def test_container_native_repo_name_sanitized():
     """docker repo names must be lowercase [a-z0-9._-]; freeze must sanitize a
     pipeline name like 'VEP_annotate' rather than fail the build."""
@@ -4664,18 +4644,15 @@ def test_freeze_response_truth_surface_unchanged_by_sbom_summarization():
             "cache record must keep the full system_packages list"
 
 
-def test_pixi_engine_add_pypi_and_micromamba_refuses():
-    """PixiEngine.add_pypi → `pixi add --pypi` (into the lock); MicromambaEngine
-    refuses honestly (its explicit lock can't capture pip)."""
-    from agent.skills.container_build import PixiEngine, MicromambaEngine
+def test_pixi_engine_add_pypi():
+    """PixiEngine.add_pypi → `pixi add --pypi` (into the lock)."""
+    from agent.skills.container_build import PixiEngine
     calls = []
     class FakeCB:
         def exec(self, cmd, timeout=0):
             calls.append(cmd); return {"returncode": 0, "stdout": "", "stderr": ""}
     assert PixiEngine().add_pypi(FakeCB(), ["cyvcf2==0.31.1"])["success"]
     assert any("pixi add --pypi" in c and "cyvcf2==0.31.1" in c for c in calls)
-    r = MicromambaEngine().add_pypi(FakeCB(), ["cyvcf2"])
-    assert r["success"] is False and "pip" in r["reason"].lower()
 
 
 def test_envbuild_add_pip_records_engine_coupled_verification():
@@ -4889,7 +4866,7 @@ def test_conda_presence_check_validates_libraries_honesty_safe():
     from agent.skills import env_freeze as ef
     from agent.skills import env_honesty as eh
     chk = ef._conda_presence_check("python-louvain")
-    assert "command -v python-louvain" in chk and "distribution('python-louvain')" in chk
+    assert "command -v python-louvain" in chk and 'distribution("python-louvain")' in chk
     assert eh.evidence_shape_violation(chk, "python-louvain") is None          # accepted (names the token)
     assert eh.evidence_shape_violation('python -c "import community"', "python-louvain") is not None  # cheat-shape still caught
 
@@ -4926,11 +4903,9 @@ def test_runtime_image_is_self_activating_env_on_path():
     `apptainer exec image <tool>` / plain `docker run image <tool>` reach the conda
     tools + python directly (not only via `pixi run`). Without this every conda
     tool — and a run-by-path wrapper's `python` — 404s under the HPC delivery."""
-    from agent.skills.container_build import PixiEngine, MicromambaEngine
+    from agent.skills.container_build import PixiEngine
     pix = "\n".join(PixiEngine().runtime_lines())
     assert "/work/.pixi/envs/default/bin" in pix and "ENV PATH" in pix and "CONDA_PREFIX" in pix
-    mam = "\n".join(MicromambaEngine().runtime_lines())
-    assert "/opt/micromamba/envs/env/bin" in mam and "ENV PATH" in mam and "CONDA_PREFIX" in mam
 
 
 # ---------------------------------------------------------------------------
@@ -6679,8 +6654,8 @@ def test_conda_presence_check_routes_bioconductor_to_rscript():
     # the conda-name's suffix is the lookup name (post evidence-shape's
     # prefix-strip the tool token is `deseq2`)
     assert "deseq2" in chk.lower()
-    # case-insensitive lookup (DESeq2 vs deseq2)
-    assert "ignore.case=TRUE" in chk
+    # case-insensitive lookup (DESeq2 vs deseq2): both sides lower-cased before the match
+    assert chk.count("tolower(") == 2
 
 
 def test_conda_presence_check_routes_rprefix_to_rscript():
@@ -7739,11 +7714,11 @@ def test_an_unpinned_request_discloses_that_a_cache_hit_is_a_reuse():
 # ---------------------------------------------------------------------------
 
 def test_last_line_is_the_line_that_names_the_cause():
-    from agent.skills.env_manager import _last_line
-    assert _last_line("") == ""
-    assert _last_line("\n\n") == ""
-    assert _last_line("Solving environment: failed\n\nPackagesNotFoundError: x\n\n") == "PackagesNotFoundError: x"
-    assert len(_last_line("y" * 500)) == 200
+    from agent.skills.outcomes import ERROR_LINE_LIMIT, last_informative_line
+    assert last_informative_line("") == ""
+    assert last_informative_line("\n\n") == ""
+    assert last_informative_line("Solving environment: failed\n\nPackagesNotFoundError: x\n\n") == "PackagesNotFoundError: x"
+    assert len(last_informative_line("y" * 500)) == ERROR_LINE_LIMIT
 
 
 def test_an_install_into_a_missing_env_says_how_to_make_one(tmp_path, monkeypatch):

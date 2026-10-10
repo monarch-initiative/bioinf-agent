@@ -163,7 +163,7 @@ class TestRecordLookupFailures:
     @pytest.mark.integration
     def test_missing_key_returns_error(self, tmp_path, monkeypatch):
         access_path = _good_access(tmp_path)
-        cache = FakeEnvCache({})
+        cache = FakeEnvCache({"other|linux/amd64|none": _staged_record()})
         called = []
         monkeypatch.setattr(subprocess, "run",
                             lambda *a, **kw: called.append(a) or MagicMock())
@@ -172,6 +172,9 @@ class TestRecordLookupFailures:
             freeze_request_key="nope|linux/amd64|none",
             env_cache=cache, access_path=str(access_path))
         assert "error" in r and "not in EnvCache" in r["error"]
+        # The refusal names what the cache DOES hold, not just what it lacks.
+        assert r["known_request_keys"] == ["other|linux/amd64|none"]
+        assert "other|linux/amd64|none" in r["error"]
         assert called == []
 
     @pytest.mark.integration

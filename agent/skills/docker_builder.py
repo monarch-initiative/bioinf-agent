@@ -10,12 +10,11 @@ the run/ship surface that operates on an already-built image:
     (in-container) with a host `docker stats` fallback.
   - save_archive(): `docker save` an image to a tarball (Apptainer docker-archive
     delivery; used by freeze()).
-  - image_digest() / image_present(): daemon queries.
+  - image_digest(): daemon query.
 """
 
 import os as _os
 import re
-import subprocess
 from pathlib import Path
 from typing import Any
 

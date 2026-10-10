@@ -14,7 +14,6 @@ mcp_server.py (read via `_ms.X`) so this submodule stays purely a tool surface.
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 from typing import Optional
 
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
@@ -305,14 +304,7 @@ def freeze(
     # `docker rmi`'d) must not count as a hit — that hands back a stale record with
     # no rebuild and no report re-render. lookup_anchored turns it into a MISS so
     # the build path runs, materializes a fresh image, and re-renders every
-    # deliverable.
-    def _docker_image_present(ref: str) -> bool:
-        r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}", ref],
-                           capture_output=True, text=True)
-        return r.returncode == 0
-    # cache lookup: lookup_anchored confirms the image is still in the docker
-    # daemon (an evicted image gets re-built rather than returning a dangling
-    # record). On hit we summarize the SBOM in the response only; the cached
+    # deliverable. On hit we summarize the SBOM in the response only; the cached
     # record on disk keeps the full lists for env_report/attestation rendering.
     # AN UNPINNED TOOL MAKES THE KEY AMBIGUOUS, AND A HIT ON IT MUST SAY SO.
     #
@@ -330,7 +322,7 @@ def freeze(
     # at the CALL: without this disclosure nothing tells the caller their request did
     # not pin, and an old artifact comes back looking like a fresh solve.
     unpinned = sorted(n for n, v in parsed_filled if not v)
-    cached = _ms._env_cache.lookup_anchored(rkey, _docker_image_present)
+    cached = _ms._env_cache.lookup_anchored(rkey, _ms._container_build.image_present)
     if cached and unpinned:
         served = {}
         try:

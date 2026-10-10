@@ -15,11 +15,8 @@ starts it automatically.
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 import sys
-import urllib.request
-from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import yaml
@@ -96,7 +93,6 @@ from agent.skills import env_report_html as _env_report_html
 from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
 from agent.skills import synthesis as _synth
-from agent.skills import provenance as _prov
 from agent.skills import env_recipe as _env_recipe
 from agent.skills import container_build as _container_build
 from agent.skills.container_build import BASE_IMAGE as _BASE_IMAGE
@@ -108,6 +104,7 @@ from agent.validators.output_validator import OutputValidator
 from agent.skills.resources import list_resources as _list_resources
 from agent.skills.resources import list_pipelines as _list_pipelines
 from agent.skills.pipeline_state import PipelineState
+from agent.skills.outcomes import refused
 from agent.skills.job_manager import JobManager
 
 _pkg_search     = PackageSearch(config)
@@ -396,7 +393,6 @@ def _check_disk_failsafe(min_gb: Optional[int] = None) -> Optional[dict]:
     free_gb = usage.free / (1024 ** 3)
     if free_gb >= min_gb:
         return None
-    from agent.skills.outcomes import refused
     return refused(
         "freeze.low_disk",
         success=False, stage="disk_failsafe",
@@ -442,36 +438,30 @@ def _check_docker_available() -> Optional[dict]:
             ["docker", "version", "--format", "{{.Server.Version}}"],
             capture_output=True, text=True, timeout=20)
     except FileNotFoundError:
-        return {
-            "success": False, "outcome": "refused",
-            "stage": "docker_preflight", "code": "docker.not_installed",
-            "message": (
+        return refused(
+            "docker.not_installed", success=False, stage="docker_preflight",
+            message=(
                 "refusing to start — the `docker` CLI was not found on PATH. This "
                 "operation builds/adopts and validates a container image and needs a "
                 "working Docker daemon. Install Docker (or Docker Desktop) and make "
-                "sure `docker` is on PATH, then retry."),
-        }
+                "sure `docker` is on PATH, then retry."))
     except subprocess.TimeoutExpired:
-        return {
-            "success": False, "outcome": "refused",
-            "stage": "docker_preflight", "code": "docker.daemon_unavailable",
-            "message": (
+        return refused(
+            "docker.daemon_unavailable", success=False, stage="docker_preflight",
+            message=(
                 "refusing to start — `docker version` timed out probing the daemon "
                 "(20s). The Docker daemon appears unresponsive; start or restart it "
-                "and retry."),
-        }
+                "and retry."))
     if r.returncode != 0:
         detail = (r.stderr or r.stdout or "").strip().splitlines()
         detail = detail[0][:300] if detail else "(no diagnostic)"
-        return {
-            "success": False, "outcome": "refused",
-            "stage": "docker_preflight", "code": "docker.daemon_unavailable",
-            "message": (
+        return refused(
+            "docker.daemon_unavailable", success=False, stage="docker_preflight",
+            message=(
                 "refusing to start — the `docker` CLI is installed but the daemon "
                 "could not be reached (is Docker running?). This operation builds/"
                 "adopts and validates a container image and needs a live daemon.\n"
-                f"  docker said: {detail}"),
-        }
+                f"  docker said: {detail}"))
     return None
 
 

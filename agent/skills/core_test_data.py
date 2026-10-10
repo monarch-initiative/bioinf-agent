@@ -19,6 +19,7 @@ from __future__ import annotations
 import gzip
 import json
 import re
+import shlex
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -59,7 +60,17 @@ def phenopacket_to_vcf(
     core_dir     = data_dir / f"core_test_data_{genome_build}"
     pk_meta_path = core_dir / "phenopackets" / f"{phenopacket_id}_meta.yaml"
     if not pk_meta_path.exists():
-        return refused("core_test_data.phenopacket_meta_missing", success=False, error=f"phenopacket meta not found: {pk_meta_path}")
+        pk_dir = pk_meta_path.parent
+        registered = (sorted(p.name[:-len("_meta.yaml")] for p in pk_dir.glob("*_meta.yaml"))
+                      if pk_dir.is_dir() else [])
+        return refused(
+            "core_test_data.phenopacket_meta_missing", success=False,
+            error=(f"phenopacket meta not found: {pk_meta_path}. "
+                   + (f"Registered phenopacket ids under {pk_dir}: {registered}" if registered
+                      else f"No phenopacket is registered under {pk_dir}; add_phenopacket "
+                           f"registers one from a URL.")),
+            registered_phenopackets=registered,
+        )
 
     try:
         meta = PhenopacketMeta.from_yaml(pk_meta_path)
@@ -197,8 +208,8 @@ def _stream_subset(url: str, dst: Path, num_reads: int) -> bool:
     lines = num_reads * 4
     tmp = dst.with_suffix(".tmp.gz")
     cmd = (
-        f"(set +o pipefail; curl -fsSL --retry 3 '{url}' | gunzip | head -{lines}) "
-        f"| gzip > {tmp}"
+        f"(set +o pipefail; curl -fsSL --retry 3 {shlex.quote(url)} | gunzip | head -{lines}) "
+        f"| gzip > {shlex.quote(str(tmp))}"
     )
     result = subprocess.run(cmd, shell=True, capture_output=True, executable="/bin/bash")
     if result.returncode == 0 and _is_valid_gz(tmp):

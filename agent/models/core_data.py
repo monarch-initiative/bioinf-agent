@@ -214,18 +214,27 @@ class ReferenceDatabase(BaseModel):
     did not bootstrap (another build, another species) still belongs here or in
     `authored_artifacts`, because `select_test_data` only knows the core manifests.
     """
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     name:               str            # e.g. "exomiser_hg38_2402", "vep_cache_111_hg38"
     version:            str            # data bundle version, e.g. "2402", "111"
     size_gb:            Optional[float] = None
     source_url:         Optional[str] = None   # where it was downloaded from; None for a
-                                               # locally-staged reference with no download
-                                               # origin (download_reference_database always
-                                               # sets it — a fabricated file:// URL is worse
-                                               # than an honest absent one). I5 pins content
-                                               # by sha256, not by URL, so provenance survives.
-    local_path:         Optional[str] = None   # absolute path on this machine once downloaded
+                                               # reference built or staged here with no
+                                               # download origin (a fabricated file:// URL
+                                               # is worse than an honest absent one). I5
+                                               # pins content by sha256, not by URL.
+    local_path:         str                    # absolute path of the file or directory the
+                                               # tool reads — on this machine, or on the
+                                               # cluster when locus="cluster". REQUIRED: a
+                                               # record without a path anchors nothing (I5
+                                               # cannot check it, I8 cannot trace to it).
+    locus:              Optional[Literal["local", "cluster"]] = None   # cluster: local_path
+                                               # is a path on `compute_env`, verified over ssh
+    compute_env:        Optional[str] = None   # the compute env a cluster-locus DB lives on
+    recipe:             Optional[str] = None   # acquire_reference_via_recipe: the recipe file
+    recipe_sha256:      Optional[str] = None   # … and its content hash
+    files:              Optional[list] = None  # … per-file {name, url, version, …} manifest
     available:          bool = False
     description:        Optional[str] = None
     coupled_to_version: Optional[str] = None   # tool version this data bundle is designed for
@@ -1209,6 +1218,16 @@ class ContentAnchor(BaseModel):
 #: `data_pins.HASH_CAP_BYTES` — an artifact that is size-anchored by one of them must be
 #: size-anchored by all of them, or two checks disagree merely because one gave up sooner.
 ANCHOR_HASH_CAP_BYTES = 2 * 1024 ** 3
+
+#: File suffixes that mark a path as a SCRIPT rather than data. One vocabulary for the
+#: two readers that need the distinction: the seal's orphan-input walk exempts scripts
+#: (an interpreter's argument is not a data input), and the pipeline derivation carries
+#: an authored script into bin/ while leaving an authored data file as a path.
+SCRIPT_SUFFIXES = (".sh", ".bash", ".py", ".r", ".rscript", ".pl", ".nf", ".smk")
+
+
+def is_script_path(path: object) -> bool:
+    return isinstance(path, str) and path.lower().endswith(SCRIPT_SUFFIXES)
 
 
 def staged_sif_steps(spec: Any) -> list:

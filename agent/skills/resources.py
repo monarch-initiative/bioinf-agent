@@ -227,8 +227,8 @@ def genome_reference_for(core_dir: str, genomes: list) -> dict:
                 "detail": (f"no `genome:` block with a fasta in {core_dir}/manifest.yaml — "
                            f"this dataset ships reads and no reference. Declare the "
                            f"reference you align against with download_reference_database "
-                           f"(or stage_authored_artifact if you built it here), or nothing "
-                           f"will trace it at seal.")}
+                           f"(a url to fetch it, or url='' and local_path= for one you built "
+                           f"here), or nothing will trace it at seal.")}
 
     declared = {k: v for k, v in (("reference_fasta", entry.get("fasta")),
                                   ("fai", entry.get("fai"))) if v}

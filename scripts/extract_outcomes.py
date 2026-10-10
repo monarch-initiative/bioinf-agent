@@ -61,6 +61,14 @@ def _enclosing_func(path_stack: list) -> str:
     return "<module>"
 
 
+def _callee_name(func: ast.AST) -> str:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
 def harvest(path: Path) -> list[dict]:
     rel = str(path.relative_to(ROOT))
     tree = ast.parse(path.read_text(), filename=str(path))
@@ -80,6 +88,15 @@ def harvest(path: Path) -> list[dict]:
                               "tagged": True, "func": _enclosing_func(stack),
                               "where": f"{rel}:{node.lineno}",
                               "end_line": node.end_lineno or node.lineno})
+        # (1b) a shared refusal builder — `x.env_missing_refusal("code", …)`,
+        # `unknown_draft_refusal("code", …)` — carries the caller's constant code
+        # as its first argument and always tags refused; the call site is the terminal
+        elif isinstance(node, ast.Call) and _callee_name(node.func).endswith("_refusal") \
+                and node.args and _str(node.args[0]):
+            found.append({"code": _str(node.args[0]), "outcome": "refused", "source": "helper",
+                          "tagged": True, "func": _enclosing_func(stack),
+                          "where": f"{rel}:{node.lineno}",
+                          "end_line": node.end_lineno or node.lineno})
         # (2) invariant violation records (tagged refusals)
         elif isinstance(node, ast.Dict):
             if "invariant" in _dict_keys(node):

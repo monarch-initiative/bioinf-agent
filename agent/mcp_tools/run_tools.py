@@ -20,8 +20,7 @@ from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 from agent.models.core_data import PipelineStep, default_step_tool
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.skills.backgroundable import backgroundable
-from agent.skills.outcomes import proven, refused, broke
-from agent.skills.env_manager import _last_line
+from agent.skills.outcomes import proven, refused, broke, last_informative_line
 
 
 # Filename → validator type moved to the validator itself, next to the dispatch
@@ -286,8 +285,11 @@ def run_step_in_container(
                        honesty_violations=env_violations,
                        violation_count=len(env_violations))
     if not rec:
+        frozen = sorted(_ms._env_cache.all())
+        where = f"frozen envs: {frozen}" if frozen else "nothing is frozen yet"
         return refused("run_container.no_frozen_env",
-                       error=f"no frozen env for '{freeze_request_key}' — run freeze() first")
+                       error=f"no frozen env for '{freeze_request_key}' — run freeze() first; {where}",
+                       frozen_envs=frozen)
     image = rec.get("image")
     platform = _ms.docker_platform(platform or rec.get("platform") or "")
     if not image:
@@ -414,7 +416,7 @@ def run_step_in_container(
     if watch_dir_created:
         payload["watch_dir_created"] = watch_dir
     if res.get("returncode") != 0 and not payload.get("error"):
-        payload["error"] = (_last_line(res.get("stderr")) or _last_line(res.get("stdout"))
+        payload["error"] = (last_informative_line(res.get("stderr")) or last_informative_line(res.get("stdout"))
                             or f"exit {res.get('returncode')} with nothing on stderr")
     payload = _ms._shrink_stdio_for_response(payload, label=f"step.{pipeline_id}",
                                              log_subdir="step_logs")

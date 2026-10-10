@@ -1594,7 +1594,7 @@ def repo_evidence(availability: dict, github_repo: str = "",
             return {"repo": github_repo.strip().strip("/"), "source": REPO_FROM_GITHUB_SEARCH,
                     "anchored": True,
                     "detail": "a github name search we ran ourselves — nobody vouched for it"}
-        return {"repo": github_repo.strip().strip("/"), "source": "user", "anchored": True,
+        return {"repo": github_repo.strip().strip("/"), "source": REPO_FROM_USER, "anchored": True,
                 "detail": "caller-supplied github_repo"}
 
     winner = next((t for t in _REPO_SOURCES if availability.get(t, {}).get("available")), "")
@@ -1837,17 +1837,6 @@ def registry_name(detail: dict, tool: str) -> str:
     line. Add a fourth registry convention HERE, never at a call site."""
     return (detail.get("bioc_spec") or detail.get("r_spec")
             or detail.get("resolved_name") or tool)
-
-
-def registry_name_note(detail: dict, tool: str) -> str:
-    """The disclosure for `registry_name`, or "" when the name was not rewritten.
-    Always emitted alongside a rewritten name — a silent rewrite is the thing this
-    pair exists to prevent."""
-    name = registry_name(detail, tool)
-    if name == tool:
-        return ""
-    return (f"  # NAME MAPPED: you asked for '{tool}'; this registry's package is "
-            f"'{name}' — verify that is the tool you meant")
 
 
 def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo: str) -> str:

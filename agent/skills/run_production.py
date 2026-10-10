@@ -30,7 +30,6 @@ import re
 import shlex
 import shutil
 import subprocess
-from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional, Collection
@@ -38,6 +37,7 @@ from typing import Mapping, Optional, Collection
 import yaml
 
 from agent.skills import cluster_jobs, compute_access, data_pins, stage_apptainer, submit_workflow, transfer, workspace
+from agent.skills.container_build import image_present as _docker_image_present
 from agent.skills.outcomes import proven, refused, broke, degraded
 from agent.skills.pipeline_record import PipelineRecord, load_pipeline_record
 from agent.skills.pipeline_render import (MANIFEST_PATH, RECORD_PATH, SAMPLESHEET_FILENAME,
@@ -247,14 +247,6 @@ def _stage_images(record: PipelineRecord) -> list[dict]:
                          "env_name": s.env_name, "stages": []}
         seen[key]["stages"].append(s.name)
     return list(seen.values())
-
-
-def _docker_image_present(image: str) -> bool:
-    try:
-        r = subprocess.run(["docker", "image", "inspect", image], capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return r.returncode == 0
 
 
 def _check_images_local(record: PipelineRecord) -> None:

@@ -23,10 +23,12 @@ import json as _json
 import shlex as _shlex
 from typing import Any, Callable
 
+from agent.skills.install_commands import dq_literal as _dq
+
 
 def cli_which(em, env_name: str, name: str) -> dict[str, Any]:
     """CLI presence: `which {name}` resolves to a path inside the env."""
-    res = em.run_in_env(env_name, f"which {name} 2>/dev/null", timeout=10)
+    res = em.run_in_env(env_name, f"which {_shlex.quote(name)} 2>/dev/null", timeout=10)
     out = (res.get("stdout") or "").strip()
     anchored = res.get("returncode") == 0 and bool(out)
     return {"strategy": "cli_which", "anchored": anchored, "detail": out or None}
@@ -69,10 +71,9 @@ def r_namespace(em, env_name: str, name: str) -> dict[str, Any]:
     for prefix in ("r-", "bioconductor-"):
         if name.lower().startswith(prefix):
             r_names.add(name[len(prefix):])
-    checks = " || ".join(f"requireNamespace('{n}',quietly=TRUE)" for n in sorted(r_names))
-    rprobe = em.run_in_env(
-        env_name, f'Rscript -e "quit(status=if({checks}) 0 else 1)"', timeout=60
-    )
+    checks = " || ".join(f"requireNamespace({_dq(n)},quietly=TRUE)" for n in sorted(r_names))
+    rcode = f"quit(status=if({checks}) 0 else 1)"
+    rprobe = em.run_in_env(env_name, f"Rscript -e {_shlex.quote(rcode)}", timeout=60)
     anchored = rprobe.get("returncode") == 0
     return {"strategy": "r_namespace", "anchored": anchored,
             "detail": sorted(r_names) if anchored else None}

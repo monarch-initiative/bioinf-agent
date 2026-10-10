@@ -10,6 +10,7 @@ pipelines.
 """
 from __future__ import annotations
 
+import shlex
 import time
 from pathlib import Path
 
@@ -22,6 +23,62 @@ from agent.skills import resources as _resources_skill
 from agent.skills import tool_surface as _tool_surface
 from agent.skills import workspace as _workspace
 from agent.skills.outcomes import proven, refused
+def _record_reference_database(pipeline_id: str, rdb: dict) -> dict:
+    """Write one reference_databases record into the draft. The draft's list merges by
+    `name`, so this updates an existing record of the same name and keeps the rest."""
+    return _ms._pipeline_state.patch(
+        pipeline_id, {"reference_databases": [{k: v for k, v in rdb.items() if v is not None}]})
+
+
+def _register_local_reference(*, name: str, local_path: str, version: str, description: str,
+                              pipeline_id: str, compute_env: str) -> dict:
+    """`download_reference_database(url="")`: record a reference that already exists here."""
+    if (compute_env or "").strip():
+        return refused("data.download_db_missing_args", success=False,
+                       error="registering an existing reference works for a path on THIS machine; "
+                             "a cluster-resident reference is recorded by the download or recipe "
+                             "that put it there (pass `url`, or use acquire_reference_via_recipe)")
+    lp = (local_path or "").strip()
+    if not lp:
+        return refused("data.download_db_missing_args", success=False,
+                       error="pass a source `url` to download the reference, or an existing "
+                             "`local_path` to register one you built or staged on this machine")
+    target = Path(lp)
+    if not target.is_absolute():
+        return refused("data.register_db_path_relative", success=False,
+                       error=f"local_path must be absolute: {lp!r}")
+    if not target.exists():
+        return refused("data.register_db_missing", success=False,
+                       error=f"nothing exists at local_path {lp!r} — a reference is registered "
+                             f"after it is built; to fetch one, pass `url`")
+    sha256 = None
+    size_bytes = None
+    if target.is_file():
+        size_bytes = target.stat().st_size
+        if size_bytes <= _core_data.ANCHOR_HASH_CAP_BYTES:
+            sha256 = _core_data.sha256_file(target)
+            Path(f"{target}.source.sha256").write_text(f"{sha256}  {target.name}\n")
+    rdb = {
+        "name":        name,
+        "version":     version or "unknown",
+        "source_url":  None,
+        "local_path":  str(target),
+        "available":   True,
+        "description": description or None,
+        "sha256":      sha256,
+        "size_bytes":  size_bytes,
+    }
+    if pipeline_id:
+        written = _record_reference_database(pipeline_id, rdb)
+        if written.get("outcome") == "refused":
+            return written
+    return proven("data.refdb_registered", name=name, local_path=str(target),
+                  kind="directory" if target.is_dir() else "file",
+                  sha256=sha256, size_bytes=size_bytes,
+                  note=("recorded in draft.reference_databases" if pipeline_id else
+                        "not recorded — pass pipeline_id to anchor it in a draft"))
+
+
 @mcp.tool()
 def download_reference_database(
     name: str,
@@ -35,7 +92,7 @@ def download_reference_database(
     remote_dir: str = "",
     slurm: dict = {},
 ) -> dict:
-    """Download a reference database large enough to need watchdog-safe execution.
+    """Download a reference database, or register one that is already here.
 
     DEFAULT (compute_env=""): download to the LOCAL agent machine, at `local_path`
     when given, else into the local common-data zone, `<workspace>/common_data/<name>/`.
@@ -43,6 +100,14 @@ def download_reference_database(
     the curl in async, doesn't have to worry about --silent / -q traps that
     killed the original Exomiser install. Auto-records a ReferenceDatabase
     entry in the draft when pipeline_id is supplied.
+
+    REGISTER (url="" and `local_path` names an existing file or directory): a
+    reference you BUILT or STAGED on this machine — an aligner index from
+    `hisat2-build`/`bwa index`, an annotation sliced from a larger file, a bundle
+    copied in — is recorded as a reference database with no download origin
+    (source_url null; honest). A file is hashed now (sha256 + sidecar) so I5 can
+    pin it; a directory is recorded by path. This is the producer for "I made this
+    reference here" — not `stage_authored_artifact`, which is for files you WROTE.
 
     DIRECTED TO CLUSTER (compute_env set): render a SIMPLE resumable SLURM script
     and `sbatch` it on that env, so the COMPUTE node pulls the bytes (the head
@@ -66,11 +131,13 @@ def download_reference_database(
     `<local_path>.source.sha256` sidecar, or over ssh from the cluster sidecar —
     the reproducibility anchor pins the DB by content, not just name+URL.
     """
-    if not (name or "").strip() or not (url or "").strip():
+    if not (name or "").strip():
         return refused("data.download_db_missing_args", success=False,
-                       error="required argument(s) empty: pass at least a name and "
-                             "source url (local_path for a local download, or "
-                             "compute_env for a cluster download)")
+                       error="`name` is empty: every reference database is recorded by name")
+    if not (url or "").strip():
+        return _register_local_reference(name=name, local_path=local_path, version=version,
+                                         description=description, pipeline_id=pipeline_id,
+                                         compute_env=compute_env)
 
     # Directed to the cluster → the resumable-SLURM-download path.
     if (compute_env or "").strip():
@@ -97,42 +164,43 @@ def download_reference_database(
     # bytes over time. `available`/`sha256`/`size_bytes` are folded back into
     # the ReferenceDatabase record from disk at seal (see workflow_tools). The
     # portable hasher works on both Linux (sha256sum) and macOS (shasum -a256).
+    q = shlex.quote
     sidecar = f"{target}.source.sha256"
     def _hash_into_sidecar(artifact: str) -> str:
-        return (f"( sha256sum {artifact} 2>/dev/null || shasum -a 256 {artifact} ) "
-                f"| awk '{{print $1}}' > {sidecar}")
+        return (f"( sha256sum {q(artifact)} 2>/dev/null || shasum -a 256 {q(artifact)} ) "
+                f"| awk '{{print $1}}' > {q(sidecar)}")
 
     if extract and url.endswith(".zip"):
         # Download to a sibling .zip, unpack into local_path, remove the zip.
         zip_path = target.parent / Path(url).name
         cmd = (
-            f"curl -L --progress-bar -C - -o {zip_path} '{url}' "
+            f"curl -L --progress-bar -C - -o {q(str(zip_path))} {q(url)} "
             f"&& {_hash_into_sidecar(str(zip_path))} "
-            f"&& mkdir -p {target} "
-            f"&& unzip -o {zip_path} -d {target.parent} "
-            f"&& rm {zip_path}"
+            f"&& mkdir -p {q(str(target))} "
+            f"&& unzip -o {q(str(zip_path))} -d {q(str(target.parent))} "
+            f"&& rm {q(str(zip_path))}"
         )
     elif extract and (url.endswith(".tar.gz") or url.endswith(".tgz")):
         tar_path = target.parent / Path(url).name
         cmd = (
-            f"curl -L --progress-bar -C - -o {tar_path} '{url}' "
+            f"curl -L --progress-bar -C - -o {q(str(tar_path))} {q(url)} "
             f"&& {_hash_into_sidecar(str(tar_path))} "
-            f"&& mkdir -p {target} "
-            f"&& tar -xzf {tar_path} -C {target} "
-            f"&& rm {tar_path}"
+            f"&& mkdir -p {q(str(target))} "
+            f"&& tar -xzf {q(str(tar_path))} -C {q(str(target))} "
+            f"&& rm {q(str(tar_path))}"
         )
     elif extract and url.endswith(".tar"):
         tar_path = target.parent / Path(url).name
         cmd = (
-            f"curl -L --progress-bar -C - -o {tar_path} '{url}' "
+            f"curl -L --progress-bar -C - -o {q(str(tar_path))} {q(url)} "
             f"&& {_hash_into_sidecar(str(tar_path))} "
-            f"&& mkdir -p {target} "
-            f"&& tar -xf {tar_path} -C {target} "
-            f"&& rm {tar_path}"
+            f"&& mkdir -p {q(str(target))} "
+            f"&& tar -xf {q(str(tar_path))} -C {q(str(target))} "
+            f"&& rm {q(str(tar_path))}"
         )
     else:
         cmd = (
-            f"curl -L --progress-bar -C - -o {target} '{url}' "
+            f"curl -L --progress-bar -C - -o {q(str(target))} {q(url)} "
             f"&& {_hash_into_sidecar(str(target))}"
         )
 
@@ -150,18 +218,7 @@ def download_reference_database(
             "available":     False,
             "description":   description or None,
         }
-        draft = _ms._pipeline_state.get_draft(pipeline_id) or {}
-        existing = draft.get("reference_databases") or []
-        # Update-by-name if it exists.
-        replaced = False
-        for i, e in enumerate(existing):
-            if isinstance(e, dict) and e.get("name") == name:
-                existing[i] = {**e, **{k: v for k, v in rdb.items() if v is not None}}
-                replaced = True
-                break
-        if not replaced:
-            existing.append({k: v for k, v in rdb.items() if v is not None})
-        _ms._pipeline_state.patch(pipeline_id, {"reference_databases": existing})
+        _record_reference_database(pipeline_id, rdb)
     return proven(
         "data.refdb_download_started",
         job_id=job.get("job_id"),
@@ -450,6 +507,8 @@ def select_test_data(
     # built for, and it is kept.
     _REQUIRED = (("genome_build", genome_build), ("assay_type", assay_type),
                  ("file_format", file_format), ("accession", accession))
+    _CRITERIA = ("genome_build", "assay_type", "file_format", "accession",
+                 "end_type", "sample", "subset")
 
     def _unmet(d: dict) -> list[str]:
         return [k for k, want in _REQUIRED if want and d.get(k) != want]
@@ -462,7 +521,9 @@ def select_test_data(
         return s
 
     if not sequencing:
-        return refused("data.no_test_data_on_disk", error="no sequencing test data on disk")
+        return refused("data.no_test_data_on_disk",
+                       error="no sequencing test data on disk — fetch a dataset with "
+                             "add_core_test_data (reads) or add_core_pod5_data (pod5)")
     eligible = [d for d in sequencing if not _unmet(d)]
     if not eligible:
         # EARN THE REFUSAL: say which requirement nothing met, and what IS here, so the
@@ -481,8 +542,7 @@ def select_test_data(
                 "file_format": file_format,
             },
             on_disk=sorted({
-                f"{d.get('genome_build') or '?'}/{d.get('assay_type') or '?'}"
-                + (f"/{d['file_format']}" if d.get("file_format") else "")
+                " · ".join(f"{k}={d.get(k)}" for k in _CRITERIA if d.get(k) is not None)
                 for d in sequencing if d.get("available")
             }),
         )
@@ -589,10 +649,11 @@ _PRIMITIVE_NOTES = {
                          "command writes outside the input's directory",
     "run_step_in_container": "once frozen, use THIS — the recorded run is then the one "
                              "that ships (validated==shipped) with in-container resource_usage",
-    "stage_authored_artifact": "record an agent-written file (driver script, synthetic test "
-                               "data, staged BAM/VCF/FASTA) with content or genesis command "
-                               "+ sha256 anchor — REQUIRED if any step input was made "
-                               "outside MCP, or the I8 walk treats it as an orphan",
+    "stage_authored_artifact": "record a file you WROTE (a driver script, a small synthetic "
+                               "fixture) with its content or genesis command + sha256 anchor. "
+                               "A reference you downloaded or BUILT (an index, an annotation, "
+                               "a reference subset, any directory) is a reference database: "
+                               "download_reference_database(name, url) or (name, local_path=)",
     "start_service": "pipeline_id=… — launch a companion service (Redis, Postgres, Spark) "
                      "and record the readiness probe; satisfies I10 on a healthy start",
     "verify_service_dependency": "append a further health probe to a declared service's log; "
@@ -615,8 +676,9 @@ _BRIEF_HINTS = {
     "I5": "download_reference_database records the sha256; a locus:cluster DB is verified "
           "over ssh against its <path>.source.sha256 sidecar",
     "I7": "populated by run_pipeline_step / run_step_in_container / run_step_on_cluster",
-    "I8": "anything the agent writes outside MCP must be declared with "
-          "stage_authored_artifact or its path is an orphan",
+    "I8": "every step input traces to a declared source, by kind: data you downloaded or "
+          "built → download_reference_database (url, or local_path= for one built here); "
+          "test reads → select_test_data; a file you wrote → stage_authored_artifact",
     "I10": "start_service / verify_service_dependency append the probes this reads",
 }
 

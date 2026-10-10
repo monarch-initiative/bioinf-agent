@@ -42,13 +42,10 @@ All cheat-guards live under
 """
 from __future__ import annotations
 
-# IMPORT-BINDING (see feedback-mcp-tools-conventions): singletons go through
-# `_ms.X` so test monkeypatching on mcp_server attribute names reaches us.
-# `mcp` is the FastMCP app and is never monkeypatched, so a bare import is
-# safe. Same shape as every other agent/mcp_tools/ submodule.
-from pathlib import Path
-
-from agent import mcp_server as _ms
+# `mcp` is the FastMCP app and is never monkeypatched, so a bare import is safe.
+# The bridge primitives reach no mcp_server singleton; a tool here that comes to
+# need one goes through `_ms.X` like every other agent/mcp_tools/ submodule (see
+# feedback-mcp-tools-conventions).
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 
 

@@ -552,8 +552,7 @@ def seal_workflow(
     """
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
-        return refused("seal.unknown_pipeline_id", success=False,
-                       error=f"unknown pipeline_id: {pipeline_id}")
+        return _ms._pipeline_state.unknown_draft_refusal("seal.unknown_pipeline_id", pipeline_id)
     # A WorkflowSpec PINS this env by digest and asserts Layer-2 on top of Layer-1.
     # Sealing against a record that can no longer earn its Layer-1 green would make
     # the spec's own foundation unverifiable — so ask the serving question, and say
@@ -1183,7 +1182,7 @@ def show_pipeline_draft(pipeline_id: str) -> dict:
     or finalize anything."""
     draft = _ms._pipeline_state.get_draft(pipeline_id)
     if draft is None:
-        return refused("show_draft.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}")
+        return _ms._pipeline_state.unknown_draft_refusal("show_draft.unknown_pipeline", pipeline_id)
     return proven("show_draft.ok", pipeline_id=pipeline_id, draft=draft)
 
 
@@ -1206,8 +1205,10 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     lock_sha256) are rejected — use the dedicated primitive instead so the
     spec stays anchored to observed reality.
 
-    Lists are replaced wholesale (pipeline_steps and install_steps are blocked
-    here anyway; they merge by step number through their own primitives).
+    `reference_databases` merges by `name` (a patch adds or amends records and keeps
+    the ones the download and acquire primitives wrote); every record must fit
+    ReferenceDatabase (`local_path` required, no unknown keys) or the patch is
+    refused with the field named. Other lists are replaced wholesale.
 
     Deletion: pass the literal string "__DELETE__" as a value inside a
     patchable key's subtree to remove that nested key. e.g.
@@ -1283,8 +1284,15 @@ def stage_authored_artifact(
       generated_by mode — supply `generated_by` (the shell command you ran),
                           with the file already on disk at `path`. The runtime
                           records the command as the genesis and sha256s the
-                          bytes. Use for binary outputs (BAM, FASTA, indexed
-                          DB, pickled models).
+                          bytes. Use for a small fixture you produced (a staged
+                          BAM slice, a pickled model). A reference you downloaded
+                          or BUILT — an index, an annotation, a reference subset,
+                          any directory — is a reference database instead:
+                          download_reference_database(name, url) or
+                          download_reference_database(name, url="", local_path=…).
+
+    At render, a content-mode script is carried into the pipeline's bin/; a
+    generated_by file bound to a step input stays a path input pinned by sha256.
 
     Honesty effect:
       - Path is added to the I8 universe of external sources, so downstream
@@ -1332,7 +1340,7 @@ def stage_authored_artifact(
         except OSError as e:
             return broke("stage_artifact.readback_failed", error=f"could not read back artifact for sha256: {e!r}", path=path)
         if idx is None:
-            return refused("stage_artifact.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}", path=path)
+            return _ms._pipeline_state.unknown_draft_refusal("stage_artifact.unknown_pipeline", pipeline_id, path=path)
         return proven(
             "stage_artifact.staged",
             success=True,
@@ -1390,7 +1398,7 @@ def stage_authored_artifact(
 
     idx = _ms._pipeline_state.add_authored_artifact(pipeline_id, artifact)
     if idx is None:
-        return refused("stage_artifact.unknown_pipeline", error=f"unknown pipeline_id: {pipeline_id}", path=path)
+        return _ms._pipeline_state.unknown_draft_refusal("stage_artifact.unknown_pipeline", pipeline_id, path=path)
 
     return proven(
         "stage_artifact.staged",
@@ -1456,6 +1464,11 @@ def mark_step_validated(
     if ok:
         return proven("mark_validated.set", status="set", pipeline_id=pipeline_id,
                       step=step, validation_status=validation_status)
+    draft = _ms._pipeline_state.get_draft(pipeline_id)
+    if draft is None:
+        return _ms._pipeline_state.unknown_draft_refusal("mark_validated.unknown_step", pipeline_id, step=step)
+    steps = sorted(int(s.get("step")) for s in (draft.get("pipeline_steps") or [])
+                   if isinstance(s, dict) and str(s.get("step", "")).isdigit())
     return refused("mark_validated.unknown_step",
-                   error="unknown pipeline_id or step out of range",
-                   pipeline_id=pipeline_id, step=step)
+                   error=f"step {step} is not in the draft; recorded steps: {steps or 'none'}",
+                   pipeline_id=pipeline_id, step=step, recorded_steps=steps)

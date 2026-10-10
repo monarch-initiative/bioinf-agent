@@ -55,6 +55,8 @@ _DONE_REAP_GRACE_S = 2.0
 #: The longest a single `check_job(wait_s=…)` may block: under the ~600 s stream watchdog.
 WAIT_S_MAX = 540.0
 _WAIT_POLL_S = 2.0
+#: How many known job ids an unknown-job refusal lists (newest first).
+_KNOWN_JOBS_LISTED = 20
 
 
 class JobManager:
@@ -110,9 +112,9 @@ class JobManager:
         # Guard a nonexistent env BEFORE spawning: a doomed `conda run --prefix
         # <missing>` would just fail in the background and cost a spawn + a log.
         if env_name and not (self._env_mgr.envs_dir / env_name).exists():
-            return refused("job_manager.env_missing",
-                           error=f"env not found: {self._env_mgr.envs_dir / env_name}",
-                           job_id=jid, env_name=env_name)
+            r = self._env_mgr.env_missing_refusal("job_manager.env_missing", env_name)
+            r["job_id"] = jid
+            return r
 
         status_path = self._status_path(jid)
         log_path    = self._log_path(jid)
@@ -218,7 +220,7 @@ class JobManager:
         teardown so the first check after the sentinel reports it exited."""
         status = self._read_status(job_id)
         if not status:
-            return refused("job_manager.unknown_job_check", error=f"unknown job_id: {job_id}", job_id=job_id)
+            return refused("job_manager.unknown_job_check", **self._unknown_job_fields(job_id))
 
         if status["state"] == "running":
             proc = self._procs.get(job_id)
@@ -317,7 +319,7 @@ class JobManager:
         self.check(job_id, log_tail_lines=0)
         status = self._read_status(job_id)
         if not status:
-            return refused("job_manager.unknown_job_cancel", error=f"unknown job_id: {job_id}", job_id=job_id)
+            return refused("job_manager.unknown_job_cancel", **self._unknown_job_fields(job_id))
         if status["state"] != "running":
             return {"state": status["state"], "job_id": job_id, "note": "not running, nothing to cancel"}
 
@@ -421,6 +423,13 @@ class JobManager:
 
     def _auto_id(self) -> str:
         return uuid.uuid4().hex[:12]
+
+    def _unknown_job_fields(self, job_id: str) -> dict[str, Any]:
+        """What a refusal for a job_id nobody started carries: the ids that do exist,
+        newest first and capped, so the caller can pick the right one."""
+        known = [r["job_id"] for r in self.list_jobs() if r.get("job_id")][:_KNOWN_JOBS_LISTED]
+        where = f"known jobs, newest first: {known}" if known else "no job has been started"
+        return dict(error=f"unknown job_id: {job_id}; {where}", job_id=job_id, known_jobs=known)
 
     def _status_path(self, job_id: str) -> Path:
         return self.jobs_dir / f"{job_id}.status.json"

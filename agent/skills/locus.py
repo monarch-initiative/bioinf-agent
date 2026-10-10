@@ -364,9 +364,3 @@ def detect_locus(platform: str = "linux/amd64") -> dict[str, Any]:
     return {"locus": "emulated", "daemon_arch": dmn, "target_arch": tgt,
             "daemon_location": location, "i7_authoritative": False,
             "emulator": emulator, "advisory": _emulation_advisory(emulator)}
-
-
-def i7_authoritative(platform: str = "linux/amd64") -> bool:
-    """Convenience predicate for the Layer-2 path: are captured I7 resource numbers
-    real (native) or emulator artefacts (emulated/unknown)?"""
-    return detect_locus(platform)["i7_authoritative"]

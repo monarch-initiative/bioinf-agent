@@ -57,6 +57,21 @@ def _image_digest(image: str) -> str:
     return r["out"].strip() if r["rc"] == 0 else ""
 
 
+def _local_image_tags(limit: int = 50) -> list[str]:
+    """`repo:tag` for every image the local daemon holds — what a "not local" refusal
+    names so the caller sees what IS here. Bounded and best effort: [] when docker is
+    unavailable or the listing fails."""
+    try:
+        r = _sh(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"], timeout=60)
+    except OSError:
+        return []
+    if r["rc"] != 0:
+        return []
+    tags = sorted({ln.strip() for ln in r["out"].splitlines()
+                   if ln.strip() and not ln.startswith("<none>")})
+    return tags[:limit]
+
+
 def _run_in_image(image: str, platform: str, command: str, timeout: int = 300,
                   maxlen: int = 400) -> dict:
     """Run a command in the image, return rc + captured output. Uses `bash -c`, NOT
@@ -192,7 +207,7 @@ def _self_reported_version(image: str, platform: str, tool: str) -> Optional[str
     absence, honestly, never a scraped guess. The one dedicated probe per shipped binary
     is what turns the adopt path's blanket `version: None` into a captured fact when the
     binary states one."""
-    res = _run_in_image(image, platform, f"{tool} --version 2>&1", timeout=60)
+    res = _run_in_image(image, platform, f"{_shq(tool)} --version 2>&1", timeout=60)
     if res["rc"] != 0:
         return None
     return _parse_self_report(tool, res["out"])
@@ -234,8 +249,12 @@ def freeze_from_image(
     # -- BUILT: ensure the image resolves locally (pull if allowed) --
     if not _image_present(image):
         if not pull_if_absent:
+            local = _local_image_tags()
             return broke("freeze_from_image.image_absent",
-                         error=f"image {image!r} is not in the local daemon and pull is disabled")
+                         error=(f"image {image!r} is not in the local daemon and pull is disabled"
+                                + (f"; local images: {local}" if local
+                                   else "; the daemon lists no images (or docker is unavailable)")),
+                         local_images=local)
         pl = _sh(["docker", "pull", "--platform", platform, image], timeout=1800)
         if pl["rc"] != 0 or not _image_present(image):
             return broke("freeze_from_image.pull_failed",

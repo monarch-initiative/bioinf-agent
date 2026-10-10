@@ -17,9 +17,7 @@ env-build tiers moved to agent/skills/env_honesty.py.
 
 from __future__ import annotations
 
-import os
 import re
-from datetime import date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -1095,7 +1093,10 @@ def _check_reference_database_availability(spec: dict) -> list[dict]:
             continue
         lp = rdb.get("local_path")
         if not lp or not isinstance(lp, str):
-            continue   # not-yet-downloaded declaration; unused ones are harmless
+            # ReferenceDatabase requires local_path and the write funnel enforces it, so
+            # only a record written before enforcement reaches here; its next write
+            # refuses it with the field named, and nothing here can check it.
+            continue
         name = rdb.get("name") or f"reference_databases[{i}]"
         where = f"reference_databases[name={rdb.get('name')}]"
 
@@ -1580,10 +1581,8 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             return True
         if "/" not in p:
             return True
-        low = p.lower()
-        for ext in (".sh", ".py", ".r", ".pl", ".nf", ".smk", ".bash", ".rscript"):
-            if low.endswith(ext):
-                return True
+        if _core_data.is_script_path(p):
+            return True
         if "/envs/" in p:
             return True
         return False
@@ -1654,19 +1653,23 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
                 "where":     f"pipeline_steps[step={step_n}].inputs",
                 "orphan_path": p,
                 # THE GATE IS THE GUIDE, and this gate's remedy has TWO shapes. If the
-                # input is a real file the spec merely never anchored, stage it
-                # (stage_authored_artifact) or declare it (select_test_data /
-                # download_reference_database) and re-seal. But if the step itself is
-                # debris — a diagnostic or a dead iteration attempt — no declaration can
-                # make its input honest, and pipeline_steps are runtime-recorded and
-                # unpatchable BY DESIGN: the only exit is discard_pipeline_draft, then
-                # redrive the good steps into a fresh draft (re-stage artifacts, re-patch
-                # usage, re-run).
-                "remedy":    "if this input is a legitimate external file, anchor it "
-                             "(stage_authored_artifact / select_test_data / "
-                             "download_reference_database) and re-seal; if the STEP is "
-                             "iteration debris (a diagnostic, a superseded attempt), "
-                             "pipeline_steps cannot be edited — discard_pipeline_draft "
+                # input is a real file the spec never anchored, declare it by WHAT IT IS
+                # and re-seal — the declaring primitive is chosen by kind, because the
+                # render treats each kind differently (a reference database stays a
+                # path input; an authored script is carried into bin/). But if the step
+                # itself is debris — a diagnostic or a dead iteration attempt — no
+                # declaration can make its input honest, and pipeline_steps are
+                # runtime-recorded and unpatchable BY DESIGN: the only exit is
+                # discard_pipeline_draft, then redrive the good steps into a fresh draft.
+                "remedy":    "if this input is a legitimate external file, declare it by kind "
+                             "and re-seal: data you downloaded or built here (an index, an "
+                             "annotation, a reference subset; a directory is fine) → "
+                             "download_reference_database(name, url) or "
+                             "download_reference_database(name, url='', local_path=<path>); "
+                             "test reads from the core manifests → select_test_data; a file "
+                             "you WROTE (a script, a small fixture) → stage_authored_artifact. "
+                             "If the STEP is iteration debris (a diagnostic, a superseded "
+                             "attempt), pipeline_steps cannot be edited — discard_pipeline_draft "
                              "and redrive the proven steps into a fresh draft",
             })
 

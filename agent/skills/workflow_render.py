@@ -29,11 +29,12 @@ Input shape — `WorkflowSpec` namedtuple-ish dict
   command         literal shell command with `${param}` placeholders.
                   e.g. `samtools view -b -h -F 4 ${input_bam} > ${output_bam}`.
                   Placeholders MUST match keys in `inputs` ∪ `outputs`, and
-                  every `$` in the command must open one of them. Single
-                  quotes, backslashes and a triple-double-quote are REFUSED —
-                  main.nf would rewrite them in transit and run something else
-                  on the cluster; see `_check_command_renders_faithfully` for
-                  the measurement and the workaround.
+                  every `$` in the command must open one of them. Backslashes
+                  and a triple-double-quote are REFUSED — main.nf would rewrite
+                  them in transit and run something else on the cluster; see
+                  `_check_command_renders_faithfully` for the measurement and
+                  the workaround. Single quotes are carried: the rendered line
+                  shell-quotes the whole command as the one `bash -c` argument.
   inputs          {placeholder_name: remote_abs_path}. The remote path
                   is what the running process will see — the renderer
                   does NOT compute container paths; main.nf uses the
@@ -55,7 +56,7 @@ from __future__ import annotations
 
 import re
 import shlex
-from typing import Mapping, Optional
+from typing import Mapping
 
 
 # Bare-bones safe-token check — alphanumeric, underscores, dashes,
@@ -114,20 +115,20 @@ def _check_command_renders_faithfully(command: str, declared: set[str]) -> None:
     """Refuse a command whose rendered form would not BE the command that
     was authored.
 
-    main.nf carries the command through two layers that both rewrite text: a
-    Groovy TRIPLE-DOUBLE-QUOTED string (the `script:` block, which does escape
-    processing and `$` interpolation) and then a `bash -c '…'` argument. Each
-    character below survives that trip only by changing meaning, and it changes
-    silently — the workflow renders, uploads and sbatches looking perfectly
-    well-formed, and the compute node runs something else. Measured, all four,
-    before this check existed:
+    main.nf carries the command through two layers: a Groovy TRIPLE-DOUBLE-QUOTED
+    string (the `script:` block, which does escape processing and `$`
+    interpolation) and then a `bash -c` argument. The shell layer is safe: the
+    renderer shell-quotes the whole command as that one argument, so a single
+    quote inside it is carried faithfully — bash reassembles the authored text.
+    The Groovy layer is not: each character below survives it only by changing
+    meaning, and it changes silently — the workflow renders, uploads and sbatches
+    looking perfectly well-formed, and the compute node runs something else (or
+    main.nf fails to parse hours later). Measured, all three, before this check
+    existed:
 
-      `'`    closes the `bash -c '…'` argument early. `awk '{print $1}'` renders
-             as `bash -c '… | awk '{print $1}' > …'` — the middle escapes the
-             quoting and is re-parsed by the outer shell.
       `\\`    Groovy processes escapes inside `\"\"\"…\"\"\"`, so `\\n` reaches the
              cluster as a REAL NEWLINE that splits the command in half and `\\t`
-             as a tab. The worst of the four: it can produce a plausible wrong
+             as a tab. The worst of the three: it can produce a plausible wrong
              answer rather than an error.
       `$x`   Groovy interpolates it. `$PWD` raises MissingPropertyException at
              run time; `$1` (every awk/sed field reference) is a PARSE error in
@@ -139,13 +140,13 @@ def _check_command_renders_faithfully(command: str, declared: set[str]) -> None:
     longer something a human can read, copy and re-run from a terminal — which
     is the ONLY reason this renderer exists rather than a Nextflow module library
     ([[project-nextflow-module-principles]]). A command that genuinely needs
-    quoting or shell variables belongs in a script baked into the image and
+    escapes or shell variables belongs in a script baked into the image and
     invoked here by name; that also makes it part of the frozen, validated
     artifact instead of a string typed at submit time.
 
     Deliberate locus asymmetry: `run_production._render_local_command` ACCEPTS
-    all four, because a local run shell-quotes into `run.sh` with no Groovy layer
-    in between and the command really does arrive intact. Do not "fix" the
+    all three, because a local run shell-quotes into `run.sh` with no Groovy
+    layer in between and the command really does arrive intact. Do not "fix" the
     inconsistency by loosening this side — the two loci differ in what they can
     faithfully carry, and the honest move is for each to refuse what it would
     otherwise corrupt.
@@ -154,15 +155,6 @@ def _check_command_renders_faithfully(command: str, declared: set[str]) -> None:
         raise ValueError(
             'command contains `\"\"\"`, which terminates main.nf\'s script block. '
             'Move it into a script baked into the image.')
-
-    if "'" in command:
-        raise ValueError(
-            "command contains a single quote. main.nf runs the command as "
-            "`bash -c '<command>'`, so the quote closes that argument early and "
-            "the remainder is re-parsed by the outer shell — the cluster would "
-            "run a DIFFERENT command than the one written here. Use double "
-            "quotes, or move the quoted fragment (awk/sed programs especially) "
-            "into a script baked into the image and call it by name.")
 
     if "\\" in command:
         raise ValueError(
@@ -541,8 +533,11 @@ def render_workflow(*,
         # dies "java: No such file or directory". --cleanenv makes validated ==
         # shipped hold at the env level: the container runs the environment we
         # sealed, immune to whatever the login node happens to export.
+        # The command is ONE shell-quoted `bash -c` argument. Groovy still interpolates
+        # `${params.x}` inside the quotes (it does not know shell quoting), and the
+        # resolved value lands inside them, where bash takes it literally.
         f"    apptainer exec {nv_flag}--cleanenv {bind_flags} ${{params.apptainer_sif}} "
-        f"bash -c '{script_body}'\n"
+        f"bash -c {shlex.quote(script_body)}\n"
         f"    \"\"\"\n"
         f"}}\n"
         f"\n"
