@@ -574,6 +574,21 @@ class TestReport:
         section = page.split("Across code revisions")[1].split("<h2>")[0]
         assert "<code>aaa1</code></td>" in section and "<code>bbb2</code> + uncommitted" in section
 
+    def test_the_revision_view_reads_as_time_oldest_first_and_dated(self, tmp_path):
+        """Two revisions of one experiment: the one whose first run is older comes first,
+        numbered r1, with the date of that run; a hash this checkout does not know stays a
+        bare hash with no commit column text."""
+        _write_run(tmp_path / "newer", meta={"code_rev": "bbb2", "started_at": "2026-10-09T18:00:00+00:00"})
+        _write_run(tmp_path / "older", meta={"code_rev": "aaa1", "started_at": "2026-10-08T06:00:00+00:00", "repeat": 2})
+        rows = metrics.load_rows([tmp_path])
+        page = report.render(rows, experiments.experiment_setups([tmp_path]))
+        section = page.split("Across code revisions")[1].split("<h2>")[0]
+        assert "<th>#</th><th>first run</th><th>code rev</th><th>runs</th>" in section
+        assert section.index("<code>aaa1</code>") < section.index("<code>bbb2</code>")
+        assert "2026-10-08 06:00 UTC" in section and "2026-10-09 18:00 UTC" in section
+        assert ">r1</td>" in section and ">r2</td>" in section
+        assert "code r1 aaa1 → r2 bbb2" in page           # the subtitle reads the same way
+
     def test_the_setup_names_conditions_that_varied_between_runs(self, tmp_path):
         _write_run(tmp_path / "a", meta={"model": "sonnet"})
         _write_run(tmp_path / "b", meta={"model": "sonnet", "repeat": 2, "prompt": "a different prompt",
@@ -887,15 +902,49 @@ class TestFigureLabels:
         return [{"experiment": f"scenario_{i:02d}", "model": model, "n": 1, "pass_at_1": 1.0 if i % 2 else 0.0,
                  "cost_usd_mean": 0.1, "cost_usd_sd": 0.0} for i in range(n)]
 
-    def test_bars_label_by_what_differs_and_turn_diagonal_when_crowded(self):
-        few = report._bars(self._groups(2), "cost_usd", "usd", "cost per run")
+    def _rows(self, n, model="sonnet", rev="aaa1", per_group=1, start="2026-10-08T06:00:00+00:00"):
+        return [{"experiment": f"scenario_{i:02d}", "model": model, "code_rev": rev, "code_dirty": False,
+                 "started_at": start, "run_id": f"{model}__r{k + 1}__x", "cost_usd": 0.1 + 0.05 * k}
+                for i in range(n) for k in range(per_group)]
+
+    def test_dots_label_by_what_differs_and_turn_diagonal_when_crowded(self):
+        few = report._dots(self._rows(2), "cost_usd", "usd", "cost per run")
         assert "scenario_00" in few and "sonnet</text>" not in few, "one model: the experiment is the label"
         assert "rotate(" not in few
-        many = report._bars(self._groups(12), "cost_usd", "usd", "cost per run")
-        assert many.count("rotate(-40") == 12, "twelve bars cannot carry upright labels"
-        by_model = report._bars([dict(g, experiment="one", model=m) for g, m in zip(self._groups(2), ("sonnet", "opus"))],
+        many = report._dots(self._rows(12), "cost_usd", "usd", "cost per run")
+        assert many.count("rotate(-40") == 12, "twelve slots cannot carry upright labels"
+        by_model = report._dots([dict(r, experiment="one", model=m) for r, m in zip(self._rows(2), ("sonnet", "opus"))],
                                 "cost_usd", "usd", "cost per run")
         assert "sonnet" in by_model and "opus" in by_model and "one</text>" not in by_model
+
+    def test_dots_show_every_run_and_a_box_from_four_runs(self):
+        """A bar hid the runs behind a mean; every run is a dot now, and the summary mark
+        grows with the evidence: nothing for one run, a median tick for two or three, the
+        interquartile box with the median line from four."""
+        one = report._dots(self._rows(1), "cost_usd", "usd", "cost per run")
+        assert one.count('class="pt"') == 1 and 'class="box"' not in one and 'class="med"' not in one
+        three = report._dots(self._rows(1, per_group=3), "cost_usd", "usd", "cost per run")
+        assert three.count('class="pt"') == 3 and 'class="box"' not in three and three.count('class="med"') == 1
+        five = report._dots(self._rows(1, per_group=5), "cost_usd", "usd", "cost per run")
+        assert five.count('class="pt"') == 5 and five.count('class="box"') == 1 and five.count('class="med"') == 1
+        assert "median" in five and "IQR" in five and "n=5" in five
+        # every dot has a hit area larger than the mark and names its run
+        assert five.count('class="hit"') == 5 and "sonnet__r3__x" in five
+
+    def test_dots_wear_the_experiment_colour_and_name_their_revision(self):
+        """Colour is the experiment's, the same across every panel; the code revision rides
+        on each dot's hover text, with the revisions numbered oldest first by first run."""
+        older = self._rows(2, rev="bbb2", start="2026-10-01T00:00:00+00:00")
+        newer = self._rows(2, rev="aaa1", start="2026-10-09T00:00:00+00:00")
+        dirty = [dict(r, code_dirty=True, run_id="d") for r in self._rows(1, rev="aaa1", start="2026-10-10T00:00:00+00:00")]
+        revs = report.revision_order(older + newer + dirty)
+        assert [(x["tag"], x["code_rev"], x["code_dirty"], x["runs"]) for x in revs] == \
+            [("r1", "bbb2", False, 2), ("r2", "aaa1", False, 2), ("r3", "aaa1", True, 1)]
+        svg = report._dots(older + newer + dirty, "cost_usd", "usd", "cost per run", revs)
+        assert svg.count(f'fill="{report._PALETTE[0]}"') == 1 + 3      # scenario_00: the mean bar and its three dots
+        assert svg.count(f'fill="{report._PALETTE[1]}"') == 1 + 2      # scenario_01: the mean bar and its two dots
+        assert "r1 bbb2" in svg and "r3 aaa1 + uncommitted" in svg
+        assert not hasattr(report, "_revision_legend"), "colour is the experiment's; no revision key is drawn"
 
     def test_scatter_labels_never_overlap_even_when_points_coincide(self):
         svg = report._scatter(self._groups(12))
