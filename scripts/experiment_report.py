@@ -15,9 +15,12 @@ metric glossary. Inline SVG, no plotting dependency, the same theme tokens as th
 """
 from __future__ import annotations
 
+import functools
 import html
 import json
 import math
+import statistics
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +38,7 @@ _CSS = """
   --ink:#e6e9f0;--muted:#8e98ad;
   --ok:#3ce086;--ok-bg:rgba(60,224,134,.14);--bad:#ff4b6e;--bad-bg:rgba(255,75,110,.14);
   --warn:#ffb02e;--code-bg:#0e1019;
+  --s0:#6b7280;--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#008300;--s7:#9085e9;--s8:#e66767;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 }
@@ -45,6 +49,7 @@ _CSS = """
   --ink:#1a2233;--muted:#5b6675;
   --ok:#1a7f4b;--ok-bg:rgba(26,127,75,.12);--bad:#c0304a;--bad-bg:rgba(192,48,74,.10);
   --warn:#9a6700;--code-bg:#eef2f7;
+  --s0:#9aa3b2;--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;--s5:#e87ba4;--s6:#008300;--s7:#4a3aa7;--s8:#e34948;
 }
 body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);padding:24px 16px 64px}
 main{max-width:1180px;margin:0 auto}
@@ -71,15 +76,106 @@ code{font:12px var(--mono);background:var(--code-bg);padding:1px 5px;border-radi
 .fig h3{font:600 13px/1.3 var(--sans);color:var(--ink);margin:0 0 6px}
 .fig svg{width:100%;height:auto;display:block}
 svg text{font:11px var(--mono);fill:var(--muted)}
-svg .lbl{fill:var(--ink)} svg .axis{stroke:var(--border)} svg .tick{stroke:var(--border);stroke-dasharray:2 3}
-svg .pt{stroke:var(--bg);stroke-width:1}
+svg .lbl{fill:var(--ink)} svg .axis{stroke:var(--border)} svg .tick{stroke:var(--border)}
+svg .pt{stroke:var(--surface);stroke-width:2}
+svg .box{fill:var(--ink);fill-opacity:.07;stroke:var(--muted)} svg .med{stroke:var(--ink);stroke-width:2}
+svg .hit{fill:transparent} svg g:hover .pt{stroke:var(--ink)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 18px;margin:4px 0 10px;color:var(--muted);font-size:12.5px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+td.c{max-width:36ch;overflow:hidden;text-overflow:ellipsis}
 details{margin:8px 0} summary{cursor:pointer;color:var(--muted)}
 .wrap{overflow-x:auto}
 .final{white-space:pre-wrap;font:12px var(--mono);color:var(--muted);max-width:70ch}
 @media (max-width:700px){body{padding:16px 16px 48px} .figs{grid-template-columns:1fr}}
 """
 
-_PALETTE = ("#22e3ee", "#fff200", "#3ce086", "#ff4b6e", "#b388ff", "#ffb02e", "#4fc3f7", "#f48fb1")
+_ROOT = Path(__file__).resolve().parents[1]
+_SLOTS = 8          # categorical colour slots; older revisions beyond them share one grey
+
+
+@functools.lru_cache(maxsize=None)
+def _commit_info(rev: str) -> tuple[str, str] | None:
+    """(date, subject) of a commit this checkout knows, else None — a revision from another
+    clone, or a fixture, stays a bare hash."""
+    if not rev:
+        return None
+    try:
+        r = subprocess.run(["git", "-C", str(_ROOT), "log", "-1", "--format=%cs%x1f%s", rev],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0 or "\x1f" not in r.stdout:
+        return None
+    date, subject = r.stdout.strip().split("\x1f", 1)
+    return date, subject
+
+
+def _short(text: str, n: int) -> str:
+    """`text` cut to about n characters at a word boundary, with an ellipsis."""
+    if len(text) <= n:
+        return text
+    cut = text[:n].rsplit(" ", 1)[0] if " " in text[:n] else text[:n]
+    return cut.rstrip(" ,;:—-") + "…"
+
+
+def _when(iso: str) -> str:
+    """An ISO timestamp as a reader scans it: 2026-10-09 18:37 UTC."""
+    if not iso:
+        return "—"
+    try:
+        d = datetime.fromisoformat(iso)
+        if d.tzinfo is not None:
+            d = d.astimezone(timezone.utc)
+        return d.strftime("%Y-%m-%d %H:%M UTC")
+    except ValueError:
+        return iso[:16]
+
+
+def revision_order(rows: list[dict]) -> list[dict]:
+    """The code revisions the runs span, OLDEST FIRST by the time of their first run: one
+    record per (code_rev, code_dirty) — the same commit with uncommitted changes is another
+    condition — with its ordinal (r1 is the oldest), the hash, the commit's date and
+    subject when this checkout knows them, the first and last run times, the run count and
+    its colour slot. Colour follows the revision: the newest eight revisions take the eight
+    slots in order and anything older shares slot 0 (grey), so adding a revision never
+    repaints the ones already on the page."""
+    seen: dict[tuple[str, bool], list[dict]] = {}
+    for r in rows:
+        seen.setdefault((str(r.get("code_rev") or ""), bool(r.get("code_dirty"))), []).append(r)
+    recs = []
+    for (rev, dirty), rs in seen.items():
+        starts = sorted(str(r.get("started_at") or "") for r in rs if r.get("started_at"))
+        info = _commit_info(rev)
+        recs.append({"code_rev": rev, "code_dirty": dirty, "short": (rev or "?")[:9],
+                     "first_run": starts[0] if starts else "", "last_run": starts[-1] if starts else "",
+                     "runs": len(rs), "commit_date": info[0] if info else "", "subject": info[1] if info else ""})
+    recs.sort(key=lambda x: (x["first_run"] or "9999", x["code_rev"], x["code_dirty"]))
+    n = len(recs)
+    for i, x in enumerate(recs):
+        x["ordinal"] = i + 1
+        x["tag"] = f"r{i + 1}"
+        x["slot"] = (i - (n - _SLOTS) + 1) if n > _SLOTS and i >= n - _SLOTS else (i + 1 if n <= _SLOTS else 0)
+        x["colour"] = f"var(--s{x['slot']})"
+        x["label"] = (f"{x['tag']} · {x['short']}" + (" + uncommitted" if x["code_dirty"] else "")
+                      + (f" · {x['commit_date']}" if x["commit_date"] else "")
+                      + (f" · {_short(x['subject'], 60)}" if x["subject"] else ""))
+    return recs
+
+
+def _revision_legend(revisions: list[dict]) -> str:
+    """The key to the revision colours, oldest first — present whenever two or more
+    revisions are on the page; a single revision needs none."""
+    if len(revisions) < 2:
+        return ""
+    items = []
+    if any(x["slot"] == 0 for x in revisions):
+        items.append(f'<span><span class="sw" style="background:var(--s0)"></span>earlier revisions</span>')
+    for x in revisions:
+        if x["slot"] == 0:
+            continue
+        items.append(f'<span><span class="sw" style="background:{x["colour"]}"></span>{_e(x["label"])}'
+                     f' <span class="note">({x["runs"]} run{"s" if x["runs"] != 1 else ""}, first {_e(_when(x["first_run"]))})</span></span>')
+    return '<div class="legend">' + "".join(items) + "</div>"
 
 
 def _e(x) -> str:
@@ -127,44 +223,62 @@ def _group_label(g: dict, exps: set, models: set) -> str:
     return f'{g["experiment"]} · {g["model"]}'
 
 
-def _bars(groups: list[dict], key: str, kind: str, title: str) -> str:
-    """One bar per group with the sd as a whisker. Labels turn diagonal once the
-    bars are too close for upright text."""
-    if not groups:
+def _dots(rows: list[dict], key: str, kind: str, title: str, revisions: list[dict] | None = None) -> str:
+    """Every run as a dot, one slot per group (experiment, or model when one experiment was
+    run by several), coloured by code revision — oldest revision first in the legend, and
+    oldest run leftmost within a slot. Four or more runs in a slot also carry a box (the
+    interquartile range) with the median line; two or three carry a median tick alone.
+    Labels turn diagonal once the slots are too close for upright text."""
+    if not rows:
         return ""
-    n = len(groups)
-    exps = {g["experiment"] for g in groups}
-    models = {g["model"] for g in groups}
-    labels = [_group_label(g, exps, models) for g in groups]
+    revisions = revisions if revisions is not None else revision_order(rows)
+    colour = {(x["code_rev"], x["code_dirty"]): x["colour"] for x in revisions}
+    tag = {(x["code_rev"], x["code_dirty"]): x["tag"] + " " + x["short"] + (" + uncommitted" if x["code_dirty"] else "")
+           for x in revisions}
+    keys = sorted({(r["experiment"], r["model"]) for r in rows})
+    exps = {e for e, _ in keys}
+    models = {m for _, m in keys}
+    labels = [_group_label({"experiment": e, "model": m}, exps, models) for e, m in keys]
+    n = len(keys)
     W, L, T = 520, 48, 12
     slot = (W - L - 10) / n
     diagonal = slot < 7 * max(len(x) for x in labels)
     B = 12 + (min(6.2 * max(len(x) for x in labels), 110) if diagonal else 14)
     H = int(T + 160 + B)
-    vals = [(g[f"{key}_mean"] or 0.0) for g in groups]
-    sds = [(g[f"{key}_sd"] or 0.0) for g in groups]
-    top = _nice_max(max(v + s for v, s in zip(vals, sds)) or 1.0)
-    bw = min(44, slot * 0.7)
-    palette = sorted(exps)
-    colour = {e: _PALETTE[i % len(_PALETTE)] for i, e in enumerate(palette)}
+    plot = H - T - B
+    value = lambda r: float(r.get(key) or 0.0)
+    top = _nice_max(max(value(r) for r in rows) or 1.0)
+    ypos = lambda v: H - B - plot * min(v / top, 1.0) if top else H - B
     out = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="{_e(title)}">']
     for i in range(5):
-        y = T + (H - T - B) * (1 - i / 4)
+        y = T + plot * (1 - i / 4)
         out.append(f'<line class="tick" x1="{L}" x2="{W - 6}" y1="{y:.1f}" y2="{y:.1f}"/>'
                    f'<text x="{L - 6}" y="{y + 4:.1f}" text-anchor="end">{_e(_fmt(top * i / 4, kind))}</text>')
-    for i, g in enumerate(groups):
-        v, s = vals[i], sds[i]
-        x = L + slot * i + (slot - bw) / 2
-        h = (H - T - B) * (v / top) if top else 0
-        y = H - B - h
-        out.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw:.1f}" height="{h:.1f}" fill="{colour[g["experiment"]]}" opacity=".85">'
-                   f'<title>{_e(g["experiment"])} · {_e(g["model"])}: {_e(_fmt(v, kind))} ± {_e(_fmt(s, kind))}</title></rect>')
-        if s:
-            cx = x + bw / 2
-            y1 = H - B - (H - T - B) * min((v + s) / top, 1)
-            y2 = H - B - (H - T - B) * max((v - s) / top, 0)
-            out.append(f'<line x1="{cx:.1f}" x2="{cx:.1f}" y1="{y1:.1f}" y2="{y2:.1f}" stroke="var(--ink)" opacity=".6"/>')
-        cx = x + bw / 2
+    for i, (e, m) in enumerate(keys):
+        rs = sorted((r for r in rows if r["experiment"] == e and r["model"] == m),
+                    key=lambda r: (str(r.get("started_at") or ""), str(r.get("run_id") or "")))
+        vals = [value(r) for r in rs]
+        cx = L + slot * (i + 0.5)
+        spread = min(slot * 0.3, 14.0)
+        if len(vals) >= 4:
+            q1, med, q3 = statistics.quantiles(vals, n=4)
+            bw = min(28.0, slot * 0.6)
+            out.append(f'<rect class="box" x="{cx - bw / 2:.1f}" y="{ypos(q3):.1f}" width="{bw:.1f}" '
+                       f'height="{max(ypos(q1) - ypos(q3), 1.0):.1f}" rx="2"><title>{_e(labels[i])}: median '
+                       f'{_e(_fmt(med, kind))}, IQR {_e(_fmt(q1, kind))}–{_e(_fmt(q3, kind))}, n={len(vals)}</title></rect>'
+                       f'<line class="med" x1="{cx - bw / 2:.1f}" x2="{cx + bw / 2:.1f}" y1="{ypos(med):.1f}" y2="{ypos(med):.1f}"/>')
+        elif len(vals) >= 2:
+            med = statistics.median(vals)
+            out.append(f'<line class="med" x1="{cx - 9:.1f}" x2="{cx + 9:.1f}" y1="{ypos(med):.1f}" y2="{ypos(med):.1f}">'
+                       f'<title>{_e(labels[i])}: median {_e(_fmt(med, kind))}, n={len(vals)}</title></line>')
+        for k, r in enumerate(rs):
+            x = cx + (0.0 if len(rs) == 1 else -spread + 2 * spread * k / (len(rs) - 1))
+            y = ypos(vals[k])
+            rk = (str(r.get("code_rev") or ""), bool(r.get("code_dirty")))
+            out.append(f'<g><title>{_e(e)} · {_e(m)} · {_e(tag.get(rk, rk[0][:9]))} · {_e(r.get("run_id") or "")}: '
+                       f'{_e(_fmt(vals[k], kind))}</title>'
+                       f'<circle class="hit" cx="{x:.1f}" cy="{y:.1f}" r="11"/>'
+                       f'<circle class="pt" cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="{colour.get(rk, "var(--s0)")}"/></g>')
         if diagonal:
             out.append(f'<text class="lbl" x="{cx:.1f}" y="{H - B + 12}" text-anchor="end" '
                        f'transform="rotate(-40 {cx:.1f} {H - B + 12})">{_e(labels[i])}</text>')
@@ -175,28 +289,45 @@ def _bars(groups: list[dict], key: str, kind: str, title: str) -> str:
 
 
 def _scatter(groups: list[dict]) -> str:
-    """Mean cost against pass@1, one point per group: the cost-accuracy view."""
+    """Mean cost against pass@1, one point per group: the cost-accuracy view. Cost is on
+    a log axis — a bootstrap question and a composed pipeline differ by two orders of
+    magnitude — and every point carries its name, so one hue serves them all."""
     judged = [g for g in groups if g["pass_at_1"] is not None]
     if not judged:
         return '<p class="note">No judged runs yet.</p>'
     W, H, L, B, T, R = 520, 260, 48, 40, 14, 24
-    xmax = _nice_max(max(g["cost_usd_mean"] or 0 for g in judged) or 1.0) * 1.15
+    costs = [max(g["cost_usd_mean"] or 0.0, 0.01) for g in judged]
+    lo = 10 ** math.floor(math.log10(min(costs)))
+    hi = 10 ** math.ceil(math.log10(max(costs) * 1.05))
+    if hi <= lo:
+        hi = lo * 10
+    span = math.log10(hi) - math.log10(lo)
+    xpos = lambda c: L + (W - L - R) * (math.log10(max(c, 0.01)) - math.log10(lo)) / span
     exps = sorted({g["experiment"] for g in judged})
-    colour = {e: _PALETTE[i % len(_PALETTE)] for i, e in enumerate(exps)}
     out = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="cost against success rate">']
     for i in range(5):
         y = T + (H - T - B) * (1 - i / 4)
         out.append(f'<line class="tick" x1="{L}" x2="{W - R}" y1="{y:.1f}" y2="{y:.1f}"/>'
                    f'<text x="{L - 6}" y="{y + 4:.1f}" text-anchor="end">{25 * i}%</text>')
-        x = L + (W - L - R) * i / 4
-        out.append(f'<text x="{x:.1f}" y="{H - B + 16}" text-anchor="middle">{_e(_fmt(xmax * i / 4, "usd"))}</text>')
+    # one tick per decade and at 2× and 5× within it: the labels a log axis is read by
+    decade = lo
+    while decade <= hi:
+        for m in (1, 2, 5):
+            c = decade * m
+            if lo <= c <= hi:
+                x = xpos(c)
+                out.append(f'<line class="tick" x1="{x:.1f}" x2="{x:.1f}" y1="{T}" y2="{H - B}"/>'
+                           f'<text x="{x:.1f}" y="{H - B + 16}" text-anchor="middle">{_e(_fmt(c, "usd"))}</text>')
+        decade *= 10
     out.append(f'<line class="axis" x1="{L}" x2="{W - R}" y1="{H - B}" y2="{H - B}"/>'
                f'<line class="axis" x1="{L}" x2="{L}" y1="{T}" y2="{H - B}"/>'
-               f'<text x="{(L + W - R) / 2:.1f}" y="{H - 6}" text-anchor="middle">mean cost per run</text>')
+               f'<text x="{(L + W - R) / 2:.1f}" y="{H - 6}" text-anchor="middle">mean cost per run (log scale)</text>')
     models = {g["model"] for g in judged}
     placed: list[tuple[float, float, float]] = []      # (x_left, x_right, y) of each label
+    points: list[str] = []
+    names: list[str] = []
     for g in sorted(judged, key=lambda g: (-(g["pass_at_1"] or 0), g["cost_usd_mean"] or 0)):
-        x = L + (W - L - R) * ((g["cost_usd_mean"] or 0) / xmax)
+        x = xpos(g["cost_usd_mean"] or 0.0)
         y = T + (H - T - B) * (1 - g["pass_at_1"])
         r = 5 + 2 * math.sqrt(g["n"])
         label = _group_label(g, set(exps), models)
@@ -211,10 +342,11 @@ def _scatter(groups: list[dict]) -> str:
         while any(abs(ly - py) < 12 and x0 < px1 and x1 > px0 for px0, px1, py in placed):
             ly += step
         placed.append((x0, x1, ly))
-        out.append(f'<circle class="pt" cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="{colour[g["experiment"]]}" opacity=".9">'
-                   f'<title>{_e(g["experiment"])} · {_e(g["model"])}: pass@1 {_e(_fmt(g["pass_at_1"], "pct"))}, '
-                   f'{_e(_fmt(g["cost_usd_mean"], "usd"))}/run, n={g["n"]}</title></circle>'
-                   f'<text class="lbl" x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}">{_e(label)}</text>')
+        points.append(f'<circle class="pt" cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="var(--s1)" opacity=".9">'
+                      f'<title>{_e(g["experiment"])} · {_e(g["model"])}: pass@1 {_e(_fmt(g["pass_at_1"], "pct"))}, '
+                      f'{_e(_fmt(g["cost_usd_mean"], "usd"))}/run, n={g["n"]}</title></circle>')
+        names.append(f'<text class="lbl" x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}">{_e(label)}</text>')
+    out += points + names          # every point under every name: a later point never covers a label
     out.append("</svg>")
     return "\n".join(out)
 
@@ -380,21 +512,37 @@ def _tripped_table(groups: list[dict]) -> str:
     return "\n".join(parts)
 
 
-def _revisions_table(rows: list[dict]) -> str:
-    """One row per (experiment, code revision): the same prompt put to the system as it
-    changed. The numbers that move when the system improves: pass@1, cost, the context
-    re-read per call (cache read), tool calls, ToolSearch calls, shell fallbacks, refusals
-    and breakages."""
+def _revisions_table(rows: list[dict], revisions: list[dict] | None = None) -> str:
+    """One row per (experiment, code revision), the revisions OLDEST FIRST within each
+    experiment by the time of their first run — the same prompt put to the system as it
+    changed, read top to bottom as time. `#` is the revision's ordinal across the page (r1 is
+    the oldest), `first run` when that revision first ran this experiment, `commit` the
+    commit's date and subject when this checkout knows it. The numbers that move when the
+    system improves: pass@1, cost, the context re-read per call (cache read), tool calls,
+    ToolSearch calls, shell fallbacks, refusals and breakages."""
+    revisions = revisions if revisions is not None else revision_order(rows)
+    byrev = {(x["code_rev"], x["code_dirty"]): x for x in revisions}
     groups = aggregate(rows, by=("experiment", "code_rev", "code_dirty"))
-    head = ("experiment", "code rev", "runs", "models", "pass@1", "cost/run", "cache read", "peak ctx", "api calls",
-            "tool calls", "mcp", "search", "shell", "refused", "broke", "wall")
+    def first_run(g):
+        starts = [str(r.get("started_at") or "") for r in rows
+                  if r["experiment"] == g["experiment"] and str(r.get("code_rev") or "") == (g["code_rev"] or "")
+                  and bool(r.get("code_dirty")) == bool(g["code_dirty"]) and r.get("started_at")]
+        return min(starts) if starts else ""
+    ordered = sorted(groups, key=lambda g: (g["experiment"], byrev.get((g["code_rev"] or "", bool(g["code_dirty"])), {}).get("ordinal", 0)))
+    head = ("experiment", "#", "first run", "code rev", "commit", "runs", "models", "pass@1", "cost/run", "cache read",
+            "peak ctx", "api calls", "tool calls", "mcp", "search", "shell", "refused", "broke", "wall")
     body = []
-    for g in groups:
+    for g in ordered:
+        x = byrev.get((g["code_rev"] or "", bool(g["code_dirty"])), {})
         p = g["pass_at_1"]
         cls = "na" if p is None else ("ok" if p >= 0.999 else ("bad" if p == 0 else ""))
+        commit = (f'{_e(x.get("commit_date") or "")} {_e(_short(x.get("subject") or "", 48))}'.strip()) or "—"
         body.append("<tr>" + "".join([
             f'<td class="l">{_e(g["experiment"])}</td>',
+            f'<td class="l"><span class="sw" style="background:{x.get("colour", "var(--s0)")}"></span>{_e(x.get("tag", "?"))}</td>',
+            f'<td class="l">{_e(_when(first_run(g)))}</td>',
             f'<td class="l"><code>{_e((g["code_rev"] or "?")[:9])}</code>{" + uncommitted" if g["code_dirty"] else ""}</td>',
+            f'<td class="l c" title="{_e(x.get("subject") or "")}">{commit}</td>',
             f'<td>{g["n"]}</td>',
             f'<td class="l">{_e(", ".join(g["models"]))}</td>',
             f'<td class="{cls}">{_e(_fmt(p, "pct"))}</td>',
@@ -412,8 +560,10 @@ def _revisions_table(rows: list[dict]) -> str:
         ]) + "</tr>")
     return ('<div class="wrap"><table><thead><tr>' + "".join(f"<th>{_e(h)}</th>" for h in head)
             + "</tr></thead><tbody>" + "".join(body) + "</tbody></table></div>"
-            "<p class='note'>Means over every run of the experiment at that revision, all models together. A revision "
-            "marked <i>+ uncommitted</i> had changes beyond the commit, so two runs at it may not have run the same code.</p>")
+            "<p class='note'>Within each experiment the revisions read top to bottom as time: r1 is the oldest revision on "
+            "this page, dated by its first run. Means over every run of the experiment at that revision, all models "
+            "together. A revision marked <i>+ uncommitted</i> had changes beyond the commit, so two runs at it may not "
+            "have run the same code.</p>")
 
 
 def _glossary() -> str:
@@ -556,7 +706,7 @@ def render(rows: list[dict], setups: dict[str, list[dict]] | None = None, title:
     groups = aggregate(rows)
     exps = sorted({r["experiment"] for r in rows})
     versions = sorted({r.get("claude_code_version", "") for r in rows if r.get("claude_code_version")})
-    revs = sorted({r.get("code_rev", "") for r in rows if r.get("code_rev")})
+    revisions = revision_order(rows)
     parts = [
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>",
         "<meta name='viewport' content='width=device-width,initial-scale=1'>",
@@ -564,7 +714,7 @@ def render(rows: list[dict], setups: dict[str, list[dict]] | None = None, title:
         "<button class='toggle' onclick=\"var r=document.documentElement;r.dataset.theme=r.dataset.theme==='light'?'cyber':'light'\">theme</button>",
         f"<h1>{_e(title)}</h1>",
         f"<p class='sub'>{len(rows)} runs · {len(groups)} groups · experiments: {_e(', '.join(exps) or '—')} · "
-        f"Claude Code {_e(', '.join(versions) or '?')} · code {_e(', '.join(r[:9] for r in revs) or '?')} · "
+        f"Claude Code {_e(', '.join(versions) or '?')} · code {_e(' → '.join(x['tag'] + ' ' + x['short'] for x in revisions) or '?')} · "
         f"rendered {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</p>",
     ]
     parts.append(_setup_section(setups or {}, rows))
@@ -574,16 +724,18 @@ def render(rows: list[dict], setups: dict[str, list[dict]] | None = None, title:
         "artifacts the run wrote, never on what the model said. Token columns: nearly all input is served from the prompt "
         "cache, so <i>in (uncached)</i> is small by design; <i>cache read</i> is the context re-read on every call and "
         "the cost driver; <i>cache write</i> is what was added to the cache; <i>peak ctx</i> is the largest single request.</p>",
-        "<h2>Across code revisions</h2>", _revisions_table(rows),
+        "<h2>Across code revisions</h2>", _revisions_table(rows, revisions),
         "<h2>Cost against success</h2>",
-        "<div class='figs'><div class='fig'><h3>pass@1 by mean cost per run (point size: n)</h3>", _scatter(groups), "</div>",
+        "<div class='figs'><div class='fig'><h3>pass@1 by mean cost per run, log cost (point size: n)</h3>", _scatter(groups), "</div>",
         "<div class='fig'><h3>MCP outcomes per run, by class</h3>", _stacked_outcomes(groups), "</div></div>",
-        "<h2>Efficiency by model</h2><div class='figs'>",
-        "<div class='fig'><h3>cost per run</h3>", _bars(groups, "cost_usd", "usd", "cost per run"), "</div>",
-        "<div class='fig'><h3>output tokens</h3>", _bars(groups, "output_tokens", "k", "output tokens"), "</div>",
-        "<div class='fig'><h3>tool calls</h3>", _bars(groups, "tool_calls", "num", "tool calls"), "</div>",
-        "<div class='fig'><h3>wall time</h3>", _bars(groups, "wall_ms", "ms", "wall time"), "</div>",
-        "</div><p class='note'>Whiskers: one standard deviation across repeats.</p>",
+        "<h2>Efficiency by model</h2>", _revision_legend(revisions), "<div class='figs'>",
+        "<div class='fig'><h3>cost per run</h3>", _dots(rows, "cost_usd", "usd", "cost per run", revisions), "</div>",
+        "<div class='fig'><h3>output tokens</h3>", _dots(rows, "output_tokens", "k", "output tokens", revisions), "</div>",
+        "<div class='fig'><h3>tool calls</h3>", _dots(rows, "tool_calls", "num", "tool calls", revisions), "</div>",
+        "<div class='fig'><h3>wall time</h3>", _dots(rows, "wall_ms", "ms", "wall time", revisions), "</div>",
+        "</div><p class='note'>One dot per run, coloured by the code revision it ran on (the key above, oldest first); "
+        "within a slot the oldest run is leftmost. A box is the middle half of the runs (interquartile range) with the "
+        "median line, drawn from four runs; two or three runs carry the median tick alone. Hover a dot for its run.</p>",
         "<h2>Runs</h2>", _runs_table(rows),
         "<h2>What tripped the agent</h2>", _tripped_table(groups),
         "<h2>Metrics</h2>", _glossary(),
