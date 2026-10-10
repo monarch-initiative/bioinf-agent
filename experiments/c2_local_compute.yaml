@@ -2,6 +2,7 @@
 # run it in production through the compute tools (stage, transfer, run_production) rather
 # than by hand. Judged by the `sealed` rule; the production leg is read off the
 # run_production and transfer outcome codes in the runs table.
+corpus: A
 name: c2_local_compute
 tier: C2
 prompt: |

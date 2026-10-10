@@ -170,6 +170,7 @@ def _dots(rows: list[dict], key: str, kind: str, title: str, revisions: list[dic
     Four or more runs in a slot also carry the interquartile box with the median line; two
     or three carry a median tick alone. Labels turn diagonal once the slots are too close
     for upright text."""
+    rows = [r for r in rows if r.get(key) is not None]     # a killed run has no cost to plot
     if not rows:
         return ""
     revisions = revisions if revisions is not None else revision_order(rows)
@@ -683,6 +684,25 @@ def render(rows: list[dict], setups: dict[str, list[dict]] | None = None, title:
         "</main></body></html>",
     ]
     return "\n".join(parts)
+
+
+def render_index(corpora: list[dict], title: str = "Agent experiments") -> str:
+    """The page above the corpus pages: one row per corpus — its experiments, runs, pass
+    rate, the revisions it has run on and when it last ran — linking to its report."""
+    rows = []
+    for c in corpora:
+        rows.append("<tr>" + "".join([
+            f'<td class="l"><a href="{_e(c["href"])}">{_e(c["corpus"])}</a></td>',
+            f'<td>{c["experiments"]}</td>', f'<td>{c["runs"]}</td>',
+            f'<td>{_e(_fmt(c["pass_at_1"], "pct"))}</td>', f'<td>{c["revisions"]}</td>',
+            f'<td class="l">{_e(c["last_run"])}</td>']) + "</tr>")
+    return (f"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{_e(title)}</title>"
+            f"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><style>{_CSS}"
+            f"a{{color:var(--cyan);text-decoration:none;font-weight:600}} a:hover{{text-decoration:underline}}</style></head>"
+            f"<body><main><h1>{_e(title)}</h1><p class=\"muted\">One page per corpus; the table across code "
+            f"revisions on each page never mixes corpora.</p><table><thead><tr><th>corpus</th><th>experiments</th>"
+            f"<th>runs</th><th>pass@1</th><th>revisions</th><th>last run</th></tr></thead><tbody>"
+            + "".join(rows) + "</tbody></table></main></body></html>")
 
 
 def write_report(rows: list[dict], out_dir: Path, setups: dict[str, list[dict]] | None = None,

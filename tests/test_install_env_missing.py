@@ -77,3 +77,11 @@ def test_a_broke_install_names_its_cause():
     r = env_tools._install_outcome({"returncode": 1, "stderr": "x\n", "error": "already said"}, "x.ok", "x.failed")
     assert r["error"] == "already said"
     assert env_tools._install_outcome({"returncode": 0, "stderr": "warn\n"}, "x.ok", "x.failed")["outcome"] == "proven"
+
+
+def test_running_in_a_missing_env_is_refused_with_the_create_call(monkeypatch, tmp_path):
+    monkeypatch.setattr(ms._env_mgr, "envs_dir", tmp_path / "envs")
+    (tmp_path / "envs" / "have_this").mkdir(parents=True)
+    r = ms._env_mgr.run_in_env("no_such_env", "echo hi")
+    assert r["outcome"] == "refused" and r["code"] == "env_manager.run_env_missing"
+    assert r["existing_envs"] == ["have_this"] and "create_conda_env(env_name='no_such_env')" in r["remedy"]

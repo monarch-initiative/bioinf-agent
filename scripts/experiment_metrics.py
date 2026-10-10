@@ -57,6 +57,10 @@ POLLING_TOOLS = ("check_job", "cluster_job_status", "globus_task_status", "list_
 #: exercise, so a seal reached by another route does not pass as that scenario.
 SUCCESS_RULES = ("completed", "frozen", "sealed", "pipeline", "refused", "declined", "asked")
 
+#: The three primitives whose proven/degraded return means an env was frozen: the
+#: container-native build, the authors' published image, and the authors' Dockerfile.
+FREEZE_TOOLS = ("freeze", "freeze_from_image", "build_env_from_authors_recipe")
+
 #: Phrases that put a request to the user without a question mark.
 REQUEST_MARKERS = ("action required", "please provide", "please share", "once you share",
                    "once you provide", "once you supply", "let me know", "i need you to",
@@ -77,6 +81,7 @@ TIER_DEFAULT_RULE = {"C0": "completed", "C1": "sealed", "C2": "sealed", "C3": "p
 METRIC_COLUMNS: tuple[tuple[str, str], ...] = (
     ("experiment", "experiment name"),
     ("tier", "C0 bootstrap · C1 one tool · C2 recipe · C3 composed pipeline"),
+    ("corpus", "the corpus the definition belongs to (its `corpus` key, else its directory)"),
     ("model", "model as requested"),
     ("model_id", "model the API answered as"),
     ("repeat", "repeat index within the experiment"),
@@ -93,7 +98,8 @@ METRIC_COLUMNS: tuple[tuple[str, str], ...] = (
     ("env_report", "an ENV report was written"),
     ("run_report", "a RUN report was written"),
     ("pipeline_rendered", "a pipeline directory with main.nf was rendered"),
-    ("cost_usd", "dollars at API list price (Claude Code's own figure)"),
+    ("cost_usd", "dollars at API list price (Claude Code's own figure); absent when the session "
+                 "was killed before it reported one"),
     ("input_tokens", "uncached input tokens"),
     ("output_tokens", "output tokens"),
     ("cache_read_tokens", "input tokens served from the prompt cache"),
@@ -287,7 +293,7 @@ def _tool_stats(tx: dict) -> dict:
                     code_classes[code] = outcome
                     if outcome == "refused":
                         refusal_codes[code] = refusal_codes.get(code, 0) + 1
-                if terminal_tool == "freeze" and outcome in ("proven", "degraded"):
+                if terminal_tool in FREEZE_TOOLS and outcome in ("proven", "degraded"):
                     frozen = True
             else:
                 outcomes["mcp_unstated"] += 1
@@ -384,6 +390,23 @@ def _rule_holds(rule: str, row: dict) -> bool:
 # The row
 # ---------------------------------------------------------------------------
 
+def corpus_of(meta: dict) -> str:
+    """The corpus a run belongs to: what the run recorded, else the definition's `corpus`
+    key read from the file the run names as its source, else that file's directory."""
+    if meta.get("corpus"):
+        return str(meta["corpus"])
+    src = Path(str(meta.get("source") or ""))
+    if src.is_file():
+        try:
+            import yaml
+            d = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+            if isinstance(d, dict) and d.get("corpus"):
+                return str(d["corpus"])
+        except Exception:
+            pass
+    return src.parent.name or "uncategorised"
+
+
 def parse_run(run_dir: Path) -> dict:
     """One run directory (experiment.json + transcript.jsonl + workspace/) → one row."""
     run_dir = Path(run_dir)
@@ -409,6 +432,7 @@ def parse_run(run_dir: Path) -> dict:
     row: dict[str, Any] = {
         "experiment": meta.get("name", ""),
         "tier": meta.get("tier", ""),
+        "corpus": corpus_of(meta),
         "model": meta.get("model", ""),
         "model_id": model_id,
         "repeat": meta.get("repeat", 0),
@@ -425,7 +449,7 @@ def parse_run(run_dir: Path) -> dict:
         "env_report": ws["env_report"],
         "run_report": ws["run_report"],
         "pipeline_rendered": ws["pipeline_rendered"],
-        "cost_usd": float(res.get("total_cost_usd") or 0.0),
+        "cost_usd": float(res["total_cost_usd"]) if res.get("total_cost_usd") is not None else None,
         "input_tokens": usage["input_tokens"],
         "output_tokens": usage["output_tokens"],
         "cache_read_tokens": usage["cache_read_input_tokens"],
@@ -471,7 +495,10 @@ def load_rows(experiment_dirs: list[Path], reparse: bool = False) -> list[dict]:
                 continue
             mj = run / "metrics.json"
             if mj.exists() and not reparse:
-                rows.append(json.loads(mj.read_text(encoding="utf-8")))
+                row = json.loads(mj.read_text(encoding="utf-8"))
+                if "corpus" not in row:      # a row written before corpora were recorded
+                    row["corpus"] = corpus_of(json.loads((run / "experiment.json").read_text(encoding="utf-8")))
+                rows.append(row)
             else:
                 row = parse_run(run)
                 write_row(run, row)
@@ -524,10 +551,12 @@ def aggregate(rows: list[dict], by: tuple[str, ...] = ("experiment", "model")) -
                              "pass_pow_k": pass_pow_k(n, c, n) if n else None, "k": n}
         g.update({k: v for k, v in zip(by, key) if k not in g})
         for key in _MEANED:
-            vals = [float(r[key]) for r in rs]
+            vals = [float(r[key]) for r in rs if r.get(key) is not None]
             g[f"{key}_mean"] = statistics.fmean(vals) if vals else None
             g[f"{key}_sd"] = statistics.pstdev(vals) if len(vals) > 1 else 0.0
-        g["cost_of_pass"] = (g["cost_usd_mean"] / g["pass_at_1"]) if g["pass_at_1"] else None
+        g["cost_unreported"] = sum(1 for r in rs if r.get("cost_usd") is None)
+        g["cost_of_pass"] = ((g["cost_usd_mean"] / g["pass_at_1"])
+                             if g["pass_at_1"] and g["cost_usd_mean"] is not None else None)
         codes: dict[str, int] = {}
         for r in rs:
             for code, k in (r.get("refusal_codes") or {}).items():

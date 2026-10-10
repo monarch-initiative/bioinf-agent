@@ -3,6 +3,7 @@
 # Dockerfile, freeze that), judged by the `frozen` rule with the freeze pinned. Trips to look
 # for: a conda reconstruction attempted first, the ref left floating, the reference bundles
 # downloaded "to be safe", the CLI proven by an import rather than by running it.
+corpus: B-installs
 name: h_talos
 tier: C1
 success: frozen

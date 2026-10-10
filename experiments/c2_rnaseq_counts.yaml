@@ -2,6 +2,7 @@
 # a THREADS slot and a strandedness slot, proven on three samples. Trips to look for: the
 # GTF slice done outside a recorded step (provenance lost), the index built on the host,
 # the how-to hard-coding -p 4, an output written outside the output slot.
+corpus: A
 name: c2_rnaseq_counts
 tier: C2
 prompt: |

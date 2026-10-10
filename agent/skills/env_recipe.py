@@ -59,7 +59,8 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
                    build_method: str = "container-native-build",
                    adopt_image: str = "",
                    dockerfile_source: Optional[dict] = None,
-                   built_commands: Optional[list[dict]] = None) -> dict[str, Any]:
+                   built_commands: Optional[list[dict]] = None,
+                   image_origin: str = "") -> dict[str, Any]:
     """Assemble the self-contained recipe from a draft + the freeze args. Carries the
     install_steps subset (which holds every non-conda install_method, incl. synthesized
     commands + provenance + commit) verbatim, so a rebuild needs nothing else.
@@ -73,10 +74,23 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
     `build_method` selects how the env was produced, so the recipe REPRESENTS every
     freeze scenario (not just container-native builds):
       • container-native-build — conda/pip + the non-conda tiers, baked into an image.
-      • adopt                   — a published BioContainer pulled BY DIGEST (`adopt_image`).
+      • adopt                   — an existing image adopted as it is: a published image
+                                  pulled BY DIGEST (`adopt_image`), or a local one.
       • authors-dockerfile      — the tool's OWN Dockerfile at a pinned source commit
-                                  (`dockerfile_source`: {repo, commit, tag, dockerfile?}).
-    A recipe ALWAYS exists regardless of path; the human renderer branches on this."""
+                                  (`dockerfile_source`: {repo, commit, tag, recipe_path,
+                                  build_args, platform, dockerfile, patches}).
+    A recipe ALWAYS exists regardless of path; the human renderer branches on this.
+
+    `dockerfile_source.patches` is the list of exact substitutions the executor applied to
+    the checkout before the build — [{file, find, replace, reason, sha256_before,
+    sha256_after}]. Carried verbatim: a rebuild from the pinned commit must re-apply them
+    to get the Dockerfile that was actually built, and a recipe that dropped them would
+    claim an unmodified source.
+
+    `image_origin` is where an adopted image came from, as the freeze observed it:
+    `registry` (pullable, pinned by manifest digest), `local` (a tag in the local daemon
+    whose build this record did not observe), or `built` (built under this record by the
+    authors-dockerfile executor). Written only when the producer observed it."""
     draft = draft or {}
     return {
         "recipe_version": RECIPE_VERSION,
@@ -114,8 +128,14 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
         ],
         # adopt: the biocontainer ref (image@sha256:…) the recipe pulls by digest.
         "adopt_image": adopt_image or "",
-        # authors-dockerfile: the pinned source the Dockerfile builds against.
-        "dockerfile_source": dict(dockerfile_source) if dockerfile_source else {},
+        # authors-dockerfile: the pinned source the Dockerfile builds against, with the
+        # patches list copied so the recipe and the record never share one mutable list.
+        "dockerfile_source": ({**dockerfile_source,
+                               **({"patches": [dict(p) for p in dockerfile_source["patches"]]}
+                                  if isinstance(dockerfile_source.get("patches"), list) else {})}
+                              if dockerfile_source else {}),
+        # where an adopted image came from (registry | local | built), when observed.
+        **({"image_origin": image_origin} if image_origin else {}),
         "accelerator": accelerator,
         "license_gated": bool(license_gated),
         "licenses": list(licenses or []),

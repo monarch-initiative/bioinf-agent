@@ -1,6 +1,7 @@
 # C0 — the bootstrap tier: a fresh session finds the server and reads the system's state,
 # including a compute env it has never seen. Judged by the `completed` rule (the session
 # ended cleanly and the bioinf server answered).
+corpus: A
 name: c0_status
 tier: C0
 prompt: |

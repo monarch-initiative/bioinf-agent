@@ -148,6 +148,18 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
             k: v for k, v in (("repo", ds.get("repo")), ("commit", ds.get("commit")),
                               ("tag", ds.get("tag")), ("recipe_path", ds.get("recipe_path")),
                               ("build_args", ds.get("build_args"))) if v}
+        # THE EDITS TO THE AUTHORS' SOURCE. A build from `commit` plus these substitutions
+        # is what produced the subject; a provenance that named the commit alone would
+        # describe a Dockerfile that was never built. Each patch is marked agent-authored:
+        # the executor applied it, nobody upstream wrote it, and a verifier must weigh it
+        # as the requester's input rather than as the authors' recipe.
+        patches = [p for p in (ds.get("patches") or []) if isinstance(p, dict)]
+        if patches:
+            source["authors_recipe"]["patches"] = [
+                {**{k: p.get(k) for k in ("file", "find", "replace", "reason",
+                                            "sha256_before", "sha256_after") if k in p},
+                 "authored_by": "agent"}
+                for p in patches]
     if r.get("image_by_digest"):
         source["adopted_image"] = r["image_by_digest"]
 
@@ -165,6 +177,11 @@ def build_attestation(record: dict, *, base_image: str = "") -> dict[str, Any]:
                 "base_image": base_image,
                 "build_method": r.get("build_method", ""),
                 "mode": r.get("mode", ""),
+                # Where an adopted image came from, as the freeze observed it: `registry`
+                # (pullable, pinned by manifest digest), `local` (a tag in one daemon whose
+                # build this record did not observe), `built` (built under this record).
+                # Absent when the producer did not observe it, never blanked.
+                **({"image_origin": r["image_origin"]} if r.get("image_origin") else {}),
                 "validation_locus": r.get("validation_locus", ""),
                 "honesty_contract": guarantees,
                 # ...and what the contract did NOT examine. A verifier reading only the

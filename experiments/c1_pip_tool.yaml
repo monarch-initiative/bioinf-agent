@@ -1,6 +1,7 @@
 # C1 — the pip tier: a tool whose home is PyPI, proven on reads from the corpus. Trips to
 # look for: routing to conda against the stated request, an adapter sequence invented
 # rather than read, outputs written where the step cannot see them.
+corpus: A
 name: c1_pip_tool
 tier: C1
 prompt: |

@@ -1042,8 +1042,17 @@ class ToolIdentity(BaseModel):
     registry package in the image gets `self_description: None` and honest silence, never
     a borrowed identity.
 
+    Identity by NAME is not identity. When the record knows the tool's own repository
+    (the authors' Dockerfile source, or the image's source label), a same-named registry
+    package whose homepage / project URLs / source repo point somewhere ELSE is a name
+    collision: its description is withheld (`self_description: None`) and the collision
+    is stated in `collision`, so a reader is told "a same-named package exists elsewhere"
+    rather than handed the other project's words.
+
     Same seam discipline as `ShippedBinary`: `extra="forbid"` + NO fabricating defaults —
-    every field REQUIRED, `None` a value the producer must STATE. Validated at BOTH ends
+    every disclosure field REQUIRED, `None` a value the producer must STATE. `collision`
+    and `note` default to `None` only so records written before they existed still parse;
+    `capture()` states both on every record it writes. Validated at BOTH ends
     (`EnvCache.register` on write, `check_build` WELL_FORMED on serve)."""
     model_config = ConfigDict(extra="forbid")
 
@@ -1055,8 +1064,9 @@ class ToolIdentity(BaseModel):
     """The package's OWN one-line words, verbatim from the registry (conda `about.summary`,
     PyPI `Summary`). `None` = NOT CAPTURED — either the tool ships from a non-registry tier
     (binary/source/jar: there is no registry blurb) or the published entry carried none, or
-    the freeze-time probe failed. Absence is a fact; readers render it as "(no self-
-    description)", never as an empty capability claim."""
+    the freeze-time probe failed, or the registry hit was a name collision (see
+    `collision`). Absence is a fact; readers render it as "(no self-description)", never
+    as an empty capability claim."""
 
     source: Optional[str]
     """Which registry the description was read from and which the shipped package came from:
@@ -1069,6 +1079,39 @@ class ToolIdentity(BaseModel):
 
     version: Optional[str]
     """The installed version of `package`, from the in-image SBOM. `None` when unmatched."""
+
+    collision: Optional["IdentityCollision"] = None
+    """Set when a same-named registry package points at a DIFFERENT project than the
+    repository the record knows for this tool. `None` = no collision was detected (either
+    the registry entry anchors to the known repository, or no repository was known to
+    check against)."""
+
+    note: Optional[str] = None
+    """One plain sentence a reader needs beside the fields above — today, that a same-
+    named package exists elsewhere, or that the registry entry could not be tied to the
+    known repository. `None` when nothing needs saying."""
+
+
+class IdentityCollision(BaseModel):
+    """A same-named package in a registry that is NOT the tool the record knows. Carried
+    on `ToolIdentity.collision` so the ENV report can say what it is, instead of showing
+    that other project's description under this tool's name."""
+    model_config = ConfigDict(extra="forbid")
+
+    registry: str = Field(min_length=1)
+    """The registry that holds the same-named package: `conda` | `pypi`."""
+
+    points_at: str = Field(min_length=1)
+    """Where that registry entry's own metadata points — its homepage, source repository
+    or project page. This is the other project, named so a reader can see it is not the
+    one the record was built from."""
+
+    known_repo: str = Field(min_length=1)
+    """The repository the record knows for this tool, as it was known (a URL or
+    `owner/repo`) — what the registry entry failed to point at."""
+
+
+ToolIdentity.model_rebuild()
 
 
 def tool_identities(record: dict) -> list[ToolIdentity]:

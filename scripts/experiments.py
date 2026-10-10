@@ -68,7 +68,7 @@ import yaml  # noqa: E402
 
 from agent.skills import compute_access, workspace  # noqa: E402
 from experiment_metrics import SUCCESS_RULES, TIER_DEFAULT_RULE, aggregate, load_rows, parse_run, write_row  # noqa: E402
-from experiment_report import write_report  # noqa: E402
+from experiment_report import render_index, write_report  # noqa: E402
 
 TIERS = ("C0", "C1", "C2", "C3")
 SHAREABLE = ("resources", "envs", "projects_access")
@@ -88,6 +88,7 @@ DEFAULTS = {
     "timeout_s": 3600,
     "memory": False,
     "notes": "",
+    "corpus": None,
 }
 REQUIRED = ("name", "tier", "prompt", "models")
 KNOWN = set(REQUIRED) | set(DEFAULTS)
@@ -107,6 +108,8 @@ def load_experiment(path: Path) -> dict:
     if missing or unknown:
         raise ExperimentError(f"{path}: missing {missing}, unknown {unknown}; known keys are {sorted(KNOWN)}")
     exp = {**DEFAULTS, **d}
+    # The corpus a definition belongs to: its own `corpus` key, else the directory it sits in.
+    exp["corpus"] = str(exp["corpus"] or Path(path).resolve().parent.name)
     if exp["tier"] not in TIERS:
         raise ExperimentError(f"{path}: tier {exp['tier']!r} is not one of {TIERS}")
     if not isinstance(exp["models"], list) or not all(isinstance(m, str) and m for m in exp["models"]):
@@ -248,6 +251,57 @@ def _docker(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["docker", *args], capture_output=True, text=True)
 
 
+def _job_alive(pid: int) -> bool:
+    """Is the job's process still running? A zombie (exited, not yet reaped by its parent)
+    counts as gone — the work has stopped."""
+    try:
+        import psutil
+        return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+
+def stop_live_jobs(jobs_dir: Path, grace_s: float = 10.0) -> list[str]:
+    """Stop every job a killed run left running. A session's detached jobs survive the
+    session by design; a run the runner killed must not keep building after it, or the
+    docker cleanup that follows misses the images they finish. Each job the run's own
+    status files call `running` gets SIGTERM then SIGKILL on its process group, and its
+    status file says the runner killed it."""
+    stopped: list[str] = []
+    jobs_dir = Path(jobs_dir)
+    for sf in sorted(jobs_dir.glob("*.status.json")) if jobs_dir.is_dir() else []:
+        try:
+            d = json.loads(sf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if d.get("state") != "running":
+            continue
+        pgid = int(d.get("pgid") or d.get("pid") or 0)
+        if pgid <= 0:
+            continue
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(pgid, sig)
+            except (ProcessLookupError, PermissionError):
+                break
+            t = time.monotonic()
+            while time.monotonic() - t < grace_s and _job_alive(int(d.get("pid") or pgid)):
+                time.sleep(0.2)
+            if not _job_alive(int(d.get("pid") or pgid)):
+                break
+        d.update({"state": "killed", "killed_by": "the experiment runner, at the run's timeout",
+                  "end_time_iso": datetime.now(timezone.utc).isoformat()})
+        sf.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
+        stopped.append(str(d.get("job_id") or sf.name.removesuffix(".status.json")))
+    return stopped
+
+
 def docker_snapshot() -> dict:
     return {"image": _docker_ids("image"), "container": _docker_ids("container"), "tags": _docker_tags()}
 
@@ -336,7 +390,7 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
         "isolation": isolation_of(exp, access),
         "budget_usd": exp["budget_usd"], "timeout_s": exp["timeout_s"], "effort": exp["effort"],
         "allowed_tools": exp["allowed_tools"], "disallowed_tools": exp["disallowed_tools"],
-        "notes": exp["notes"], "source": exp["source"],
+        "notes": exp["notes"], "source": exp["source"], "corpus": exp["corpus"],
         "prompt": exp["prompt"], "command": cmd, "env_overrides": overrides,
         "workspace": str(run_dir / "workspace"), "cwd": str(ROOT),
         "code_rev": _git(["rev-parse", "HEAD"]), "code_dirty": bool(_git(["status", "--porcelain"])),
@@ -359,6 +413,7 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
             except Exception:
                 os.killpg(proc.pid, signal.SIGKILL)
                 rc = proc.wait()
+            meta["jobs_stopped"] = stop_live_jobs(run_dir / "workspace" / "scratch" / "jobs")
     meta.update({"ended_at": datetime.now(timezone.utc).isoformat(),
                  "wall_ms": int((time.monotonic() - t0) * 1000), "returncode": rc})
     if before is not None:
@@ -367,10 +422,14 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
 
     row = parse_run(run_dir)
     write_row(run_dir, row)
-    print(f"   {'ok ' if row['success'] else 'no '} success={row['success']} cost=${row['cost_usd']:.3f} "
+    cost = f"${row['cost_usd']:.3f}" if row["cost_usd"] is not None else "unreported"
+    print(f"   {'ok ' if row['success'] else 'no '} success={row['success']} cost={cost} "
           f"tool_calls={row['tool_calls']} mcp={row['mcp_calls']} refused={row['mcp_refused']} "
           f"broke={row['mcp_broke']} wall={row['wall_ms'] / 1000:.0f}s"
           f"{' TIMED OUT' if meta['timed_out'] else ''}{f' rc={rc}' if rc else ''}", flush=True)
+    if meta.get("jobs_stopped"):
+        print(f"   stopped {len(meta['jobs_stopped'])} job(s) the killed session left running: "
+              f"{', '.join(meta['jobs_stopped'])}", flush=True)
     cl = meta.get("cleanup_result")
     if cl:
         print(f"   cleanup: {len(cl['images_removed'])} images, {len(cl['containers_removed'])} containers removed"
@@ -400,8 +459,9 @@ def print_scoreboard(rows: list[dict]) -> None:
     for g in aggregate(rows):
         pct = lambda v: "—" if v is None else f"{100 * v:.0f}%"   # noqa: E731
         usd = lambda v: "—" if v is None else f"{v:.2f}"          # noqa: E731
+        run_cost = "—" if g["cost_usd_mean"] is None else f"{g['cost_usd_mean']:.3f}"
         print(f"{g['experiment'][:18]:<18} {g['model'][:10]:<10} {g['n']:>2} {pct(g['pass_at_1']):>6} "
-              f"{pct(g['pass_pow_k']):>6} {g['cost_usd_mean']:>7.3f} {usd(g['cost_of_pass']):>7} "
+              f"{pct(g['pass_pow_k']):>6} {run_cost:>7} {usd(g['cost_of_pass']):>7} "
               f"{g['output_tokens_mean']:>8.0f} {g['tool_calls_mean']:>5.1f} {g['mcp_calls_mean']:>4.1f} "
               f"{g['tool_search_calls_mean']:>4.1f} {g['mcp_refused_mean']:>6.1f} {g['wall_ms_mean'] / 1000:>5.0f}s")
 
@@ -434,17 +494,53 @@ def cmd_run(a: argparse.Namespace) -> int:
     return 0
 
 
+def write_corpus_reports(rows: list[dict], dirs: list[Path], root: Path, title: str) -> dict[str, Path]:
+    """One report per corpus under `root/<corpus>/`, and `root/index.html` above them. A
+    corpus is read off each row, so the cross-revision table of one corpus never carries
+    another's runs."""
+    by_corpus: dict[str, list[dict]] = {}
+    for r in rows:
+        by_corpus.setdefault(str(r.get("corpus") or "uncategorised"), []).append(r)
+    pages: dict[str, Path] = {}
+    index: list[dict] = []
+    for corpus in sorted(by_corpus):
+        crows = by_corpus[corpus]
+        names = {r["experiment"] for r in crows}
+        cdirs = [d for d in dirs if d.name in names]
+        pages[corpus] = write_report(crows, root / corpus, experiment_setups(cdirs), title=f"{title} — {corpus}")
+        judged = [r for r in crows if r.get("success") is not None]
+        index.append({
+            "corpus": corpus, "href": f"{corpus}/report.html", "experiments": len(names), "runs": len(crows),
+            "pass_at_1": (sum(1 for r in judged if r["success"]) / len(judged)) if judged else None,
+            "revisions": len({r.get("code_rev") for r in crows}),
+            "last_run": max((str(r.get("started_at") or "") for r in crows), default="")[:16].replace("T", " "),
+        })
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "index.html").write_text(render_index(index, title), encoding="utf-8")
+    return pages
+
+
 def cmd_report(a: argparse.Namespace) -> int:
-    dirs = [Path(d) for d in a.experiment_dirs] or sorted(
+    explicit = [Path(d) for d in a.experiment_dirs]
+    dirs = explicit or sorted(
         p for p in workspace.experiments_dir().iterdir() if p.is_dir() and not p.name.startswith("_"))
     rows = load_rows(dirs, reparse=a.reparse)
     if not rows:
         print("no runs found under " + ", ".join(str(d) for d in dirs), file=sys.stderr)
         return 1
-    out = Path(a.out) if a.out else (dirs[0] if len(dirs) == 1 else workspace.experiments_dir() / "_report")
-    page = write_report(rows, out, experiment_setups(dirs), title=a.title)
-    print_scoreboard(rows)
-    print(f"report: {page}")
+    if explicit or a.out:
+        out = Path(a.out) if a.out else (dirs[0] if len(dirs) == 1 else workspace.experiments_dir() / "_report")
+        page = write_report(rows, out, experiment_setups(dirs), title=a.title)
+        print_scoreboard(rows)
+        print(f"report: {page}")
+        return 0
+    root = workspace.experiments_dir() / "_report"
+    pages = write_corpus_reports(rows, dirs, root, a.title)
+    for corpus, page in pages.items():
+        print(f"\n== corpus {corpus}")
+        print_scoreboard([r for r in rows if str(r.get("corpus") or "uncategorised") == corpus])
+        print(f"report: {page}")
+    print(f"index: {root / 'index.html'}")
     return 0
 
 

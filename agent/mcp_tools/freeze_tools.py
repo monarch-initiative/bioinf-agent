@@ -881,8 +881,18 @@ def verify_env_recipe(recipe_path: str) -> dict:
         # by digest and confirm it still resolves to the recorded digest (no build).
         img = recipe.get("adopt_image") or ""
         if not img:
+            # A LOCAL image is the usual reason: it was never pulled from a registry, so
+            # there is no reference to re-pull and nothing this check could compare.
+            local = recipe.get("image_origin") == "local"
             return refused("freeze.recipe_adopt_no_image", success=False,
-                           error="adopt recipe has no adopt_image to re-pull")
+                           image_origin=recipe.get("image_origin") or "",
+                           error=("this env adopted a local image whose build the record did "
+                                  "not observe: it has no registry digest to re-pull and no "
+                                  "recorded build to re-run, so nothing can be verified here. "
+                                  "To get a verifiable record, build it with "
+                                  "build_env_from_authors_recipe (patches= for any fix the "
+                                  "Dockerfile needs)" if local else
+                                  "adopt recipe has no adopt_image to re-pull"))
         pull = subprocess.run(["docker", "pull", img], capture_output=True, text=True, timeout=1800)
         # The REGISTRY MANIFEST digest — the thing `expected` actually is (an adopt's
         # content_digest is the biocontainer's published manifest digest, visible right
@@ -909,10 +919,15 @@ def verify_env_recipe(recipe_path: str) -> dict:
         ds = recipe.get("dockerfile_source") or {}
         pin = ds.get("commit") or ""
         missing = [n for n, v in (("repo", ds.get("repo")), ("commit", pin)) if not v]
+        # The patches the build applied to the pinned source. A rebuild from the commit
+        # alone builds a different Dockerfile; the explanation has to say so, with the count.
+        patches = [p for p in (ds.get("patches") or []) if isinstance(p, dict)]
+        n_patches = len(patches)
         return refused(
             "freeze.recipe_verify_unavailable", success=False, content_digest_match=None,
             expected_content_digest=expected,
             verifiable=not missing,
+            patches_recorded=n_patches,
             error=(f"this recipe cannot be verified by rebuild: its source is unpinned "
                    f"(missing {', '.join(missing)}), so there is nothing to rebuild FROM"
                    if missing else
@@ -923,8 +938,16 @@ def verify_env_recipe(recipe_path: str) -> dict:
                    f"ref={pin or '?'!r}"
                    + (f", recipe={ds['recipe_path']!r}" if ds.get("recipe_path") else "")
                    + (f", build_args={ds['build_args']!r}" if ds.get("build_args") else "")
-                   + ") and compare the tools' evidence output. A generic conda rebuild does "
-                     "not apply to this env.")
+                   + (f", patches=<the {n_patches} recorded patch"
+                      f"{'es' if n_patches != 1 else ''}>" if n_patches else "")
+                   + ") and compare the tools' evidence output."
+                   + (f" The {n_patches} recorded patch{'es' if n_patches != 1 else ''} "
+                      f"(dockerfile_source.patches: "
+                      + ", ".join(str(p.get("file") or "?") for p in patches)
+                      + ") would have to be re-applied to the pinned source first — the "
+                        "Dockerfile that was built is the commit plus those edits."
+                      if n_patches else "")
+                   + " A generic conda rebuild does not apply to this env.")
 
     res = _ms._env_recipe.rebuild_from_recipe(recipe)
     # Outcome is runtime-conditional: only a rebuild that SUCCEEDED and converged
@@ -1013,16 +1036,13 @@ def freeze_from_image(
     name: str,
     version: str = "",
     platform: str = "linux/amd64",
-    build_method: str = "adopt-image",
-    dockerfile_source: dict = {},
     gated: bool = False,
     licenses: OptStrList = None,
 ) -> dict:
-    """Freeze an env from an EXISTING image — the authors' OWN published image, or one
-    built from their Dockerfile — instead of reconstructing it from conda/pip. This is
-    the executor for the authors-recipe-first path (route via resolve_tool's `author_image`
-    tier): a human handed a tool that ships its own image would USE it, and so does the
-    agent, as a first-class primitive.
+    """Freeze an env from an EXISTING image — the authors' OWN published image — instead
+    of reconstructing it from conda/pip. This is the executor for the authors-recipe-first
+    path (route via resolve_tool's `author_image` tier): a human handed a tool that ships
+    its own image would USE it, and so does the agent, as a first-class primitive.
 
     The honesty contract is UNCHANGED — the image earns its registration:
       BUILT (image+digest resolve) · VALIDATED_IN_IMAGE (each tool's evidence RUNS green
@@ -1030,20 +1050,26 @@ def freeze_from_image(
       the guard the Talos reconstruction slipped past — so `tools[*].evidence` must RUN the
       tool (shell out on real inputs), not merely import it.
 
+    THE IMAGE IS ADOPTED, ITS BUILD IS NOT CLAIMED. The record states where the image came
+    from as the freeze observed it (`image_origin`): `registry` — pulled from a registry
+    and pinned by its manifest digest, which anyone can re-pull; `local` — a tag that was
+    already in the local daemon with no registry digest, so its build was not observed and
+    the record says so. An image you built outside the record is adopted with its build
+    unobserved; nothing here accepts a build method or a Dockerfile source from the
+    caller, because those are observations only the build that made them can write. To
+    build from the authors' Dockerfile — including a fix the Dockerfile needs — use
+    build_env_from_authors_recipe(patches=…), which records the build and the fix together.
+
     `tools`: [{name, evidence}] — evidence is a command that exercises the tool in-image
-    and exits 0. `build_method`: 'adopt-image' (author image, adopted by digest) or
-    'authors-dockerfile' (an image built from their Dockerfile; pass `dockerfile_source`=
-    {repo, commit, tag} so the recipe records the pinned source). Writes the four Layer-1
-    deliverables (ENV.html, attestation.json, recipe.yaml, recipe.md) rendered PURELY from
-    the verified record. Docker required."""
+    and exits 0. Writes the four Layer-1 deliverables (ENV.html, attestation.json,
+    recipe.yaml, recipe.md) rendered PURELY from the verified record. Docker required."""
     _stop = _image_build_preflight()
     if _stop:
         return _stop
     from agent.skills import freeze_from_image as _ffi
     return _compact_freeze_response(_ffi.freeze_from_image(
         image=image, tools=[dict(t) for t in tools], name=name, version=version,
-        platform=platform, build_method=build_method,
-        dockerfile_source=dict(dockerfile_source) if dockerfile_source else None,
+        platform=platform,
         gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
         env_dir=_workspace.env_dir(name)))
@@ -1060,6 +1086,7 @@ def build_env_from_authors_recipe(
     version: str = "",
     platform: str = "linux/amd64",
     build_args: dict = {},
+    patches: list = [],
     gated: bool = False,
     licenses: OptStrList = None,
 ) -> dict:
@@ -1074,8 +1101,21 @@ def build_env_from_authors_recipe(
     `ref` (PIN a tag/commit — a bare default branch drifts), `docker build`s its `recipe`
     (default 'Dockerfile') for `platform`, then hands the built image to freeze_from_image
     (honesty contract + deliverables). `tools`: [{name, evidence}] — evidence must RUN each
-    tool in-image. The recipe records the pinned source so the build is reproducible.
-    Docker + git (+ network for a remote repo) required."""
+    tool in-image. The recipe records the pinned source — repo, resolved commit, Dockerfile
+    path, build args, and every patch — so the build is reproducible.
+
+    `patches`: [{file, find, replace, reason}] — the honest way to fix an authors' recipe
+    that does not build as published (a Dockerfile missing `git`, a moved download URL).
+    Each patch is one exact substitution applied to the checkout after the pinned ref is
+    checked out and before `docker build`: `find` must occur EXACTLY once in `file`
+    (zero → refused `authors_recipe.patch_no_match`; several → `authors_recipe.patch_ambiguous`,
+    widen `find` until it names one place). The fix is recorded WITH the build — file,
+    find, replace, reason, the file's sha256 before and after — in the recipe, the
+    attestation and the ENV report, so the record never claims an unmodified Dockerfile
+    and a rebuild knows what to re-apply. Patch only what the build needs and say why in
+    `reason`; building a patched copy by hand and freezing the result would instead adopt
+    an image whose build nothing observed. Docker + git (+ network for a remote repo)
+    required."""
     # Guard BEFORE the git clone (which happens inside build_from_authors_recipe),
     # so a docker-down machine is told "docker unavailable", never "clone failed".
     _stop = _image_build_preflight()
@@ -1085,6 +1125,7 @@ def build_env_from_authors_recipe(
     return _compact_freeze_response(_ffi.build_from_authors_recipe(
         repo=repo, tools=[dict(t) for t in tools], name=name, recipe=recipe, ref=ref,
         version=version, platform=platform, build_args=dict(build_args or {}),
+        patches=list(patches or []),
         gated=gated, licenses=list(licenses or []),
         env_cache=_ms._env_cache,
         env_dir=_workspace.env_dir(name)))

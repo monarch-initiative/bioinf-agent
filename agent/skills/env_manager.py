@@ -671,6 +671,14 @@ class EnvManager:
         watch_dir: str | None = None,
     ) -> dict[str, Any]:
         env_path = self.envs_dir / env_name
+        if not env_path.exists():
+            # The refusal keeps a run result's shape: callers read returncode and the
+            # streams off every answer, and a step record is built from them.
+            r = self.env_missing_refusal("env_manager.run_env_missing", env_name)
+            r.update(returncode=127, stdout="", stderr=r["error"], command=command, runtime_seconds=0.0,
+                     resource_usage={"wall_seconds": 0.0, "peak_rss_mb": 0.0, "max_cpu_percent": 0.0},
+                     inputs=inputs or [], detected_outputs=[])
+            return r
 
         watch = Path(watch_dir) if watch_dir else (Path(working_dir) if working_dir else None)
         before = self._snapshot(watch)

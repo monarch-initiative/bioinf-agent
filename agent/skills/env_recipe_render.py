@@ -443,6 +443,24 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
     return out
 
 
+def _image_origin(recipe: dict, record: Optional[dict]) -> str:
+    """`registry` | `local` | `built` | "" — where an adopted image came from, as the
+    freeze observed it. The recipe's copy first (it travels alone), then the record's."""
+    return str(recipe.get("image_origin") or (record or {}).get("image_origin") or "")
+
+
+#: What a LOCAL adopt image means for the reader, said once and quoted wherever the
+#: image is shown. Plain words, because this is the sentence that stops a hand-built
+#: image from passing as a provenance.
+_LOCAL_ORIGIN_NOTE = (
+    "> **A local image whose build this record did not observe.** The image was already "
+    "in the local daemon when it was frozen; nothing in this record saw how it was made, "
+    "so this recipe can vouch for what the image CONTAINS (the validated tools and the "
+    "SBOM below) but not for how to build it again. To record a build, use "
+    "`build_env_from_authors_recipe` — with `patches=` if the authors' Dockerfile needs a "
+    "fix — so the fix is written down beside the build instead of applied by hand.")
+
+
 def _section_adopt(recipe: dict, record: Optional[dict]) -> list[str]:
     img = recipe.get("adopt_image") or ""
     name = recipe.get("name", "env")
@@ -464,6 +482,8 @@ def _section_adopt(recipe: dict, record: Optional[dict]) -> list[str]:
                 "omitted rather than guessed. Deliver this env via the `.sif`/tarball "
                 "route instead, or re-freeze against a pushed image to get a pinnable "
                 "recipe.", ""]
+        if _image_origin(recipe, record) == "local":
+            out += [_LOCAL_ORIGIN_NOTE, ""]
         return out
     out += ["This env maps to a published image, so the recipe is simply pulling it BY "
             "DIGEST (content-addressed — the digest guarantees identical bytes) and "
@@ -534,6 +554,34 @@ def _section_authors(recipe: dict, record: Optional[dict]) -> list[str]:
         pin += (" Build args are pinned above — without them the Dockerfile's own `ARG`"
                 " defaults apply, which is a DIFFERENT image.")
     out += [pin + " The Dockerfile is included alongside this recipe for inspection.", ""]
+    out += _patches_block(ds)
+    return out
+
+
+def _patches_block(ds: dict) -> list[str]:
+    """The edits applied to the authors' source before the build — one entry per patch:
+    the file, the reason, and the literal substitution. Rendered whenever the source
+    carries patches, so a reader rebuilding from the pinned commit knows the Dockerfile
+    that was built is NOT the one at that commit, and exactly how it differs. An authors
+    build with no patches renders nothing here: the pin above is then the whole story."""
+    patches = [p for p in (ds.get("patches") or []) if isinstance(p, dict)]
+    if not patches:
+        return []
+    n = len(patches)
+    out = [f"### Patches applied to the authors' source ({n})", "",
+           f"The checkout above was edited before `docker build` — {n} exact "
+           f"substitution{'s' if n != 1 else ''}, written by the agent, recorded here so the "
+           "build is reproducible: re-apply each one to the pinned commit before building. "
+           "The sha256 values are of the whole file before and after the edit.", ""]
+    for i, p in enumerate(patches, 1):
+        file = str(p.get("file") or "(file not recorded)")
+        reason = str(p.get("reason") or "(no reason recorded)")
+        out += [f"**{i}. `{_md_inline(file)}`** · {_md_inline(reason)}", ""]
+        out += _fence([f"--- find", str(p.get("find") or ""), f"+++ replace",
+                       str(p.get("replace") or "")], lang="diff")
+        sb, sa = p.get("sha256_before") or "", p.get("sha256_after") or ""
+        if sb or sa:
+            out += [f"sha256 before `{_short(sb)}` → after `{_short(sa)}`", ""]
     return out
 
 
@@ -619,8 +667,18 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
     if ver:
         L += [f"| **Requested version** | {_md_inline(ver)} (as requested — see the "
               f"observed-installed table below for what shipped) |"]
+    L += [f"| **Build method** | `{method}` |"]
+    origin = _image_origin(recipe, record)
+    if origin:
+        # One line a reader sees before any command: whether this image is something
+        # anyone can pull, something this record built, or something it only found.
+        origin_said = {
+            "registry": "registry — pulled from a registry and pinned by its manifest digest",
+            "local": "local — a local image whose build this record did not observe",
+            "built": "built — built under this record from the authors' Dockerfile",
+        }.get(origin, origin)
+        L += [f"| **Image origin** | {origin_said} |"]
     L += [
-          f"| **Build method** | `{method}` |",
           f"| **Platform** | `{platform}` |",
           f"| **Content digest** | `{_short(content_digest)}` |", ""]
     L += ["> This recipe is rendered **purely from the verified freeze record** — every "
@@ -692,7 +750,8 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
     # Prefer the recipe's copy (travels with the reproduction bytes); fall back to the record.
     idents = _tool_identities(recipe) or _tool_identities(record)
     described = [i for i in idents if i.self_description]
-    if described:
+    collided = [i for i in idents if i.collision is not None]
+    if described or collided:
         L += ["**What each tool says it is** — *self-described, unverified.* Each line is the "
               "package's OWN one-line description from the registry it shipped from: a claim to "
               "READ, not a validated capability. It is here so a wrong-domain match is catchable "
@@ -700,6 +759,14 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
         for i in described:
             src = f" _({i.source})_" if i.source else ""
             L += [f"- `{i.tool}`{src}: {_md_inline(i.self_description)}"]
+        # A NAME COLLISION IS STATED AS ONE. The same-named registry package points at a
+        # different project than the one this env was built from, so its words are not
+        # this tool's words: name the collision, never print the other project's blurb.
+        for i in collided:
+            c = i.collision
+            L += [f"- `{i.tool}` _({c.registry})_: **name collision** — a same-named "
+                  f"{c.registry} package exists elsewhere ({_md_inline(c.points_at)}); "
+                  f"it is not {_md_inline(c.known_repo)}, so its description is withheld."]
         L += [""]
 
     L += _verify_section(method, content_digest, recipe)
@@ -740,10 +807,13 @@ def _verify_section(method: str, content_digest: str, recipe: dict) -> list[str]
                 "content-address check on identical bytes, NOT a from-source rebuild."]
     elif method in _AUTHORS_METHODS:
         ds = recipe.get("dockerfile_source") or {}
+        n_patches = len([p for p in (ds.get("patches") or []) if isinstance(p, dict)])
         rebuild = ", ".join(
             f"{k}={v!r}" for k, v in (("repo", ds.get("repo")), ("ref", ds.get("commit")))
             if v
         )
+        if rebuild and n_patches:
+            rebuild += ", patches=<the recorded patches>"
         out += ["- **From-source convergence: there is no digest check for this env, and "
                 "`verify_env_recipe` will say so rather than run one.** An authors-Dockerfile "
                 "build is not bit-reproducible — apt mirrors, timestamps and upstream tags all "
@@ -751,6 +821,8 @@ def _verify_section(method: str, content_digest: str, recipe: dict) -> list[str]
                 "correct. To reproduce it by hand, re-run "
                 + (f"`build_env_from_authors_recipe({rebuild})`" if rebuild
                    else "`build_env_from_authors_recipe(...)` with the repo and ref recorded above")
+                + (f" — the {n_patches} recorded patch{'es' if n_patches != 1 else ''} above "
+                   f"would have to be re-applied to the pinned source first" if n_patches else "")
                 + " and compare the tools' evidence output."]
     else:
         out += ["- **From-source convergence:** run `verify_env_recipe` against the machine "

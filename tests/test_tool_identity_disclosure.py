@@ -240,3 +240,217 @@ def test_attestation_places_identity_in_internal_not_resolved_deps():
     bd = att["predicate"]["buildDefinition"]
     assert len(bd["internalParameters"]["tool_identities"]) == 1
     assert "Translate Spreadsheet Cell Ranges" not in str(bd["resolvedDependencies"])
+
+
+# ── 5. identity by NAME is not identity — the known-source anchor ────────────────
+#
+# When the record knows the tool's repository (the authors' Dockerfile source, the image's
+# source label), a same-named registry hit is adopted only if the registry's own metadata
+# points at that repository. Otherwise the description is withheld and the collision is
+# stated — the reader is told a same-named package exists elsewhere, never handed the
+# other project's words. PyPI's `talos` is a Keras hyper-parameter sweep library; an env
+# built from populationgenomics/talos must not be described by it.
+
+from agent.models.core_data import IdentityCollision
+
+_TALOS_SBOM = [{"name": "talos", "version": "12.2.0", "kind": "pypi"}]
+_OTHER_TALOS = {"available": True,
+                "summary": "Reproducible parameter sweeps for Keras, TensorFlow and PyTorch",
+                "home_page": "https://github.com/autonomio/talos",
+                "project_urls": {"Homepage": "https://autonom.io"},
+                "package_url": "https://pypi.org/project/talos/"}
+_KNOWN = "https://github.com/populationgenomics/talos"
+
+
+def _pypi(monkeypatch, probe_for_name):
+    from agent.skills import resolver as R
+    monkeypatch.setattr(R, "probe_pypi", lambda name, timeout=12: probe_for_name(name))
+    monkeypatch.setattr(R, "probe_conda", lambda name, timeout=12: {"available": False})
+
+
+def test_a_same_named_pypi_package_pointing_elsewhere_is_a_collision(monkeypatch):
+    _pypi(monkeypatch, lambda n: _OTHER_TALOS)
+    idn = TI.capture(["talos"], _TALOS_SBOM, known_sources={"talos": _KNOWN})[0]
+    assert idn["self_description"] is None, "the other project's blurb must not be adopted"
+    # the install tie is still a fact: this package IS what shipped
+    assert idn["source"] == "pypi" and idn["package"] == "talos" and idn["version"] == "12.2.0"
+    assert idn["collision"] == {"registry": "pypi",
+                                "points_at": "https://github.com/autonomio/talos",
+                                "known_repo": _KNOWN}
+    assert idn["note"] == ("a same-named pypi package `talos` exists elsewhere "
+                           "(https://github.com/autonomio/talos); it is not "
+                           f"{_KNOWN}, so its description is withheld")
+    ToolIdentity.model_validate(idn)
+
+
+def test_a_registry_hit_anchored_to_the_known_repo_is_adopted(monkeypatch):
+    _pypi(monkeypatch, lambda n: dict(_OTHER_TALOS, summary="Rare-disease variant prioritisation",
+                                      home_page=_KNOWN))
+    idn = TI.capture(["talos"], _TALOS_SBOM, known_sources={"talos": _KNOWN})[0]
+    assert idn["self_description"] == "Rare-disease variant prioritisation"
+    assert idn["collision"] is None and idn["note"] is None
+
+
+def test_the_anchor_reads_project_urls_case_insensitively(monkeypatch):
+    """A `Source` project URL in a different case, with `.git`, still anchors; the
+    homepage pointing at a docs site elsewhere does not turn it into a collision."""
+    _pypi(monkeypatch, lambda n: dict(_OTHER_TALOS, summary="the real one",
+                                      home_page="https://talos-docs.example.org",
+                                      project_urls={"Source": "https://github.com/PopulationGenomics/Talos.git"}))
+    idn = TI.capture(["talos"], _TALOS_SBOM, known_sources={"talos": "populationgenomics/talos"})[0]
+    assert idn["self_description"] == "the real one" and idn["collision"] is None
+
+
+def test_a_collision_points_at_the_source_url_before_the_homepage(monkeypatch):
+    """`points_at` names where the OTHER project lives, so the most specific URL wins:
+    a repository URL over a marketing homepage over the registry's own project page."""
+    _pypi(monkeypatch, lambda n: dict(_OTHER_TALOS, home_page="https://autonom.io",
+                                      project_urls={"Repository": "https://github.com/autonomio/talos"}))
+    idn = TI.capture(["talos"], _TALOS_SBOM, known_sources={"talos": _KNOWN})[0]
+    assert idn["collision"]["points_at"] == "https://github.com/autonomio/talos"
+
+
+def test_a_collision_falls_back_to_the_registry_project_page(monkeypatch):
+    _pypi(monkeypatch, lambda n: dict(_OTHER_TALOS, home_page="", project_urls={}))
+    idn = TI.capture(["talos"], _TALOS_SBOM, known_sources={"talos": _KNOWN})[0]
+    assert idn["collision"]["points_at"] == "https://pypi.org/project/talos/"
+
+
+def test_the_known_source_is_scoped_to_its_own_tool(monkeypatch):
+    """The repo builds talos; pysam beside it has its own home. Only the tool the source
+    is tied to is checked against it — the other keeps its install-tied description."""
+    _pypi(monkeypatch, lambda n: {"available": True, "summary": f"PYPI::{n}",
+                                  "home_page": f"https://github.com/elsewhere/{n}",
+                                  "project_urls": {}})
+    sbom = _TALOS_SBOM + [{"name": "pysam", "version": "0.22", "kind": "pypi"}]
+    ids = {i["tool"]: i for i in TI.capture(["talos", "pysam"], sbom,
+                                             known_sources={"talos": _KNOWN})}
+    assert ids["talos"]["collision"] is not None and ids["talos"]["self_description"] is None
+    assert ids["pysam"]["collision"] is None and ids["pysam"]["self_description"] == "PYPI::pysam"
+
+
+def test_a_conda_hit_whose_recipe_repo_differs_is_a_collision(monkeypatch):
+    """conda's probe exposes the recipe's own GitHub repo (`repo`, from dev_url/home);
+    a different repo than the known one is the collision, pointing at that repo."""
+    from agent.skills import resolver as R
+    monkeypatch.setattr(R, "probe_conda", lambda name, timeout=12: {
+        "available": True, "summary": "Cluster analysis (base R)", "repo": "cran/cluster"})
+    sbom = [{"name": "cluster", "version": "2.1.4", "kind": "conda"}]
+    idn = TI.capture(["cluster"], sbom, known_sources={"cluster": "someone/cluster"})[0]
+    assert idn["self_description"] is None
+    assert idn["collision"] == {"registry": "conda", "points_at": "https://github.com/cran/cluster",
+                                "known_repo": "someone/cluster"}
+
+
+def test_a_conda_hit_whose_recipe_repo_matches_is_adopted(monkeypatch):
+    from agent.skills import resolver as R
+    monkeypatch.setattr(R, "probe_conda", lambda name, timeout=12: {
+        "available": True, "summary": "SAM utils", "repo": "samtools/samtools"})
+    idn = TI.capture(["samtools"], _SBOM, known_sources={"samtools": "git@github.com:samtools/samtools.git"})[0]
+    assert idn["self_description"] == "SAM utils" and idn["collision"] is None
+
+
+def test_a_hit_with_no_urls_cannot_be_tied_and_is_withheld_without_claiming_a_collision(fake_registry):
+    """Nothing points anywhere, so no collision is asserted — but a blurb that cannot be
+    tied to the known project is a guess, and the record says why it is withheld."""
+    idn = TI.capture(["samtools"], _SBOM, known_sources={"samtools": "samtools/samtools"})[0]
+    assert idn["self_description"] is None
+    assert idn["collision"] is None
+    assert idn["note"] == ("the conda package `samtools` publishes no homepage or repository, "
+                           "so it cannot be tied to samtools/samtools; its description is withheld")
+    ToolIdentity.model_validate(idn)
+
+
+def test_no_known_source_means_the_sbom_tie_is_the_anchor(monkeypatch):
+    """Unchanged behaviour when nothing is known: the install-tied summary is disclosed,
+    and the renders label it unverified as they always did."""
+    _pypi(monkeypatch, lambda n: _OTHER_TALOS)
+    idn = TI.capture(["talos"], _TALOS_SBOM)[0]
+    assert idn["self_description"] == _OTHER_TALOS["summary"]
+    assert idn["collision"] is None and idn["note"] is None
+
+
+def test_known_sources_with_blank_entries_are_ignored(monkeypatch):
+    _pypi(monkeypatch, lambda n: _OTHER_TALOS)
+    idn = TI.capture(["talos"], _TALOS_SBOM, known_sources={"talos": "", "": "x/y"})[0]
+    assert idn["collision"] is None and idn["self_description"] == _OTHER_TALOS["summary"]
+
+
+@pytest.mark.parametrize("known,needles", [
+    ("populationgenomics/talos",
+     ["github.com/populationgenomics/talos", "populationgenomics.github.io/talos"]),
+    ("https://github.com/PopulationGenomics/Talos.git",
+     ["github.com/populationgenomics/talos", "populationgenomics.github.io/talos"]),
+    ("git@github.com:populationgenomics/talos.git",
+     ["github.com/populationgenomics/talos", "populationgenomics.github.io/talos"]),
+    ("https://gitlab.com/group/proj.git/", ["gitlab.com/group/proj"]),
+    ("git@gitlab.com:group/proj.git", ["gitlab.com/group/proj"]),
+    ("", []),
+    ("   ", []),
+])
+def test_repo_needles_normalise_every_spelling_of_a_repository(known, needles):
+    assert TI._repo_needles(known) == needles
+
+
+def test_the_collision_model_is_closed_and_requires_every_field():
+    IdentityCollision.model_validate({"registry": "pypi", "points_at": "https://x", "known_repo": "o/r"})
+    with pytest.raises(ValidationError):
+        IdentityCollision.model_validate({"registry": "pypi", "points_at": "https://x",
+                                          "known_repo": "o/r", "summary": "leaks the other blurb"})
+    with pytest.raises(ValidationError):
+        IdentityCollision.model_validate({"registry": "", "points_at": "https://x", "known_repo": "o/r"})
+    with pytest.raises(ValidationError):
+        IdentityCollision.model_validate({"registry": "pypi", "known_repo": "o/r"})
+
+
+def test_an_identity_written_before_collisions_existed_still_parses():
+    """Records on disk predate the field; they read as "no collision detected"."""
+    ti = ToolIdentity.model_validate(_GOOD_ID)
+    assert ti.collision is None and ti.note is None
+
+
+def test_capture_states_collision_and_note_on_every_record(fake_registry):
+    for d in TI.capture(["samtools", "seurat", "pysam", "dorado"], _SBOM):
+        assert "collision" in d and "note" in d
+        ToolIdentity.model_validate(d)
+
+
+_COLLIDED_ID = {"tool": "talos", "self_description": None, "source": "pypi",
+                "package": "talos", "version": "12.2.0",
+                "collision": {"registry": "pypi", "points_at": "https://github.com/autonomio/talos",
+                              "known_repo": _KNOWN},
+                "note": "a same-named pypi package `talos` exists elsewhere"}
+
+
+def test_register_accepts_a_collision_record():
+    from agent.skills.freeze import EnvCache
+    cache = EnvCache(Path(tempfile.mkdtemp()) / "cache.json")
+    cache.register("k", _record([_COLLIDED_ID]))
+    assert tool_identities(cache.lookup("k"))[0].collision.registry == "pypi"
+
+
+def test_env_html_shows_a_collision_as_a_collision_never_a_description():
+    from agent.skills.env_report_html import render_env_report_html
+    html = render_env_report_html(_record([_COLLIDED_ID]))
+    assert "name collision" in html
+    assert "autonomio/talos" in html and "populationgenomics/talos" in html
+    assert "its description is not shown" in html
+    assert "describes it as" not in html
+    assert "Reproducible parameter sweeps" not in html
+
+
+def test_recipe_md_shows_a_collision_as_a_collision():
+    from agent.skills.env_recipe_render import render_recipe_markdown
+    recipe = {"name": "talos", "primary_tools": ["talos"],
+              "build_method": "container-native-build", "tool_identities": [_COLLIDED_ID]}
+    md = render_recipe_markdown(recipe, _record([_COLLIDED_ID]))
+    assert "What each tool says it is" in md
+    assert "**name collision** — a same-named pypi package exists elsewhere" in md
+    assert "autonomio/talos" in md and "its description is withheld" in md
+
+
+def test_attestation_carries_the_collision_beside_the_identity():
+    from agent.skills.attestation import build_attestation
+    att = build_attestation(_record([_COLLIDED_ID]))
+    ti = att["predicate"]["buildDefinition"]["internalParameters"]["tool_identities"][0]
+    assert ti["collision"]["registry"] == "pypi" and ti["self_description"] is None

@@ -17,9 +17,22 @@ The honesty contract is UNCHANGED — the image still has to earn its registrati
   POLICY_CLEAN        accelerator + license firewall (I12/I13)
 
 Two entry modes, one code path:
-  • adopt-image        — an author-published image, adopted by digest (no build).
-  • authors-dockerfile — an image we built from the tool's own Dockerfile at a pinned
-                         commit (build_env_from_authors_recipe builds it, then calls here).
+  • adopt-image        — an existing image, adopted as it is (no build). Pulled from a
+                         registry by this call, or already in the local daemon. The record
+                         states which (`image_origin`): a registry image is pinned by its
+                         manifest digest; a LOCAL image's build was not observed by this
+                         record, and the record says so rather than claim a provenance.
+  • authors-dockerfile — an image built from the tool's own Dockerfile at a pinned commit
+                         by build_env_from_authors_recipe, which then calls here. The build
+                         IS observed: repo, commit, recipe path, build args and every patch
+                         applied to the source are recorded with it. This mode is reachable
+                         only through that executor — a caller cannot assert it.
+
+PROVENANCE IS OBSERVED, NEVER CLAIMED. `build_method` and `dockerfile_source` are
+observations written by the executor that made them; the MCP surface does not accept
+them from a caller. An image built by hand and handed to freeze_from_image is adopted with
+its build unobserved — the honest way to fix an authors' recipe is
+build_env_from_authors_recipe(patches=…), which records the fix beside the build.
 
 Deliverables are rendered PURELY from the verified record, same as freeze(): ENV.html +
 attestation.json + recipe.yaml + recipe.md (the recipe records the authors' image/source,
@@ -55,6 +68,26 @@ def _image_present(image: str) -> bool:
 def _image_digest(image: str) -> str:
     r = _sh(["docker", "image", "inspect", "--format", "{{index .Id}}", image], timeout=60)
     return r["out"].strip() if r["rc"] == 0 else ""
+
+
+#: The OCI label publishers use to name the repository an image was built from.
+_SOURCE_LABEL = "org.opencontainers.image.source"
+
+
+def _image_source_label(image: str) -> str:
+    """The repository the image's own `org.opencontainers.image.source` label names, or
+    "" when the image carries none (or docker is unavailable). An observation off the
+    image, read so identity can be checked against the project the image says it comes
+    from. Best effort: never raises."""
+    try:
+        r = _sh(["docker", "image", "inspect", "--format",
+                 f'{{{{index .Config.Labels "{_SOURCE_LABEL}"}}}}', image], timeout=60)
+    except OSError:
+        return ""
+    if r["rc"] != 0:
+        return ""
+    val = (r["out"] or "").strip()
+    return "" if val in ("", "<no value>") else val
 
 
 def _local_image_tags(limit: int = 50) -> list[str]:
@@ -235,8 +268,12 @@ def freeze_from_image(
     `tools`: [{name, evidence}] — each evidence command must RUN the tool in-image and
     exit 0 (this is VALIDATED_IN_IMAGE; the caller owns making it exercise, not import).
     `build_method`: 'adopt-image' | 'authors-dockerfile'. `dockerfile_source`: the pinned
-    source {repo, commit, tag, dockerfile?} when built from the authors' Dockerfile — it
-    is embedded in the recipe so the build is reproducible.
+    source {repo, commit, tag, recipe_path, build_args, platform, dockerfile, patches}
+    when built from the authors' Dockerfile — it is embedded in the recipe so the build is
+    reproducible. Both are OBSERVATIONS: only `build_from_authors_recipe`, which performed
+    the build, passes them; the MCP surface does not expose them, so an image handed in by
+    reference is always adopted (`image_origin` says whether it came from a registry or
+    was already local, in which case its build was not observed).
 
     Returns proven(...) with the record + deliverable paths, or refused/broke on a missing
     image / honesty violation. Docker required."""
@@ -247,6 +284,7 @@ def freeze_from_image(
     env_dir.mkdir(parents=True, exist_ok=True)
 
     # -- BUILT: ensure the image resolves locally (pull if allowed) --
+    pulled_here = False
     if not _image_present(image):
         if not pull_if_absent:
             local = _local_image_tags()
@@ -259,6 +297,7 @@ def freeze_from_image(
         if pl["rc"] != 0 or not _image_present(image):
             return broke("freeze_from_image.pull_failed",
                          error=f"could not pull {image!r}: {pl['err'][:300]}")
+        pulled_here = True
     digest = _image_digest(image)
 
     # -- VALIDATED_IN_IMAGE: run each tool's evidence IN the image --
@@ -381,11 +420,24 @@ def freeze_from_image(
     # The adopt branch below therefore records `registry_manifest_digest`, the same
     # value `adopt_image` carries.
     content_digest = digest
+    _md = ""
     if mode == "adopt":
         from agent.skills.container_build import registry_manifest_digest
         _md = registry_manifest_digest(image)
         if _md:
             content_digest = _md
+    # WHERE THE IMAGE CAME FROM — observed, not asserted. `built`: this record's own
+    # executor built it from the authors' Dockerfile and recorded the build. `registry`:
+    # pulled from a registry (by this call, or earlier — it carries a registry manifest
+    # digest anyone can pull). `local`: a tag that exists only in this daemon, with no
+    # registry digest — something built it, and this record did not watch. The record
+    # states that gap instead of letting a caller fill it with a claim.
+    if mode == "build":
+        image_origin = "built"
+    elif pulled_here or _md:
+        image_origin = "registry"
+    else:
+        image_origin = "local"
     record = _freeze.freeze_record(
         request_key=rkey, content_digest=content_digest, mode=mode,
         image=image, image_digest=digest, platform=platform, gated=gated,
@@ -394,6 +446,7 @@ def freeze_from_image(
     record["name"] = name
     record["version"] = version
     record["build_method"] = build_method
+    record["image_origin"] = image_origin
     record["requested_tools"] = [t["name"] for t in tools]
     record["verifications"] = verifications
     record["resolved_packages"] = resolved_packages
@@ -430,9 +483,25 @@ def freeze_from_image(
     # registry the shipped package came from (matched via the image's own SBOM). Agent-
     # asserted, best-effort — captured BEFORE check_build so the checked record is the
     # registered one; a probe miss yields self_description=None and never fails the freeze.
+    #
+    # THE KNOWN SOURCE. This path is the one where the record often KNOWS the primary
+    # tool's repository — the authors' Dockerfile was cloned from it, or the image names it
+    # in its own source label — and a same-named registry package that points elsewhere is
+    # then a collision to disclose, not a description to adopt. The source is tied to the
+    # PRIMARY tool only: the repo builds that tool; the others baked into the image
+    # (a bcftools fork beside talos) have their own homes.
+    known_sources: dict[str, str] = {}
+    if dockerfile_source and dockerfile_source.get("repo"):
+        known_sources[primary] = str(dockerfile_source["repo"])
+    else:
+        label = _image_source_label(image)
+        if label:
+            record["image_source_label"] = label
+            known_sources[primary] = label
     from agent.skills import tool_identity as _ti
     try:
-        record["tool_identities"] = _ti.capture(record["requested_tools"], resolved_packages)
+        record["tool_identities"] = _ti.capture(record["requested_tools"], resolved_packages,
+                                                known_sources=known_sources)
     except Exception:
         record["tool_identities"] = []
 
@@ -478,7 +547,8 @@ def freeze_from_image(
         redistributable=not gated, content_digest=content_digest,
         build_method=("authors-dockerfile" if build_method == "authors-dockerfile" else "adopt"),
         adopt_image=adopt_ref,
-        dockerfile_source=dockerfile_source or {})
+        dockerfile_source=dockerfile_source or {},
+        image_origin=image_origin)
     recipe["shipped_binaries"] = record["shipped_binaries"]
     recipe["tool_identities"] = record.get("tool_identities") or []
     # Carry the OBSERVED SBOM (what actually shipped) beside conda_deps so the machine
@@ -524,7 +594,8 @@ def freeze_from_image(
     # scripts/extract_outcomes.py still harvests both terminals (see coverage_disclosure).
     fields = dict(success=True, cache_hit=False,
                   request_key=rkey, image=image, image_digest=digest,
-                  content_digest=content_digest, build_method=build_method, platform=platform,
+                  content_digest=content_digest, build_method=build_method,
+                  image_origin=image_origin, platform=platform,
                   verifications=verifications, shallow_evidence=shallow,
                   evidence_advisory=advisory,
                   **env_honesty.coverage_disclosure(contract), **out_paths)
@@ -539,6 +610,86 @@ def _clone_url(repo: str) -> str:
     return repo if repo.startswith(("http://", "https://", "git@", "file://")) else f"https://github.com/{repo}"
 
 
+#: How much of a patch's `find` text a refusal quotes — enough to recognise the edit,
+#: not so much that a whole Dockerfile stanza lands in an error line.
+_PATCH_FIND_PREVIEW = 80
+
+
+def _sha256_text(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def _apply_patches(checkout: Path, patches: list[dict]) -> dict:
+    """Apply each `{file, find, replace, reason}` to the checkout, in order, and record
+    what changed. Returns {"applied": [...]} on success, or a refusal dict naming the
+    first patch that could not be applied as written.
+
+    A patch is a single exact substitution: `find` must occur EXACTLY ONCE in `file`, so
+    the recorded edit means one thing and a reader can re-apply it by hand. Zero hits is
+    `authors_recipe.patch_no_match` (the file at the pinned ref does not contain that
+    text); more than one is `authors_recipe.patch_ambiguous` (the edit would land in
+    several places and the record could not say which). Each applied patch is recorded
+    with the sha256 of the file before and after, so the recipe carries proof of exactly
+    what the build consumed."""
+    applied: list[dict] = []
+    for i, p in enumerate(patches):
+        if not isinstance(p, dict):
+            return refused("authors_recipe.patch_malformed",
+                           error=f"patches[{i}] is not a {{file, find, replace, reason}} dict")
+        file = str(p.get("file") or "").strip()
+        find = p.get("find")
+        replace = p.get("replace")
+        reason = str(p.get("reason") or "").strip()
+        problems = []
+        if not file:
+            problems.append("`file` (a repo-relative path) is required")
+        if not isinstance(find, str) or not find:
+            problems.append("`find` (the exact text to replace) is required")
+        if not isinstance(replace, str):
+            problems.append("`replace` must be a string (empty deletes the text)")
+        if not reason:
+            problems.append("`reason` (why the build needs this edit) is required")
+        if problems:
+            return refused("authors_recipe.patch_malformed",
+                           error=f"patches[{i}]: " + "; ".join(problems), patch_index=i)
+        target = (checkout / file)
+        try:
+            inside = target.resolve().is_relative_to(checkout.resolve())
+        except (OSError, ValueError):
+            inside = False
+        if not inside:
+            return refused("authors_recipe.patch_malformed",
+                           error=f"patches[{i}]: {file!r} is not a path inside the checkout",
+                           patch_index=i)
+        preview = find[:_PATCH_FIND_PREVIEW] + ("…" if len(find) > _PATCH_FIND_PREVIEW else "")
+        if not target.is_file():
+            return refused("authors_recipe.patch_no_match",
+                           error=f"patches[{i}]: {file!r} does not exist in the checkout at "
+                                 f"the pinned ref, so {preview!r} cannot be found in it",
+                           patch_index=i, file=file)
+        before = target.read_text(encoding="utf-8", errors="surrogateescape")
+        n = before.count(find)
+        if n == 0:
+            return refused("authors_recipe.patch_no_match",
+                           error=f"patches[{i}]: {file!r} at the pinned ref does not contain "
+                                 f"{preview!r} — the fix may target a different version of "
+                                 f"the file, or the text is misquoted",
+                           patch_index=i, file=file)
+        if n > 1:
+            return refused("authors_recipe.patch_ambiguous",
+                           error=f"patches[{i}]: {preview!r} occurs {n} times in {file!r}; "
+                                 f"a patch must match exactly once — include more context "
+                                 f"in `find` so it names one place",
+                           patch_index=i, file=file, occurrences=n)
+        after = before.replace(find, replace, 1)
+        target.write_text(after, encoding="utf-8", errors="surrogateescape")
+        applied.append({"file": file, "find": find, "replace": replace, "reason": reason,
+                        "sha256_before": _sha256_text(before),
+                        "sha256_after": _sha256_text(after)})
+    return {"applied": applied}
+
+
 def build_from_authors_recipe(
     *,
     repo: str,
@@ -551,15 +702,23 @@ def build_from_authors_recipe(
     version: str = "",
     platform: str = "linux/amd64",
     build_args: Optional[dict] = None,
+    patches: Optional[list[dict]] = None,
     gated: bool = False,
     licenses: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Clone the tool's OWN repo at a pinned `ref`, `docker build` its `recipe` (their
-    Dockerfile), then hand the built image to freeze_from_image (same honesty contract +
-    deliverables). The declarative executor for resolve_tool's `authors_recipe` tier — the
-    path taken when the authors' recipe installs pieces a conda/pip reconstruction would
-    silently DROP. The pinned source (repo + resolved commit + tag + Dockerfile verbatim)
-    is recorded so the build is reproducible. Docker + git (+ network for a remote repo).
+    """Clone the tool's OWN repo at a pinned `ref`, apply any `patches`, `docker build` its
+    `recipe` (their Dockerfile), then hand the built image to freeze_from_image (same
+    honesty contract + deliverables). The declarative executor for resolve_tool's
+    `authors_recipe` tier — the path taken when the authors' recipe installs pieces a
+    conda/pip reconstruction would silently DROP. The pinned source (repo + resolved
+    commit + tag + Dockerfile as built + every patch) is recorded so the build is
+    reproducible. Docker + git (+ network for a remote repo).
+
+    `patches`: [{file, find, replace, reason}] — exact single-occurrence substitutions
+    applied to the checkout BEFORE the build (see `_apply_patches`). This is the honest
+    way to fix an authors' recipe that does not build as published: the fix is recorded
+    with the build (`dockerfile_source.patches`, with sha256 before/after), so the record
+    never claims an unmodified Dockerfile and a rebuild knows what to re-apply.
 
     Kept a thin, injectable executor (env_cache + env_dir params) so it mirrors
     freeze_from_image and is testable on real bytes without the MCP singletons."""
@@ -585,6 +744,12 @@ def build_from_authors_recipe(
                     return broke("authors_recipe.checkout_failed",
                                  error=f"could not checkout {ref!r}: {co['err'][:300]}")
         commit = _sh(["git", "-C", td, "rev-parse", "HEAD"], timeout=60)["out"].strip()
+        # PATCH AFTER THE PIN, BEFORE THE BUILD — and refuse before anything is built if a
+        # patch does not apply as written. The commit above is the authors' source; what
+        # docker consumes is that source plus exactly these recorded edits.
+        patched = _apply_patches(Path(td), list(patches or []))
+        if "applied" not in patched:
+            return patched
         tag = f"{name}:{version}" if version else f"{name}:latest"
         buildx = ["docker", "buildx", "build", "--platform", platform, "--load", "-f", f"{td}/{recipe}", "-t", tag]
         for k, v in (build_args or {}).items():
@@ -595,6 +760,8 @@ def build_from_authors_recipe(
             return broke("authors_recipe.build_failed",
                          error=f"docker build of {recipe} failed: {(bd['err'] or '')[-800:]}",
                          dockerfile=recipe)
+        # The Dockerfile AS BUILT — after the patches, because that is the text docker
+        # consumed; the patches list beside it says how it differs from the pinned commit.
         try:
             dockerfile_text = (Path(td) / recipe).read_text()
         except OSError:
@@ -603,16 +770,13 @@ def build_from_authors_recipe(
     return freeze_from_image(
         image=tag, tools=[dict(t) for t in tools], name=name, version=version,
         platform=platform, build_method="authors-dockerfile",
-        # RECORD WHAT WE ACTUALLY RAN. `recipe` and `build_args` were used two lines up
-        # (`-f {td}/{recipe}`, `--build-arg`) and then dropped here, so the rendered recipe
-        # always emitted a bare `docker build .` — rebuilding the ROOT Dockerfile for a
-        # `recipe="docker/Dockerfile.gpu"` build, with every --build-arg silently reverting
-        # to the Dockerfile's ARG defaults. Talos's own Dockerfile carries
-        # `ARG BCFTOOLS_VERSION=1.23.1` and `ARG ECHTVAR_VERSION=v0.2.2` — precisely the
-        # knobs whose drift this project exists to prevent. The executor had both facts in
-        # hand; the record simply had nowhere to put them (Rule 1: fix the PRODUCER).
+        # RECORD WHAT WAS ACTUALLY RUN: the Dockerfile path (`-f {td}/{recipe}`), every
+        # --build-arg (without them the Dockerfile's own ARG defaults apply, which is a
+        # different image), and every patch applied to the checkout. The executor is the
+        # one party that observed all of these, so it is the one that writes them.
         dockerfile_source={"repo": url, "commit": commit, "tag": ref or "",
                            "recipe_path": recipe, "build_args": dict(build_args or {}),
-                           "platform": platform, "dockerfile": dockerfile_text},
+                           "platform": platform, "dockerfile": dockerfile_text,
+                           "patches": patched["applied"]},
         gated=gated, licenses=list(licenses or []), pull_if_absent=False,
         env_cache=env_cache, env_dir=env_dir)

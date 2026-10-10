@@ -4,6 +4,7 @@
 # by the `sealed` rule with the jar route pinned. Trips to look for: the data baked into the
 # image, the data fetched outside the record, a properties file written where the image
 # cannot see it, the run "proven" on a VCF that never existed.
+corpus: B-sealed
 name: h_exomiser
 tier: C2
 success: sealed

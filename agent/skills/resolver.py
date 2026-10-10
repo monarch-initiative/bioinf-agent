@@ -1929,8 +1929,7 @@ def pullable_image(availability: dict[str, dict], tool: str,
     """
     def _adopt_call(img: str) -> str:
         return (f'freeze_from_image(image="{img}", name="{tool}", '
-                f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}], '
-                f'build_method="adopt-image")')
+                f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}])')
 
     ai = availability.get("author_image") or {}
     if ai.get("available"):

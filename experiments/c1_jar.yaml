@@ -1,5 +1,6 @@
 # C1 — a Java jar tool. Trips to look for: the Java runtime missing from the image, the
 # jar fetched without a checksum, a how-to that hard-codes the jar's host path.
+corpus: A
 name: c1_jar
 tier: C1
 prompt: |
