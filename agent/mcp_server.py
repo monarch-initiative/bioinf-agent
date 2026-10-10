@@ -166,7 +166,7 @@ def docker_platform(value: str) -> str:
 # ---------------------------------------------------------------------------
 # Response-shape helpers — truncation/summarization ONLY at the LLM-facing
 # response surface. The truth surface (install_step record, EnvCache record,
-# env_reports/{name}.ENV.html, attestation, recipe) is NEVER touched by
+# environments/{name}/{name}.ENV.html, attestation, recipe) is NEVER touched by
 # these. The contract is: disk is the source of truth; the response is just
 # what fits comfortably in the agent's context. On failure or when more detail
 # is needed, the response carries a `log_path` (install) or
@@ -230,8 +230,8 @@ def _summarize_sbom_in_response(out: dict) -> dict:
     counts + a primary-tools-resolved subset.
 
     Truth surface unchanged — full SBOM is preserved in the EnvCache record
-    (stored on disk in env_reports/_env_cache.json BEFORE this is called) and
-    in env_reports/{name}.ENV.html + .attestation.json on disk. env_report_html
+    (stored on disk in environments/_env_cache.json BEFORE this is called) and
+    in environments/{name}/{name}.ENV.html + .attestation.json on disk. env_report_html
     and attestation continue to render from the record (which contains full
     lists), untouched. This affects ONLY the live MCP response shape — ~10-15k
     tokens of SBOM rows eliminated per freeze response. If the agent wants the
@@ -290,12 +290,12 @@ def _resolve_versions_from_install_record(
     parsed: list[tuple[str, Optional[str]]],
     draft: Optional[dict],
 ) -> list[tuple[str, Optional[str]]]:
-    """B1 fix: fill a version slot from `install_steps[*].installed_packages`
+    """Fill a version slot from `install_steps[*].installed_packages`
     when the caller passed a bare tool name. The install record is the
     authoritative answer to "what version did we actually install and validate"
     — the biocontainer adopt-decision must consult it, else it picks whatever
-    tag ranks highest (the BUSCO-stress 3.0.2 vs 6.0.0 wrong-version trust
-    violation, where ranking-by-build-number elevated an older major version).
+    tag ranks highest, and ranking by build number can elevate an older major
+    version over the one that was installed.
 
     An EXPLICIT caller pin (busco=5.4) is honored verbatim — the install record
     only fills the None slot. Same trust-anchor pattern: when the user/install

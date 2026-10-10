@@ -38,7 +38,7 @@ def describe_sealed_step(workflow_name: str, step: int) -> dict:
     """RUN_STEP-of-a-sealed-workflow — the typed reader for re-running ONE recorded
     step of an existing SEALED pipeline ("just generate step 2 of my existing pipeline").
 
-    Reads ``env_reports/{workflow_name}.workflow.yaml`` through the TYPED seam
+    Reads ``environments/<env>/{workflow_name}.workflow.yaml`` through the TYPED seam
     (``spec_writer.load_workflow_spec`` → a validated ``WorkflowSpec``, NEVER a
     scraped dict), selects the recorded step numbered ``step`` (1-based), and returns
     everything needed to re-run it IN THE FROZEN ENV IMAGE: the command verbatim, its

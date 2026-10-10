@@ -62,8 +62,8 @@ def _manifest_root() -> Path:
 # Where the rendered workflow files are staged locally before upload. MUST live
 # under a Globus-accessible location: Globus Connect Personal only scans its
 # Accessible Folders (default $HOME) and REFUSES a system temp dir like macOS's
-# /var/folders (which tempfile.TemporaryDirectory() defaults to) — that surfaced
-# as a live `submit.upload_failed` on the first production run. The workspace is
+# /var/folders (which tempfile.TemporaryDirectory() defaults to), which surfaces
+# as `submit.upload_failed`. The workspace is
 # required to sit under $HOME, so the scratch zone works for BOTH transports (scp
 # doesn't care where the source is). Mirrors run_cluster_step._render_stage_dir.
 # A FUNCTION, not a module constant. The location depends on the resolved
@@ -190,9 +190,9 @@ def _resolve_slurm_and_email(per_job_slurm: Mapping,
         else:
             merged.pop(slot, None)
     # env.slurm.partition is the CPU DEFAULT, so it fills only a CPU job's empty
-    # slot. Letting it fill a GPU job's would take the one outcome the old refusal
-    # existed to prevent — a GPU request landing on a CPU partition — and make it
-    # the silent default. `undeclared` has to mean no --partition line at all.
+    # slot. Letting it fill a GPU job's would make the one outcome this guard
+    # exists to prevent — a GPU request landing on a CPU partition — the silent
+    # default. `undeclared` has to mean no --partition line at all.
     if placement["state"] == "not_applicable" and not merged.get("partition") \
             and sl.get("partition"):
         merged["partition"] = sl["partition"]

@@ -1,10 +1,10 @@
 """
-Evidence strategies — named, reusable presence proofs for the install re-spine.
+Evidence strategies — named, reusable presence proofs for the install tiers.
 
 Each strategy answers ONE question the agent cannot fake: it queries the env's
 own registry or filesystem rather than trusting agent-supplied stdout. The
 verify() gate composes these instead of re-implementing presence checks, and
-(as the re-spine proceeds) every install tier — conda, pip, R, jar, source,
+every install tier — conda, pip, R, jar, source,
 release-binary, container — picks the strategy that proves *its* category
 worked. New tier ⇒ new strategy here, not a new bespoke verify path.
 
@@ -15,9 +15,6 @@ Strategy contract:  fn(em, env_name, name) -> Evidence
 functions over that tiny interface is what stops method-proliferation: the
 knowledge of "how do you prove an R library is present" lives in exactly one
 place and is reused everywhere.
-
-This module is a behavior-preserving extraction of the anchors that previously
-lived inline in EnvManager.verify / EnvManager._package_in_registry.
 """
 
 from __future__ import annotations

@@ -13,9 +13,9 @@ DELIBERATELY NOT CONSOLIDATED — each is a documented contract, not a duplicate
   * locus._sh          — never-fatal by design; every failure is rc -1 because a
                          locus probe must not distinguish "daemon down" from
                          "docker absent" (its callers treat both as unobserved).
-  * output_validator._run_tool — returns CompletedProcess + tool_found; the H1
-                         honesty fix that stops a MISSING validator being
-                         laundered into a pass. Flattening it reopens that bug.
+  * output_validator._run_tool — returns CompletedProcess + tool_found; the
+                         honesty guard that stops a MISSING validator being
+                         laundered into a pass. Flattening it reintroduces the fault.
   * env_manager._run_monitored — the psutil process-tree poller; the SOLE
                          producer of pipeline_step resource_usage (I7).
 

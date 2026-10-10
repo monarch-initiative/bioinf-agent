@@ -134,7 +134,7 @@ def run_pipeline_step(
     # downstream consumer. Cheap (one sha256 per produced file), file-type-
     # agnostic, and the producer's own bytes — agent can't substitute.
     output_sha256 = _ms._env_mgr.hash_outputs(result.get("detected_outputs", []))
-    # Constructed THROUGH the model (typed-records Seam A): a shape the record
+    # Constructed THROUGH the model: a shape the record
     # refuses is refused here, at the producer, not discovered at seal.
     step_data = PipelineStep.produce(
         tool=tool or default_step_tool(command),
@@ -433,7 +433,7 @@ def verify_installation(
     """Run a custom version/help command inside the env to confirm a package
     installed correctly.
 
-    Advisory: env_status no longer requires every package to have a verify
+    Advisory: env_status does not require every package to have a verify
     record — `conda list --json` plus successful install_steps are the
     structural truth. Use this when you want to capture a custom check
     (e.g. `samtools --version` for a CLI tool) so it appears in the report

@@ -76,15 +76,15 @@ def _rendered(record: dict, out_dir: Path) -> tuple[list[tuple[Path, str]], list
     run `verify_env_recipe`, which for an `authors-dockerfile` env runs nothing and returns
     `refused`. `recipe.yaml` is NOT here — that one is a record.
 
-    PER-VIEW ISOLATION, and it is load-bearing rather than defensive. The first cut
-    rendered both views in one try-block, and the FIRST record it met undid it:
-    `talos_v11`'s `shipped_binaries` uses the old key dialect, `render_recipe_markdown`
-    raises `ValidationError` on it, and the whole record was skipped — including its
-    `ENV.html`, which is the page that now carries the very violation
+    PER-VIEW ISOLATION, and it is load-bearing rather than defensive. Rendering both
+    views in one try-block lets one record undo it: a `shipped_binaries` block in the
+    earlier key names still present on disk makes `render_recipe_markdown` raise
+    `ValidationError`, and the whole record would be skipped — including its
+    `ENV.html`, which is the page that carries the very violation
     (`WELL_FORMED.shipped_binaries`) describing that malformation.
 
     The page that REPORTS a defect must not be blocked by the defect it reports. So each
-    view stands alone: a broken recipe render leaves the old recipe.md untouched and still
+    view stands alone: a broken recipe render leaves the existing recipe.md untouched and still
     corrects the ENV report, and the failure is named rather than swallowed.
     """
     name = record.get("name") or "env"

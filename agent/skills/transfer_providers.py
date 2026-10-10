@@ -378,10 +378,9 @@ class ScpHeadNodeProvider(TransferProvider):
 # task level; the ONLY way to tell them apart is to fetch the task's
 # event list and read which endpoint reported the error. The classifier
 # (_classify_permission_denied → _permission_denied_error) does exactly
-# that and routes the actionable hint by classification. Until we had
-# this, our error message always pointed at #2 — which would mislead
-# users hitting #1 or #3 into running a `--gcs` login that wouldn't
-# fix anything.
+# that and routes the actionable hint by classification. Without it the
+# hint would always point at #2 — misleading users hitting #1 or #3 into
+# running a `--gcs` login that fixes nothing.
 # ---------------------------------------------------------------------------
 
 _GLOBUS_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED"}
@@ -1056,9 +1055,7 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     WHERE THE task_id COMES FROM: the SYNC transfer path. Every successful
     globus upload/download journals its `globus_task_id` into the transfer
     manifest (transfer.py's _journal), so any transfer record is a valid input
-    here. This is NOT an async-only tool — async submit was removed in tier 7
-    (it never once ran across 92 real transfers); 80 of those 92 records carry
-    a live task_id, all minted synchronously.
+    here. This is NOT an async-only tool: every task_id is minted synchronously.
 
     THE FAILURE IT ANSWERS: a sync wait is capped at _SYNC_WAIT_S_DEFAULT and
     `timeout` is not on the MCP surface, so a transfer past that cap returns

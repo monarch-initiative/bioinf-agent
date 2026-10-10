@@ -1,25 +1,19 @@
 """
 Core data models for the bioinformatics agent.
 
-SCOPE NOTE (tier 7, read before adding to this file). `PipelineSpec` — the
-pre-respine combined model — was DELETED here: its producers (finalize_pipeline /
-save_pipeline_spec) were retired in the re-spine, and the last reader
-(resources.list_pipelines) was repointed at the artifacts that actually exist
-(the EnvCache + `*.workflow.yaml`). `WorkflowSpec` is now the only spec model
-with a real producer.
+SCOPE NOTE (read before adding to this file). `WorkflowSpec` is the only spec
+model with a real producer; the sealed artifacts are the EnvCache and
+`*.workflow.yaml`.
 
-Consequence to be honest about: five models were reachable ONLY through
-PipelineSpec and are now unreferenced by any model — `Accelerator`,
-`InstallStep`, `PackageRecord`, `RuntimeEnvironment`, `ServiceDependency` (and
-`InstallMethod` under PackageRecord). They are NOT dead weight in the ordinary
-sense: they are the declared SHAPE of records the runtime really does produce and
-gate on (I12 reads accelerator dicts, I10 reads service_dependencies, freeze
-reads install_method dicts) — the runtime just passes plain dicts and never
-validates against these classes. So they are schema-as-documentation whose drift
-nothing catches, which is exactly how InstallMethod's Literal came to name two
-tiers with no producer while omitting one that had. Deleting them, or wiring them
-in as real validators, is a deliberate call that needs its own verification pass —
-NOT a quiet cleanup. Flagged, not swept.
+Five models are unreferenced by any other model — `Accelerator`, `InstallStep`,
+`PackageRecord`, `RuntimeEnvironment`, `ServiceDependency` (and `InstallMethod`
+under PackageRecord). They are NOT dead weight in the ordinary sense: they are
+the declared SHAPE of records the runtime really does produce and gate on (I12
+reads accelerator dicts, I10 reads service_dependencies, freeze reads
+install_method dicts) — the runtime just passes plain dicts and never validates
+against these classes. So they are schema-as-documentation whose drift nothing
+catches. Deleting them, or wiring them in as real validators, is a deliberate
+call that needs its own verification pass — NOT a quiet cleanup.
 
 Single source of truth for:
   - Controlled vocabulary (ReadType, EndType, AssayType, FileType, Database)
@@ -140,13 +134,11 @@ class InstallMethod(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     # Keep this in step with the tier dispatchers that actually RUN — env_freeze
-    # `_map_install_spec` / `_replay_assurance` and env_recipe_render. Tier 7 found
-    # this list drifted in BOTH directions at once: it named `docker_pull`/`manual`
-    # (zero producers, ever) while OMITTING `synthesized`, which env_tools' synth_build
-    # writes and two dispatchers consume. It never exploded only because InstallMethod
-    # is not pydantic-validated on the live path — i.e. the copy that CLAIMED authority
-    # was stale and the copies that RAN were right. Adding a tier here is not optional
-    # bookkeeping; it is what stops that trap from arming again.
+    # `_map_install_spec` / `_replay_assurance` and env_recipe_render. InstallMethod
+    # is not pydantic-validated on the live path, so a stale entry here never
+    # explodes: the copy that CLAIMS authority can drift while the copies that RUN
+    # stay right. Adding a tier here is not optional bookkeeping; it is what keeps
+    # this list the authority it claims to be.
     type: Literal["conda", "jar", "pip", "r_install", "source",
                   "binary", "perl", "cargo", "go", "synthesized"] = "conda"
     # conda
@@ -955,11 +947,11 @@ class ShippedBinary(BaseModel):
        drift, it AUTHORS it. "I did not capture this" is a fact; it must be written
        down, not defaulted into existence.
 
-    `tool` vs `install_command` are SEPARATE fields because the old shared `command`
-    key carried both meanings: `freeze_tools` wrote the literal shell line
-    ("git clone https://…"), `freeze_from_image` wrote the binary name ("bcftools").
-    One key, opposite semantics — so the ENV report rendered four binaries labelled
-    "tool" with `bcftools` inside a <pre> shell block. Splitting them is the fix.
+    `tool` vs `install_command` are SEPARATE fields because one shared key cannot
+    carry both meanings: `freeze_tools` records the literal shell line
+    ("git clone https://…"), `freeze_from_image` records the binary name ("bcftools").
+    One key with opposite semantics would have the ENV report render a binary
+    labelled "tool" with `bcftools` inside a <pre> shell block.
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -1196,8 +1188,8 @@ class ContentAnchor(BaseModel):
 
     An ANCHOR, not an observation: it is a claim about the past, written once by the
     producer and thereafter only ever compared against. Seal must never refresh it —
-    that is the I5 laundering bug, where the refresh overwrote the pin moments before
-    the check read it and manufactured perfect agreement with itself.
+    a refresh would overwrite the pin moments before the check reads it and
+    manufacture perfect agreement with itself (invariant I5).
 
     `extra="forbid"` and NO defaults, per the typed-record-seam rule: every field is
     required and `None` is a value the producer has to STATE. A directory has no single
@@ -1346,9 +1338,8 @@ def test_data_paths(test_data: Any) -> dict[str, str]:
 def test_data_anchors(test_data: Any) -> dict[str, dict]:
     """THE reader for a test_data block's recorded content anchors, {field_key: anchor}.
 
-    A leaf from birth rather than after the drift: `verify_test_data` and
-    `data_pins.sealed_anchors` both need it, and every previously-shared fact in this
-    file became a leaf only after its hand-copies had already disagreed in production."""
+    A leaf: `verify_test_data` and `data_pins.sealed_anchors` both need it, and a
+    fact with two hand-copies eventually disagrees with itself."""
     if not isinstance(test_data, Mapping):
         return {}
     raw = test_data.get("content_anchors")
@@ -1495,7 +1486,7 @@ def is_path_like(s: Any) -> bool:
     The predicate the absolute-paths rule is scoped by: `{INPUT_VCF}` / `$HOME` /
     `<stdin>` are slots, `samtools` is a token, `out/x.bam` is a path. ONE
     reading — PipelineStep enforces absoluteness through this at construction
-    (the typed form of the old I6.absolute_paths walk clause)."""
+    (this is where the I6.absolute_paths clause is enforced)."""
     if not isinstance(s, str) or not s:
         return False
     if s.startswith(("{", "$", "<")):
@@ -1528,7 +1519,7 @@ class PipelineStep(BaseModel):
     A pipeline can only claim PipelineStatus.fully_validated if every step
     has validation_status="passed" — exited 0 alone is not enough.
 
-    extra="forbid" + every producer key DECLARED (typed-records Seam A): the
+    extra="forbid" + every producer key DECLARED: the
     five producers (run_pipeline_step / run_step_in_container / run_in_env /
     run_step_on_cluster success+failure) construct through this model, the
     draft funnel enforces it on write, and seal re-validates via WorkflowSpec.
@@ -1561,8 +1552,8 @@ class PipelineStep(BaseModel):
 
     inputs:            list[StepInput] = []   # files consumed (with optional script-references); deliberately [] on the cluster failure recorder — a step that never ran is not an I8 graph node (it records attempted_inputs instead)
     # Filenames produced, as DECLARED by the caller (run_in_env's channel).
-    # None, not `= []`: the old empty-list default stamped itself into every
-    # sealed spec while the truth lived in detected_outputs — a permissive
+    # None, not `= []`: an empty-list default would stamp itself into every
+    # sealed spec while the truth lives in detected_outputs — a permissive
     # default doesn't catch drift, it authors it.
     outputs:           Optional[list[str]] = None
     # Step numbers this step depends on (1-based). None until finalize derives
@@ -1733,7 +1724,7 @@ class UsageTrial(BaseModel):
 
     Invariant I4 only sets usage_verified=True if every declared trial passes.
     If `usage.trials` is empty, the runtime falls back to a single inferred
-    trial (backward-compatible — same as before the multi-shape extension).
+    trial.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -1769,7 +1760,7 @@ class UsageTemplate(BaseModel):
     trials: optional list of explicit input-shape test cases. When non-empty
     the finalize self-test runs every trial and only marks usage_verified=True
     if all pass. When empty the runtime infers a single trial from
-    pipeline_steps' inputs (backward-compatible).
+    pipeline_steps' inputs.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -1807,10 +1798,10 @@ def default_step_tool(command: str) -> str:
     """The fallback `tool` for a recorded step whose producer was not told one —
     THE one reading, for every run primitive that stamps a step record.
 
-    The old default at all six producer sites was the command's first token,
-    which titled a `mkdir -p … && samtools flagstat …` step "mkdir" on the RUN
-    dashboard — the heading is the scannable part of the page and it named shell
-    plumbing. Walk the &&/;/| segments: unwrap wrapper commands (their argument
+    The command's bare first token is not the answer: it titles a
+    `mkdir -p … && samtools flagstat …` step "mkdir" on the RUN dashboard, where
+    the heading is the scannable part of the page and would name shell plumbing.
+    Walk the &&/;/| segments: unwrap wrapper commands (their argument
     is the real command, minus the wrapper's own flags and flag values), skip
     VAR=value assignments, and return the first command word that is not
     stage-setting shell. When a segment never reaches a command word (prelude

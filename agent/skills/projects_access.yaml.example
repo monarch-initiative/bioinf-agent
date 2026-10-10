@@ -191,8 +191,7 @@ projects:
   # ─── Single-env project on the cluster ───────────────────────────────────
   # `compute_envs` = the resources this project may use (also grants each env's
   # implicit scratch/common_data zones). `directories` = the explicit grants,
-  # each tagged with the `env` it lives on. (The old compute_env_access[]
-  # wrapper is gone.)
+  # each tagged with the `env` it lives on.
   - name: wgs_proj
     description: "WGS analysis on the cluster"
     compute_envs: [cluster]                      # references compute_envs[].name above

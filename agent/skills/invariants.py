@@ -83,13 +83,13 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
          statement="every declared reference_database still exists, is non-empty, and "
                    "hashes to what was recorded (locus-aware: a cluster DB is checked over ssh)",
          enforced_by="agent.skills.spec_writer.check_workflow_invariants",
-         note="RESTORED at Layer 2 after the respine retired it as an env-build invariant. "
-              "CLAUDE.md went on calling it retired for months while it refused real seals."),
+         note="A run-side (Layer-2) clause, not an env-build one: a reference DB is "
+              "mounted at runtime, so the image validation says nothing about it."),
     _inv(id="I6", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="every input/output path is absolute and every {PLACEHOLDER} in "
                    "usage.command_template is declared",
          enforced_by="agent.skills.spec_writer.check_workflow_invariants",
-         note="SPLIT since typed-records Seam A: the absolute-paths half is enforced at "
+         note="SPLIT: the absolute-paths half is enforced at "
               "construction (PipelineStep._paths_are_absolute, raised at the write funnel "
               "by typed_nouns.check_draft and re-validated when seal builds the "
               "WorkflowSpec); the walk emits only I6.template_placeholders_declared, "
@@ -98,8 +98,7 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
          statement="every rc=0 pipeline_step records real resource_usage (wall, peak RSS, "
                    "peak CPU) — not absent, not all zeros, not a capture error",
          enforced_by="agent.skills.spec_writer.check_workflow_invariants",
-         note="SPLIT since typed-records Seam A: presence (the old "
-              "I7.resource_usage_recorded) is enforced at construction "
+         note="SPLIT: presence (I7.resource_usage_recorded) is enforced at construction "
               "(PipelineStep._rc0_has_resource_usage); the walk emits only "
               "I7.resource_usage_captured — whether the values are a real observation "
               "(all-zeros sentinel, sacct_error) — because only the producer context "
@@ -108,13 +107,10 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
          statement="every pipeline_step input traces to a prior step's output or a declared "
                    "external source, and every traced artifact still hashes to what was recorded",
          enforced_by="agent.skills.spec_writer.check_workflow_invariants",
-         note="The second clause reached authored_artifacts long before test_data, which "
-              "step 3 of the documented protocol tells the agent to produce: its paths "
-              "were read only as strings, to widen the traceable universe the first "
-              "clause walks. A test_data.r1 of /nope/ghost.fastq.gz sealed green. Closed "
-              "2026-07-31 (I8.test_data_missing/_empty/_mutated/_size_mismatch/"
-              "_kind_changed) against anchors select_test_data records at SELECTION "
-              "time; seal only ever compares, never writes one. "
+         note="The second clause covers test_data as well as authored_artifacts "
+              "(I8.test_data_missing/_empty/_mutated/_size_mismatch/_kind_changed), "
+              "against anchors select_test_data records at SELECTION time; seal only "
+              "ever compares, never writes one. "
               "STATED LIMITS of the test_data clause, in the same spirit as I10's "
               "admission below — the checker resolves every path against the LOCAL "
               "filesystem and only inspects values core_data.test_data_paths recognizes "
@@ -130,16 +126,16 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
          statement="every declared service_dependency has at least one HEALTHY probe in its "
                    "health_check_log",
          enforced_by="agent.skills.spec_writer.check_workflow_invariants",
-         note="RESTORED at Layer 2, same story as I5: retired as an env-build invariant, "
-              "brought back as a run-side one, never re-listed in the roster. "
+         note="A run-side (Layer-2) clause, not an env-build one: an env does not need "
+              "the service running to BUILD. "
               "KNOWN VACUOUS, and no signal exists to fix it: the clause iterates "
               "service_dependencies, so it examines nothing on all 5 sealed specs and all "
               "3 drafts on disk. Nothing in a draft or a spec distinguishes 'this run "
               "needed no service' from 'nobody declared one' — a search of every recorded "
               "command, usage template and runtime_config for localhost/port/daemon tokens "
               "returns zero hits, and the env SBOM is both absent from the spec and noisy "
-              "(the talos env ships pyspark). Investigated 2026-07-31 and recorded rather "
-              "than papered over with a coverage state: inventing UNOBSERVED here would "
+              "(the talos env ships pyspark). Recorded rather than papered over with a "
+              "coverage state: inventing UNOBSERVED here would "
               "degrade 5/5 correct workflows, and inventing NOT_APPLICABLE would be a label "
               "on silence. The absence is real; it is just not currently distinguishable "
               "from an omission."),

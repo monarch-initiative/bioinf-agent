@@ -61,8 +61,8 @@ don't fit a long-lived project's workflow (debug downloads, ad-hoc data
 inspection, one-off uploads). The `_ad_hoc` project is never persisted
 to the YAML — it lives only in memory for the duration of the call.
 
-Trust contract — same as the retired primitives
------------------------------------------------
+Trust contract
+--------------
 
   local-mode envs:  shutil.copy + sha256 both ends
   ssh-mode envs:    via the configured TransferProvider, which owns the

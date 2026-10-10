@@ -53,13 +53,8 @@ own in-image row against the openjdk package (`java_version_check`, wired by
 env_freeze) rather than on the jar tool's evidence — which an authored functional
 smoke replaces outright, taking any assertion parked there with it. A request the
 solve didn't satisfy therefore refuses at freeze instead of shipping. Unset stays
-byte-identical to the apt route it always was.
-
-THIS PARAGRAPH USED TO SAY cargo/go/perl were "handled in a later phase". That phase
-had already shipped, and the stale sentence was read as evidence that the builder
-stage has no conda on PATH — a false belief that survived two working sessions,
-because prose sitting next to correct code is trusted like the code. Check
-`engine_coupled` at the generator, not this docstring.
+byte-identical to the apt route. Whether a tier needs conda on the builder's PATH
+is decided by `engine_coupled` at the generator, not by prose.
 
 Pure (params in → command string out), unit-testable.
 """
@@ -97,20 +92,16 @@ def _jar_select_sh(dest: str, name: str) -> str:
     across the language boundary and this repo's signature defect is one truth in N
     places, drifting in N-1.
 
-    WHAT IT REPLACED, and why it only broke in the shipped artifact:
+    WHY NOT `find … -name '*.jar' | grep -i <name> | head -n1`: `grep` matches the
+    whole PATH, and the unpack destination is `/opt/tools/<name>` — so for exomiser
+    EVERY jar line contains "exomiser", including
+    `.../exomiser-cli-15.1.0/lib/ontologizer-0.0.1.jar`. The filter selects nothing,
+    `head -n1` takes `find`'s directory order, and the wrapper runs a DEPENDENCY jar.
+    A host-side pick that matches `Path.name` passes while the in-image wrapper picks
+    wrong — the class of fault VALIDATED_IN_IMAGE exists to catch.
 
-        find /opt/tools/exomiser -name '*.jar' | grep -i exomiser | head -n1
-
-    `grep` matches the whole PATH, and the unpack destination is `/opt/tools/<name>` — so
-    for exomiser EVERY jar line contains "exomiser", including
-    `.../exomiser-cli-15.1.0/lib/ontologizer-0.0.1.jar`. The filter selected nothing and
-    `head -n1` took `find`'s directory order, so the wrapper ran a DEPENDENCY jar. The
-    host picked correctly the whole time (it matched `Path.name`), which is exactly why
-    this was invisible until VALIDATED_IN_IMAGE re-ran the evidence in the image that
-    ships — the class of bug that clause exists for.
-
-    `awk -F/` so `$NF` IS the basename: matching the path was the whole bug, so the
-    program is written in the one form that cannot see a directory."""
+    `awk -F/` so `$NF` IS the basename: the program is written in the one form that
+    cannot match a directory component."""
     prog = ('BEGIN{best="";bl=0} '
             '{b=$NF; lb=tolower(b); '
             + (f'if (index(lb, tolower(n))==0) next; ' if name else '')
@@ -161,7 +152,7 @@ def local_artifact(name: str, artifact_name: str, *, sha256: str = "",
     build context instead (see `ContainerBuild.stage_artifact`) and this generator
     reads them from disk.
 
-    The sha256 check is KEPT even though nothing was downloaded. It is no longer
+    The sha256 check is KEPT even though nothing was downloaded. It is not
     proving the network delivered the right bytes — it proves the COPY did, i.e.
     that the artifact the operator handed us at install time is the artifact baked
     into the image. That is the only install→ship integrity statement available on

@@ -239,7 +239,7 @@ def _version_present(requested: str, versions: list) -> bool:
         # conda encodes a revision separator as '_' — R's native `5.8-1` ships on conda-forge
         # as `5.8_1`, which PEP440 cannot parse at all (InvalidVersion → None), so it silently
         # never matches a user's `5.8.1` and a version that DOES exist is falsely refused
-        # (the ape 5.8.1 regression). Retry with '_'→'.' ONLY on a parse failure, so a
+        # (R's `ape` 5.8-1 is the canonical case). Retry with '_'→'.' ONLY on a parse failure, so a
         # parseable version's PEP440 semantics (e.g. a real `-1` post-release) stay untouched.
         k = _version_key(v)
         if k is None:
@@ -605,8 +605,8 @@ def _anchored_to_github_repo(metadata_urls: list[str], github_repo: str) -> bool
     exists, the resolver MUST verify the registry's metadata actually
     references that repo before trusting the name match. Without verification,
     a same-name unrelated package gets confidently picked over the user's
-    explicit repo (the 'GAB' resolver bug: PyPI's `gab` chat-bot library was
-    picked over baumannlab's Genome_Assembly_Booster)."""
+    explicit repo (PyPI's `gab` chat-bot library shares its name with
+    baumannlab's Genome_Assembly_Booster)."""
     if not github_repo or "/" not in github_repo:
         return False
     needle = github_repo.lower().strip()
@@ -1875,12 +1875,10 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
         # `registry_name`, never `tool`. crandb is case-SENSITIVE and so is
         # `install.packages()`, and `probe_cran` retries a clean miss against mechanical
         # capitalizations — so a query of `seurat` legitimately resolves CRAN's `Seurat` and
-        # carries `resolved_name` to say so. This branch read `tool` anyway and emitted
-        # `install_r_package(env, "seurat", source="cran")`, which does not install. The bug
-        # was UNREACHABLE until the degenerate-stub disqualification let `seurat` reach the
-        # cran tier at all: the case-retry landed the right package and the call spelled it
-        # wrong, trading a wrong tool for a broken one — exactly what `probe_cran`'s own
-        # docstring warns about, two functions away.
+        # carries `resolved_name` to say so. Reading `tool` here would emit
+        # `install_r_package(env, "seurat", source="cran")`, which does not install: the
+        # case-retry lands the right package and the call spells it wrong — exactly what
+        # `probe_cran`'s own docstring warns about.
         return f'install_r_package(env, "{registry_name(detail, tool)}", source="cran")'
     if tier == "bioconductor":
         return f'install_r_package(env, "{registry_name(detail, tool)}", source="bioconductor")'
@@ -2063,20 +2061,18 @@ def resolve(
     # F8. NORMALIZED HERE, ONCE, at the input boundary — before any reader sees it.
     #
     # `github_repo` is documented as 'owner/repo', and a pasted URL is how a human
-    # actually holds a repo. A URL contains "/", so it flowed through the
-    # owner/repo branch verbatim and downstream probes built
+    # actually holds a repo. A URL contains "/", so unnormalized it flows through the
+    # owner/repo branch verbatim and downstream probes build
     # `api.github.com/repos/https://github.com/owner/repo` -> 404 -> `repo_exists:
     # false` for a repo that exists, refused as `investigation_empty` ("we looked and
-    # found nothing") when the truth was "we mangled the identifier". Measured on the
-    # same repo in one session: bare `owner/repo` resolved a tag and emitted an
-    # install_call; the URL form refused.
+    # found nothing") when the truth is "we mangled the identifier".
     #
-    # Worse, the two forms disagreed WITHIN a single call: `author_image` and
-    # `authors_recipe` accepted the URL happily while binary/synthesis/source reported
+    # The two forms would also disagree WITHIN a single call: `author_image` and
+    # `authors_recipe` accept the URL happily while binary/synthesis/source report
     # the repo absent — two readings of one input, the disease
     # `test_one_reading_per_field.py` exists to prevent, here on an argument rather
     # than a record field. Normalizing at the boundary is what makes that structurally
-    # impossible rather than merely fixed in the three places that were wrong.
+    # impossible.
     github_repo = _normalize_github_repo(github_repo)
     availability: dict[str, dict] = {}
     if language == "r":
@@ -2084,9 +2080,9 @@ def resolve(
         if rconda.get("available"):
             # LOWERCASE, like the bioc producer below. The anaconda API is case-TOLERANT
             # (`r-Seurat` and `r-seurat` both answer 5.5.1), so the probe passes either way and
-            # the bug hides — but `spec` flows verbatim into `conda install` (env_manager.py),
+            # the mismatch hides — but `spec` flows verbatim into `conda install` (env_manager.py),
             # where channel package names are canonically lowercase. Without this,
-            # `resolve('Seurat', language='r')` emitted `r-Seurat=5.5.1`: the CALLER's spelling
+            # `resolve('Seurat', language='r')` would emit `r-Seurat=5.5.1`: the CALLER's spelling
             # presented as the channel's.
             rconda["r_spec"] = f"r-{tool.lower()}"
         availability["conda"]        = rconda
@@ -2278,8 +2274,8 @@ def resolve(
     # want"). If a same-name hit on PyPI/CRAN exists but its metadata doesn't
     # reference github_repo, it's almost certainly a DIFFERENT project that
     # happens to share the name — picking it would silently install the wrong
-    # tool (the 'GAB' bug: PyPI's chat-bot library `gab` confidently picked over
-    # baumannlab/Genome_Assembly_Booster). We disqualify those tiers from
+    # tool (PyPI's chat-bot library `gab` vs baumannlab/Genome_Assembly_Booster is
+    # the canonical case). We disqualify those tiers from
     # ranking AND record the collision so the caller can see what was rejected
     # and why. Without this guard, `chosen` could be a same-name unrelated
     # package; with it, the user-supplied repo wins by construction.
@@ -2717,9 +2713,9 @@ def resolve(
                                  if authors_assessment.get("workflow_only") else None)
     if chosen:
         # FACTS, not a verdict. The resolver surfaces the entry's self-description +
-        # repo provenance for the ride (the LLM) to judge identity; it no longer stamps
-        # `confirmed` or poisons `install_call` with an identity warning (Phase 2 —
-        # judgment moves to the ride). `install_call` stays a clean, runnable one-liner.
+        # repo provenance for the ride (the LLM) to judge identity; it does not stamp
+        # `confirmed` or poison `install_call` with an identity warning — judgment is
+        # the ride's. `install_call` stays a clean, runnable one-liner.
         decision["identity"] = identity_facts(tool, chosen, availability, github_repo, ev,
                                               repo_discovery)
         decision["install_call"] = _install_call(
@@ -2989,7 +2985,7 @@ def resolve(
                 for c in _div)
             _disclose(decision,
                       f"SAME NAME, DIFFERENT PROJECTS — we searched github for repos named "
-                      f"exactly '{tool}' (the check a registry hit used to suppress). "
+                      f"exactly '{tool}' (a registry hit does not suppress this check). "
                       f"{_corr['detail']}. All {len(_div)} of them, in the order github "
                       f"ranked them BY STARS (which is popularity, not relevance — the "
                       f"one you want may be last):\n{_rows}\n"
@@ -3221,22 +3217,20 @@ def resolve(
         decision["rationale"] = (decision.get("rationale", "") + "  NOTE: "
                                  + "  NOTE: ".join(_notes)).strip()
 
-    # NO identity poisoning of install_call. Identity is the ride's judgment now
-    # (Phase 2); the facts it judges on ride in `decision["identity"]` (self-description
-    # + repo provenance), and install_call stays a clean, runnable one-liner. The
-    # disclosures that DO remain above (authors-path-not-assessed, gate-errored, unchecked
-    # tiers, prefer-ignored) are about the ROUTING being incomplete — a different axis from
-    # "is this the tool you meant", which no longer gets a resolver verdict.
+    # NO identity poisoning of install_call. Identity is the ride's judgment; the facts
+    # it judges on ride in `decision["identity"]` (self-description + repo provenance),
+    # and install_call stays a clean, runnable one-liner. The disclosures above
+    # (authors-path-not-assessed, gate-errored, unchecked tiers, prefer-ignored) are
+    # about the ROUTING being incomplete — a different axis from "is this the tool you
+    # meant", which gets no resolver verdict.
     #
-    # NO TOOL-NAME TABLE, EITHER. A `VENDOR_GATED` dict of proprietary names (cellranger,
-    # dragen, guppy, …) that nulls a working install_call would state a true fact through
-    # the wrong mechanism: it makes this module the one place in `agent/` where a
-    # hardcoded tool name changes behaviour, and it duplicates, in a table that can only
-    # rot, world knowledge the ride already has. A finite list silently promises a
-    # completeness it cannot keep — the seventh name being right does not make the
-    # eighth's absence honest.
+    # NO TOOL-NAME TABLE, EITHER. No hardcoded tool name changes behaviour in this
+    # module: a table of proprietary names (cellranger, dragen, guppy, …) that nulls a
+    # working install_call would duplicate, in a list that can only rot, world knowledge
+    # the ride already has, and a finite list silently promises a completeness it cannot
+    # keep — the seventh name being right does not make the eighth's absence honest.
     #
-    # The division of labour stands as written above. The resolver surfaces FACTS — the
+    # The division of labour: the resolver surfaces FACTS — the
     # chosen entry's own words, its repo provenance, its licence, which tiers went
     # unprobed. Judging whether those facts describe the tool the user MEANT is the ride's
     # call, and the ride is an LLM with the world knowledge to make it: to know that 10x

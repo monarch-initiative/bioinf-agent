@@ -1,14 +1,10 @@
 """
 env_freeze — the container-native freeze: a spec/draft → a shipped env IMAGE.
 
-This is the C3 teardown bridge that retires the host recipe zoo. The OLD path
-(docker_builder.build_recipe + _recipe_dockerfile + nine `_emit_*`) translated a
-spec's typed install_method records back into Dockerfile RUN steps for the host-
-REPLAY locus (conda at /opt/conda, rustup/go-tarball, conda-activate). This module
-instead routes each install_method to the SINGLE source of per-tier knowledge —
+This module routes each install_method to the SINGLE source of per-tier knowledge —
 the install_commands generators — and builds on the container-native locus
 (EnvBuild: install + validate IN the ship image, one generic bake, validated==
-shipped). One emitter, not nine; the per-tier knowledge lives once (install_commands).
+shipped). One emitter; the per-tier knowledge lives once (install_commands).
 
 Toolchain-coupled tiers (cargo/go/perl) build with the ENGINE's toolchain, so the
 required toolchain conda specs are injected automatically (rust / go / perl +
@@ -746,9 +742,9 @@ def build_env_image(
             # code (per the outcomes re-wrap convention) but preserves the SPECIFIC
             # inner code as `inner_code` — the integrity firewall
             # build.binary_integrity_mismatch, asset-unresolved, non-replayable, …
-            # — so a caller can still tell WHY it refused (the old single generic
-            # code hid that, and wrongly forced `refused` even for a `broke` inner
-            # like a network hash failure). Class-preserving: refused stays refused.
+            # — so a caller can still tell WHY it refused (a single generic code
+            # would hide that, and forcing `refused` would be wrong for a `broke`
+            # inner like a network hash failure). Class-preserving: refused stays refused.
             fields = {**m, "success": False, "stage": "map_install",
                       "inner_code": m.get("code")}
             if m["outcome"] == "refused":
@@ -756,7 +752,7 @@ def build_env_image(
             return broke("build.map_install_failed", **fields)
         tool_specs.append(m["spec"])   # provenance (C5 ship assurance) attached by _map_install
 
-    # Append flag-bearing pip installs as engine-coupled long-tail tools (P2 fix).
+    # Append flag-bearing pip installs as engine-coupled long-tail tools.
     # Their versions come from the same installed_packages view as the engine pip
     # path so move-to-end dedup of retry attempts still resolves to the
     # last-successful version.

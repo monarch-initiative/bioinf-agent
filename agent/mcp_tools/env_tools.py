@@ -1437,7 +1437,7 @@ def install_pip_package(
         idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
         # Cache the import-check verify so the finalize package derivation
         # attaches it — without this the derived PackageRecord has no
-        # verify_output and fails I2 (same gap fixed for R packages).
+        # verify_output and fails I2 (R packages cache theirs the same way).
         if result.get("success") and result.get("verify_output"):
             _ms._pipeline_state.cache_verification(pipeline_id, name, {
                 "verify_command": result.get("verify_command"),

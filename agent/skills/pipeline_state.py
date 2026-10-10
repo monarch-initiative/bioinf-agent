@@ -110,10 +110,10 @@ class PipelineState:
         """Initialize a draft, or resume the existing one (silent resume).
 
         Resume-vs-new is decided from the FILE, inside one lock — not from `self._drafts`.
-        Deciding it from the cache is the create-side of the same staleness bug the
-        mutators had, and it is the destructive one: a second process calling
-        `start("p")` saw "p" missing from its OWN map, created a fresh empty draft, and
-        persisted it over a draft the first process had been filling. Everything already
+        Deciding it from the cache is the destructive form of cache staleness: a
+        second process calling `start("p")` sees "p" missing from its OWN map, creates
+        a fresh empty draft, and persists it over a draft the first process has been
+        filling. Everything already
         recorded — install steps, test data, validations — gone, and reported as a clean
         new pipeline rather than as an error."""
         path = self._draft_path(pipeline_name)

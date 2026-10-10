@@ -9,8 +9,7 @@ ControlMaster ssh pattern.
 Today the surface is:
   upload / download              — unified transfer (zone auto-routed
                                    by where the absolute remote path
-                                   falls); replaces the six retired
-                                   zone-specific primitives
+                                   falls)
   stage_apptainer_image          — get a frozen env's .sif onto a env
   run_production_pipeline        — run a RENDERED pipeline in production (submit-and-document)
   run_step_on_cluster            — validation/seal run in scratch

@@ -376,13 +376,6 @@ class EnvManager:
         for ch in channels:
             channel_args += ["-c", ch]
 
-        # (Historical: conda-pack was auto-added here to tarball the env for the
-        # host Docker build. That build path is RETIRED — freeze is container-native
-        # and never conda-packs, per freeze_tools/docker_builder — so we no longer
-        # install conda-pack into every env. The filter-it-out guards in env_tools /
-        # resources / spec_writer stay as a defensive no-op for envs that still have
-        # it from bootstrap_core or a manual install.)
-
         cmd = (
             [self._conda_exe, "install", "--prefix", str(env_path), "--yes", "--quiet"]
             + channel_args
@@ -425,9 +418,9 @@ class EnvManager:
         """Universal mutation primitive — run a command that changes the env and
         capture it as a Mutation.
 
-        This is the single chokepoint the install re-spine routes through:
-        install() (and, as the re-spine proceeds, every other
-        install tier) delegates execution here so the capture shape — command,
+        This is the single chokepoint every install tier routes through:
+        install() and the other install tiers delegate execution here so the
+        capture shape — command,
         returncode, success, stdout/stderr, and (in-env) resource usage +
         detected outputs — is produced in exactly ONE place rather than
         re-derived per method. Pairing a Mutation with an evidence strategy
@@ -1833,7 +1826,7 @@ class EnvManager:
         Prefers signalling the whole process group so child processes die too,
         but NEVER signals this server's own process group — if the service was
         somehow launched into our group (detachment failed), fall back to
-        signalling the single PID. A regression here previously killed the
+        signalling the single PID. Signalling our own group would kill the
         server itself; this guard makes that impossible.
         """
         import signal as _signal

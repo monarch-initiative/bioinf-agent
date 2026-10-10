@@ -106,7 +106,7 @@ def call_verdict(result: object) -> bool | None:
     reader that treats `.get("success")` as the whole answer converts *no
     statement* into *failure*, which is a verdict manufactured from a field
     nobody wrote. Callers must branch on all three; `if not call_verdict(r)`
-    reintroduces the bug this function exists to remove.
+    reintroduces the fault this function exists to remove.
     """
     if not isinstance(result, dict):
         return None

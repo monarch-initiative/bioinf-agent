@@ -19,7 +19,7 @@ returns a clean, fully-tagged `proven` install_call for a CRAN spreadsheet-range
 when the user meant 10x Genomics' scRNA-seq pipeline. Every terminal behaved perfectly.
 Terminal coverage cannot see it, because nothing is broken except the meaning.
 
-THE THREE GAPS this draws — the user's own model, plus one the Talos bug forced:
+THE THREE GAPS this draws:
 
     intent  --[1]-->  interpretation  --[2]-->  outcome  --[3]-->  report
 
@@ -34,10 +34,9 @@ THE THREE GAPS this draws — the user's own model, plus one the Talos bug force
                        component whose promise is "call once, never look again", the
                        paperwork IS the product.
 
-WHY THIS IS DERIVED AND NOT DRAWN. This project already hand-authored an intent map once —
-`docs/scenario_decision_tree.{md,html,json}` — and it rotted; tier 7 deleted 2,653 lines of
-it. What survived that effort was the outcomes ledger, and it survived *because* it is
-projected from code and drift-linted. So this page is a pure projection of
+WHY THIS IS DERIVED AND NOT DRAWN. A hand-authored intent map rots; the outcomes ledger
+survives *because* it is projected from code and drift-linted. So this page is a pure
+projection of
 `docs/intent_corpus.json`, which is itself executed by `tests/live/test_intent_corpus.py`.
 Nothing here is authored. If the corpus is stale, the page says so rather than flattering us.
 
@@ -232,7 +231,7 @@ def render(corpus: dict) -> str:
              f'<b class="defer">{len(deferred)}</b> await a grader that does not exist yet · '
              f'<b class="warn">{len(unassertable)}</b> name a fact no assertion here can read. '
              f'The last two carry <b>no verdict at all</b> — not a red one. Counting them as '
-             f'failures (which this page did until 2026-08-06) rounds absence up into a '
+             f'failures rounds absence up into a '
              f'judgement, in the one meter that exists to refuse exactly that.</p>')
     if denom:
         w_ok = 100 * len(ok) // denom
@@ -323,8 +322,8 @@ def render(corpus: dict) -> str:
              f"registries on <b>{_e(probed)}</b>. Executed by "
              f"<code>tests/live/test_intent_corpus.py</code> (<code>pytest -m live</code>).<br>"
              f"Nothing on this page is authored — it is a projection of that corpus, exactly "
-             f"as the outcomes dashboard is a projection of the code. This project "
-             f"hand-drew an intent map once; it rotted, and tier 7 deleted 2,653 lines of it. "
+             f"as the outcomes dashboard is a projection of the code. A hand-drawn intent "
+             f"map rots. "
              f"<b>A scenario probed long ago is a claim about the past</b> — if the date "
              f"above is stale, re-probe before believing a single number here.")
     P.append("</div></div>")

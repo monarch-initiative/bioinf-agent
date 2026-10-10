@@ -385,8 +385,8 @@ def _validate_project(proj: object, idx: int, project_names: set[str],
     lists which compute resources the project may use (this ALSO carries the
     implicit scratch/common_data grant, so a scratch-only project needs no
     directories); `directories` are the explicit user-territory grants, each
-    tagged with the `env` it lives on. The old `compute_env_access[]` wrapper is
-    gone — the loader synthesizes it internally (see _normalize_projects)."""
+    tagged with the `env` it lives on. The loader synthesizes the internal
+    `compute_env_access[]` view from these (see _normalize_projects)."""
     if not isinstance(proj, dict):
         raise ConfigError(f"{path}: projects[{idx}] must be a mapping")
 

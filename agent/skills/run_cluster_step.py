@@ -714,7 +714,7 @@ def run_step_on_cluster(
         # leave a reader to infer it from the absence of a --partition line.
         "gpu_placement":            rendered.get("gpu_placement"),
     }
-    # Constructed THROUGH the model (typed-records Seam A): the cluster
+    # Constructed THROUGH the model: the cluster
     # producer is held to the same shape gate as the local ones. If OUR OWN
     # emission fails its model — inputs were pre-flighted, so this is a
     # producer bug — the job already ran and its outputs are downloaded;

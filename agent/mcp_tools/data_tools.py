@@ -342,7 +342,7 @@ def phenopacket_to_vcf(
                       recorded in the draft as a sha256-anchored authored artifact
                       (generated_by = this call), so I8 can trace the step's input.
                       Without it the written path is anchored NOWHERE — the consuming
-                      step is an I8 orphan and seal refuses (falsifier FD5).
+                      step is an I8 orphan and seal refuses.
 
     Output keys: success, phenopacket_id, sample_id, output_vcf, num_variants,
                  contigs, genome_assembly (+ pipeline_merge when pipeline_id given).
@@ -522,8 +522,8 @@ def select_test_data(
 
     # CONTENT ANCHORS — pin the bytes at SELECTION time, so seal has something real to
     # re-verify against. Written here and nowhere else: an anchor first observed at seal
-    # would be compared against itself moments later and prove nothing (the I5 laundering
-    # bug). A path that is not on disk gets NO anchor rather than a fabricated one — the
+    # would be compared against itself moments later and prove nothing. A path that is
+    # not on disk gets NO anchor rather than a fabricated one — the
     # seal-side check refuses on the missing file itself, which is the honest complaint.
     anchors = {}
     for key, path in _core_data.test_data_paths(test_data_ref).items():
@@ -651,20 +651,14 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         # so the per-tier env-build invariants (agent/skills/invariants.py) collapse
         # into the structural guarantees enforced INSIDE the shipped image).
         #
-        # DERIVED, for the same reason the Layer-2 run below is. This was three
-        # hand-written bullets and the contract enforces FOUR — WELL_FORMED was missing,
-        # so a subagent following this brief had no idea a malformed shipped_binaries[]
-        # would be refused. The stale list sat directly beneath a comment explaining that
-        # the LAYER-2 list had gone stale and been fixed by derivation.
+        # DERIVED from the guarantee list, for the same reason the Layer-2 run below
+        # is: a hand-written roster inside a brief handed to an autonomous subagent
+        # drifts, and the agent then plans against guarantees that do not exist.
         *(f"{name}: {statement}" for name, statement in _honesty.LAYER1_GUARANTEES),
         # Layer 2 — the workflow run: DERIVED FROM THE REGISTRY, never hand-listed.
-        # This was a hand-written run of six entries and it was already wrong — it
-        # omitted I5 and I10, the two clauses that were called "retired" in prose for
-        # months while refusing real seals. That is precisely the drift
-        # agent/skills/invariants.py was created to end, and a roster inside the BRIEF
-        # HANDED TO AN AUTONOMOUS SUBAGENT is the worst place to keep a stale copy: the
-        # agent plans against invariants that do not exist, omits fields for ones it was
-        # told were gone, and is then refused by a gate it had no reason to expect.
+        # A stale roster here makes the agent plan against invariants that do not
+        # exist, omit fields for ones it was told were gone, and then be refused by
+        # a gate it had no reason to expect.
         #
         # Membership and statement text come from the registry so they cannot drift.
         # _BRIEF_HINTS adds only the PRACTICAL note the registry deliberately does not

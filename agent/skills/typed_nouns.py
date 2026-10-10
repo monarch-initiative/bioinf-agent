@@ -78,15 +78,15 @@ def _tn(**kw) -> TypedNoun:
 
 REGISTRY: dict[str, TypedNoun] = {tn.noun: tn for tn in [
     # ---- Layer 2: the pipeline draft / WorkflowSpec ---------------------------------
-    # `retires` attribution is from measurement at spec_writer HEAD: I0.shape_sanity
+    # `retires` names the walk clauses a noun's model subsumes: I0.shape_sanity
     # walks the seven list nouns below; I6.absolute_paths and I7.resource_usage_recorded
     # read only pipeline_steps. I7.resource_usage_captured (all-zeros / sacct_error) and
     # I6.template_placeholders_declared are value/world checks and are claimed by nobody.
     #
-    # pipeline_steps ENFORCED (Seam A): the five producers construct through
+    # pipeline_steps ENFORCED: the five producers construct through
     # PipelineStep.produce, check_draft raises at the write funnel, and seal re-validates
     # via WorkflowSpec. Its two solely-claimed clauses (I6.absolute_paths,
-    # I7.resource_usage_recorded) were deleted from the walk in the same change; the
+    # I7.resource_usage_recorded) are not in the walk; the
     # I0.shape_sanity claim waits on the other six list nouns.
     _tn(noun="pipeline_steps", model="PipelineStep", layer=LAYER_WORKFLOW, mode=ENFORCED,
         enforced_at="agent.skills.typed_nouns.check_draft",

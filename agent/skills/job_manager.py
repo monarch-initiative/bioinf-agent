@@ -371,8 +371,8 @@ class JobManager:
 
         The status file's `state` is only advanced when someone calls check(); a job
         whose process died unobserved (e.g. the MCP server restarted, losing the Popen
-        handle) stays 'running' on disk forever. So a bare read reports zombies as live —
-        exactly the agent_status inaccuracy this fixes. Here we re-observe: a 'running'
+        handle) stays 'running' on disk forever. So a bare read reports zombies as live.
+        Here we re-observe: a 'running'
         record whose PID is no longer alive is reported as 'exited' with reconciled=True,
         so the caller sees the truth without needing to have polled every job.
 
@@ -490,7 +490,7 @@ class JobManager:
         unaffected. Prepended rather than appended: appending would land inside
         an unterminated heredoc in the caller's command.
 
-        Two cases it cannot cover, both of which degrade to the old behaviour
+        Two cases it cannot cover, both of which degrade to check()-side detection
         (check() touches the sentinel when it observes the exit): a command that
         `exec`s over the shell, and SIGKILL."""
         touch = f"touch {shlex.quote(str(done))} 2>/dev/null || true"

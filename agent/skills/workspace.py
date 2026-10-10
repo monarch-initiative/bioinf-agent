@@ -257,9 +257,9 @@ def projects_access_path() -> Path:
 def zones() -> dict[str, str]:
     """Every resolved location, for the doctor and ``agent_status``.
 
-    A layout change invalidates every "look in env_reports/" habit an agent or a
-    user has, so the resolved paths have to be readable from inside the running
-    system rather than inferred from this file.
+    The resolved paths have to be readable from inside the running system rather
+    than inferred from this file, so that neither an agent nor a user has to
+    remember the layout.
 
     DESCRIBES, never creates. The zone accessors above mkdir on demand because
     their caller is about to write; a report that conjured the directories it is

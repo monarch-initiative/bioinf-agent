@@ -11,9 +11,6 @@ the run/ship surface that operates on an already-built image:
   - save_archive(): `docker save` an image to a tarball (Apptainer docker-archive
     delivery; used by freeze()).
   - image_digest() / image_present(): daemon queries.
-
-The conda-pack tarball builder + its Dockerfile templates were retired with the
-host build path.
 """
 
 import os as _os
@@ -98,15 +95,14 @@ class DockerBuilder:
                     f'/usr/bin/time -v -o {rd}/rusage bash {rd}/cmd.sh; '
                     f'else bash {rd}/cmd.sh; fi')
 
-        # F16's LABELS, on this launcher too. `docker rm -f` below cleans up on the
+        # Build labels, on this launcher too. `docker rm -f` below cleans up on the
         # normal path, and like ContainerBuild.close() it does not survive the process
         # being killed — the ~600 s watchdog, or BIOINF_MCP_AUTO_RELOAD reloading
         # mid-run. This container carries a step's whole working set.
         #
-        # Found by an audit of F16's fix, not by the fix: `sweep_leaked_build_containers`
-        # is scoped by label, so an unlabelled detached container is one it can never
-        # reap no matter how often it runs. Fixing the leak at ONE launcher and leaving
-        # the other is how a class survives its own repair.
+        # `sweep_leaked_build_containers` is scoped by label, so an unlabelled detached
+        # container is one it can never reap no matter how often it runs: every
+        # launcher labels.
         run_cmd = ["docker", "run", "-d", "--platform", platform,
                    "--label", f"{_BUILD_LABEL}=1",
                    "--label", f"{_BUILD_OWNER_LABEL}={_os.getpid()}"]

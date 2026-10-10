@@ -258,7 +258,7 @@ def _semantic_versions(record: dict) -> list[dict]:
       - `installed` is OBSERVED (via `_resolved_version` — the shared definition the
         ENV report also uses), or None = unrecorded.
       - `requested` is what the user asked for (or None if unpinned).
-      - `version` == `installed`, kept for back-compat with readers of the old shape.
+      - `version` == `installed`, duplicated for readers that key on `version`.
       - `diverges` flags requested ≠ installed (the shared divergence check).
 
     Never fork `_resolved_version` or read only its first rung (the SBOM): the SBOM
@@ -330,9 +330,9 @@ def _test_data_status(spec: dict) -> str:
     An absent `test_data_integrity` means the artifact predates anchoring, which is
     `unanchored` — not `verified`, and not "nothing to say" either when the spec does
     declare input paths. Rounding either way would be the inventory asserting a verdict
-    its producer never made. Written once because the compact and detail rows had it
-    twice within minutes, and they already disagreed: the compact one keyed off the
-    stored field alone, so both legacy specs on disk showed no warning at all.
+    its producer never made. Written once: the compact and detail rows both read it,
+    and a copy that keys off the stored field alone shows no warning for a spec that
+    predates anchoring.
 
     NOT re-derived from disk. `verify_test_data` stats and hashes every declared input,
     and an inventory listing must stay a cheap read — the same reason the how-to status
@@ -371,14 +371,7 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
     listed (`EnvCache.contract_violations`, the same check freeze/run/stage/seal
     ask at serve time), so `contract_ok: False` means "on disk but would NOT be
     served today". Listing a record as though it were usable when the serving
-    paths would refuse it is exactly the false green tier 5 closed.
-
-    Rewritten in tier 7. It previously parsed every `*.yaml` in env_reports/ as a
-    `PipelineSpec` — a model whose producer (finalize_pipeline/save_pipeline_spec)
-    was RETIRED in the re-spine. So it matched only WorkflowSpec/recipe yamls,
-    every parse raised, a try/except turned each into an `{file, error}` dict, and
-    the tool returned `count: 7` having understood exactly none of them. Broken
-    for real users, and green in the suite: the disease in a user-facing tool.
+    paths would refuse it is exactly the false green this listing must not show.
     """
 
     # --- Layer 1: frozen envs ------------------------------------------------

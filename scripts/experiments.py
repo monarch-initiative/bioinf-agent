@@ -18,8 +18,8 @@ workspace of its own, so nothing it finds was left by an earlier run:
 
 and after the runs, `report.html` beside them (scripts/experiment_report.py).
 
-    python scripts/experiments.py run experiments/c1_samtools.yaml
-    python scripts/experiments.py run experiments/c1_samtools.yaml --models sonnet --repeats 1
+    python scripts/experiments.py run experiments/c1_seqkit.yaml
+    python scripts/experiments.py run experiments/c1_seqkit.yaml --models sonnet --repeats 1
     python scripts/experiments.py run … --dry-run       # print the command, run nothing
     python scripts/experiments.py report <experiment dir> […]   # (re)render, any set of experiments side by side
     python scripts/experiments.py parse <run dir>              # re-read one run's row
