@@ -583,12 +583,11 @@ class TestReport:
         rows = metrics.load_rows([tmp_path])
         page = report.render(rows, experiments.experiment_setups([tmp_path]))
         section = page.split("Across code revisions")[1].split("<h2>")[0]
-        assert "<th>#</th><th>first run</th><th>code rev</th><th>commit</th>" in section
+        assert "<th>#</th><th>first run</th><th>code rev</th><th>runs</th>" in section
         assert section.index("<code>aaa1</code>") < section.index("<code>bbb2</code>")
         assert "2026-10-08 06:00 UTC" in section and "2026-10-09 18:00 UTC" in section
         assert ">r1</td>" in section and ">r2</td>" in section
         assert "code r1 aaa1 → r2 bbb2" in page           # the subtitle reads the same way
-        assert '<div class="legend">' in page and page.index("r1 · aaa1") < page.index("r2 · bbb2")
 
     def test_the_setup_names_conditions_that_varied_between_runs(self, tmp_path):
         _write_run(tmp_path / "a", meta={"model": "sonnet"})
@@ -932,25 +931,20 @@ class TestFigureLabels:
         # every dot has a hit area larger than the mark and names its run
         assert five.count('class="hit"') == 5 and "sonnet__r3__x" in five
 
-    def test_dot_colour_follows_the_revision_in_time_order(self):
-        """Colour follows the revision, not its rank on the page: the OLDEST revision by first
-        run is slot 1, the next slot 2, and a revision with uncommitted changes is its own."""
-        older = self._rows(1, rev="bbb2", start="2026-10-01T00:00:00+00:00")
-        newer = self._rows(1, rev="aaa1", start="2026-10-09T00:00:00+00:00")
+    def test_dots_wear_the_experiment_colour_and_name_their_revision(self):
+        """Colour is the experiment's, the same across every panel; the code revision rides
+        on each dot's hover text, with the revisions numbered oldest first by first run."""
+        older = self._rows(2, rev="bbb2", start="2026-10-01T00:00:00+00:00")
+        newer = self._rows(2, rev="aaa1", start="2026-10-09T00:00:00+00:00")
         dirty = [dict(r, code_dirty=True, run_id="d") for r in self._rows(1, rev="aaa1", start="2026-10-10T00:00:00+00:00")]
         revs = report.revision_order(older + newer + dirty)
-        assert [(x["tag"], x["code_rev"], x["code_dirty"], x["slot"]) for x in revs] == \
-            [("r1", "bbb2", False, 1), ("r2", "aaa1", False, 2), ("r3", "aaa1", True, 3)]
+        assert [(x["tag"], x["code_rev"], x["code_dirty"], x["runs"]) for x in revs] == \
+            [("r1", "bbb2", False, 2), ("r2", "aaa1", False, 2), ("r3", "aaa1", True, 1)]
         svg = report._dots(older + newer + dirty, "cost_usd", "usd", "cost per run", revs)
-        assert svg.count('fill="var(--s1)"') == 1 and svg.count('fill="var(--s2)"') == 1 and svg.count('fill="var(--s3)"') == 1
-        legend = report._revision_legend(revs)
-        assert legend.index("r1 · bbb2") < legend.index("r2 · aaa1") < legend.index("r3 · aaa1 + uncommitted")
-        assert report._revision_legend(revs[:1]) == "", "one revision needs no key"
-        # past eight revisions the oldest share one grey rather than a ninth hue
-        many = report.revision_order([dict(r, code_rev=f"c{i:03d}", started_at=f"2026-09-{i + 1:02d}T00:00:00+00:00")
-                                      for i, r in enumerate(self._rows(10))])
-        assert [x["slot"] for x in many] == [0, 0, 1, 2, 3, 4, 5, 6, 7, 8]
-        assert "earlier revisions" in report._revision_legend(many)
+        assert svg.count(f'fill="{report._PALETTE[0]}"') == 1 + 3      # scenario_00: the mean bar and its three dots
+        assert svg.count(f'fill="{report._PALETTE[1]}"') == 1 + 2      # scenario_01: the mean bar and its two dots
+        assert "r1 bbb2" in svg and "r3 aaa1 + uncommitted" in svg
+        assert not hasattr(report, "_revision_legend"), "colour is the experiment's; no revision key is drawn"
 
     def test_scatter_labels_never_overlap_even_when_points_coincide(self):
         svg = report._scatter(self._groups(12))
