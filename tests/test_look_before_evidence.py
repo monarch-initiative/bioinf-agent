@@ -235,3 +235,20 @@ def test_engine_coupled_evidence_run_from_the_clone_still_finds_the_pixi_manifes
     assert "cd /opt/tools/gab ||" in evidence_sh
     assert f"pixi run --manifest-path {cb.workdir}/pixi.toml bash -c 'python run.py -h'" in evidence_sh
     assert CB.PixiEngine().run("x").startswith("pixi run --manifest-path /work/pixi.toml bash -c ")
+
+
+
+def test_a_cheat_shaped_evidence_is_refused_before_a_container_starts(monkeypatch):
+    """`picard --version 2>&1 | grep Version` is rc-laundered by the pipe. check_build
+    refuses it on the shipped image — after a full build. The build now asks the same
+    rule first, and the refusal arrives with no container started."""
+    from agent.skills.env_build import EnvBuild
+    b = EnvBuild("picard_env")
+    b.add_tool({"command": "conda install picard", "evidence": "picard FastqToSam --version 2>&1 | grep -E 'Version'",
+                "tool": "picard", "purpose": "picard (java jar)"})
+    started = []
+    monkeypatch.setattr(b.cb, "start", lambda: started.append(1) or {"success": True})
+    out = b.build()
+    assert out["code"] == "env_build.evidence_shape" and out["stage"] == "evidence_preflight"
+    assert out["tool"] == "picard" and "pipes into another command" in out["error"]
+    assert not started, "a refused evidence must not start a build container"

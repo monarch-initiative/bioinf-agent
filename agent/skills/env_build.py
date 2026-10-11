@@ -112,6 +112,17 @@ class EnvBuild:
 
     # -- BUILD in the container -------------------------------------------
     def build(self) -> dict[str, Any]:
+        # The shape rule reads a string and costs nothing; the build costs minutes. A
+        # cheat shape is refused here with check_build's own words, before a container
+        # starts — check_build still runs it on the shipped image, so nothing is lost
+        # by asking early.
+        for v in self.verifications:
+            shape = _honesty.evidence_shape_violation(v.get("check", ""), v.get("tool", ""),
+                                                      v.get("tool_aliases") or ())
+            if shape:
+                return broke("env_build.evidence_shape", success=False, stage="evidence_preflight",
+                             tool=v.get("tool", ""), label=v.get("label", ""),
+                             evidence=v.get("check", ""), error=shape)
         s = self.cb.start()
         if not s.get("success"):
             return broke("env_build.start_failed", **{**s, "success": False, "stage": "start"})

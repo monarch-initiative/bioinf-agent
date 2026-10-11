@@ -5286,6 +5286,7 @@ def test_envbuild_prebaked_lock_skips_solve_calls_declare_locked(monkeypatch):
     inst.conda_specs = ["samtools=1.21"]
     inst.pip_specs = []
     inst.tools = []
+    inst.verifications = []
     inst.lock_text = ""
     inst.lock_files = {}
     inst.prebaked_lock_files = {"pixi.toml": "T", "pixi.lock": "L"}

@@ -600,13 +600,23 @@
     "named_in_test": false
   },
   {
+    "code": "env_build.evidence_shape",
+    "outcome": "broke",
+    "source": "helper",
+    "tagged": true,
+    "func": "build",
+    "where": "agent/skills/env_build.py:123",
+    "end_line": 125,
+    "named_in_test": true
+  },
+  {
     "code": "env_build.start_failed",
     "outcome": "broke",
     "source": "helper",
     "tagged": true,
     "func": "build",
-    "where": "agent/skills/env_build.py:117",
-    "end_line": 117,
+    "where": "agent/skills/env_build.py:128",
+    "end_line": 128,
     "named_in_test": false
   },
   {
@@ -615,8 +625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build",
-    "where": "agent/skills/env_build.py:127",
-    "end_line": 127,
+    "where": "agent/skills/env_build.py:138",
+    "end_line": 138,
     "named_in_test": false
   },
   {
@@ -625,8 +635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build",
-    "where": "agent/skills/env_build.py:132",
-    "end_line": 132,
+    "where": "agent/skills/env_build.py:143",
+    "end_line": 143,
     "named_in_test": false
   },
   {
@@ -635,8 +645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build",
-    "where": "agent/skills/env_build.py:136",
-    "end_line": 136,
+    "where": "agent/skills/env_build.py:147",
+    "end_line": 147,
     "named_in_test": false
   },
   {
@@ -645,8 +655,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build",
-    "where": "agent/skills/env_build.py:150",
-    "end_line": 150,
+    "where": "agent/skills/env_build.py:161",
+    "end_line": 161,
     "named_in_test": true
   },
   {
@@ -655,8 +665,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_in_image",
-    "where": "agent/skills/env_build.py:222",
-    "end_line": 226,
+    "where": "agent/skills/env_build.py:233",
+    "end_line": 237,
     "named_in_test": true
   },
   {
@@ -665,8 +675,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_in_image",
-    "where": "agent/skills/env_build.py:229",
-    "end_line": 229,
+    "where": "agent/skills/env_build.py:240",
+    "end_line": 240,
     "named_in_test": true
   },
   {
@@ -675,8 +685,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run",
-    "where": "agent/skills/env_build.py:302",
-    "end_line": 302,
+    "where": "agent/skills/env_build.py:313",
+    "end_line": 313,
     "named_in_test": false
   },
   {
@@ -2435,8 +2445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "build",
-    "where": "agent/skills/env_build.py:151",
-    "end_line": 151,
+    "where": "agent/skills/env_build.py:162",
+    "end_line": 162,
     "named_in_test": true
   },
   {
@@ -2445,8 +2455,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_in_image",
-    "where": "agent/skills/env_build.py:228",
-    "end_line": 228,
+    "where": "agent/skills/env_build.py:239",
+    "end_line": 239,
     "named_in_test": true
   },
   {
