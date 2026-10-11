@@ -209,6 +209,64 @@ def _bare_invocation(ev: str, tool: str) -> bool:
     return found
 
 
+#: Commands that read files and never run a program of their own: a command made only of
+#: these, with the tool's name appearing as an operand or a pattern, inspects the image —
+#: it proves a file mentions the tool, not that the tool runs.
+_INSPECTORS = frozenset({
+    "grep", "egrep", "fgrep", "zgrep", "test", "[", "ls", "cat", "find", "stat", "file", "head",
+    "tail", "wc", "readlink", "realpath", "strings", "md5sum", "sha256sum", "unzip", "tar", "zcat",
+    "du", "echo", "printf", "true", "basename", "dirname",
+})
+_SHELL_WRAP = re.compile(r"^\s*(?:bash|sh|zsh|dash)\s+(?:-[a-z]+\s+)*?-[a-z]*c\s+([\"'])(.*)\1\s*$", re.S)
+
+
+def _unwrap_shell(ev: str) -> str:
+    """The command inside a `bash -c "…"` wrapper, else `ev` itself."""
+    m = _SHELL_WRAP.match(ev.strip())
+    return m.group(2) if m else ev
+
+
+def _segments(ev: str) -> list[str]:
+    """The command segments of `ev`, split on `;`, `|` and `&` OUTSIDE quotes — an escaped
+    pipe inside a grep pattern is part of the pattern, not a pipe."""
+    out, cur, quote = [], [], ""
+    for ch in ev:
+        if quote:
+            cur.append(ch)
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"":
+            quote = ch
+            cur.append(ch)
+        elif ch in ";|&":
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur))
+    return [s for s in out if s.strip()]
+
+
+def _inspection_only(ev: str, tool: str) -> bool:
+    """True when every segment's command word is a file inspector and the tool is never
+    the command: the evidence looks AT the tool without running it. Declines (False) when
+    a segment's command word cannot be read, so the caller's classification stands."""
+    from agent.models.core_data import default_step_tool
+    toks = {t.lower() for t in _tool_tokens(tool)}
+    saw = False
+    for seg in _segments(_unwrap_shell(ev)):
+        if not seg.strip():
+            continue
+        cmdtok = default_step_tool(seg)
+        if not cmdtok:
+            return False
+        base = cmdtok.rsplit("/", 1)[-1].lower()
+        if base in toks or base not in _INSPECTORS:
+            return False
+        saw = True
+    return saw and _references_tool(ev, tool)
+
+
 def evidence_depth(evidence: str, tool: str = "") -> str:
     """Classify how deeply an evidence command exercises the tool — DISCLOSURE ONLY.
 
@@ -284,6 +342,13 @@ def evidence_depth(evidence: str, tool: str = "") -> str:
             return "functional"
         return "import"
 
+    # -- presence by inspection: the tool is never invoked — every segment's command word is
+    #    a file inspector (grep/test/ls/cat/find/…) and the tool's name occurs only as an
+    #    operand or a pattern. `grep -qi apollo /launch.sh` proves a file mentions the tool
+    #    and runs nothing of it. Decided before the reads-a-path rule below, which would
+    #    otherwise read the inspected path as data the tool moved.
+    if tool and _inspection_only(ev, tool):
+        return "presence"
     # -- a BARE invocation: the tool runs at a command position with NO operands beyond
     #    redirects/capture files. It can only answer with its banner/usage — exactly as
     #    weak as `--help` — so it must not fall through to 'functional' on the strength

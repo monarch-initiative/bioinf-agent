@@ -19,7 +19,8 @@ INSTRUCTIONS = ROOT / "agent" / "operator_instructions.md"
 _NOT_TOOLS = {"pipeline_id", "outcome", "code", "result", "state", "job_id", "usage", "url", "local_path",
               "tools", "evidence", "patches", "github_repo", "background", "wait_s", "exited", "degraded",
               "proven", "refused", "broke", "vanished", "loop", "env_name", "tool", "command", "name",
-              "description", "file", "find", "replace", "reason"}
+              "description", "file", "find", "replace", "reason", "where", "grep", "ls", "test",
+              "evidence_timeout_s"}
 
 #: The protocol, in the order the instructions must give it.
 _PROTOCOL_ORDER = ("agent_status", "interpret_request", "resolve_tool", "start_pipeline", "freeze",

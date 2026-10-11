@@ -678,10 +678,18 @@ class ContainerBuild:
         # for the seven-runner consolidation this came from.
         return _proc.run_argv(args, timeout)
 
-    def exec(self, command: str, timeout: int = 1800) -> dict[str, Any]:
-        """Run a shell command in the build container (engine on PATH)."""
+    def exec(self, command: str, timeout: int = 1800, workdir: str = "") -> dict[str, Any]:
+        """Run a shell command in the build container (engine on PATH). `workdir` is the
+        directory the command must run from when the cwd is part of its meaning (a
+        run-by-path repo's verify); it must exist, and a missing one is its own error
+        rather than a run from somewhere else that fails for a different reason."""
         assert self.cid, "call start() first"
-        full = f'{self.engine.exec_env()}; cd {self.workdir} 2>/dev/null || true; {command}'
+        if workdir:
+            q = shlex.quote(workdir)
+            cd = f'cd {q} || {{ echo "evidence workdir {q} does not exist in the build container" >&2; exit 97; }}'
+        else:
+            cd = f"cd {self.workdir} 2>/dev/null || true"
+        full = f'{self.engine.exec_env()}; {cd}; {command}'
         return self._sh(["docker", "exec", self.cid, "bash", "-c", full], timeout=timeout)
 
     def start(self) -> dict[str, Any]:
@@ -800,10 +808,13 @@ class ContainerBuild:
     def run(self, command: str, evidence: str, purpose: str = "", tool: str = "",
             engine_coupled: bool = False, provenance: dict | None = None,
             runtime_packages: list[str] | None = None,
-            version_probe: str = "", timeout: int = 1800) -> dict[str, Any]:
+            version_probe: str = "", timeout: int = 1800, workdir: str = "") -> dict[str, Any]:
         """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
         both in the build container. On success the command is recorded for verbatim
-        baking; `evidence` is re-run in the built image at freeze.
+        baking; `evidence` is re-run in the built image at freeze. `workdir` is where the
+        evidence runs when its generator says the cwd is part of the invocation
+        (`evidence_workdir` on a script-repo spec) — the same directory the shipped-image
+        re-run uses, so the two runs resolve the same relative paths.
 
         `tool` is the command this step puts on PATH (`seqtk`) — DISTINCT from
         `purpose`, which is prose for humans (`seqtk (source @ 94e7070)`). Every
@@ -835,7 +846,7 @@ class ContainerBuild:
         # emulated builds a far larger cap; the _sh timeout handler keeps a genuine
         # hang from crashing the freeze either way.
         ev_timeout = 900 if self._emulated() else 120
-        ev = self.exec(ev_cmd, timeout=ev_timeout)
+        ev = self.exec(ev_cmd, timeout=ev_timeout, **({"workdir": workdir} if workdir else {}))
         if ev["returncode"] != 0:
             return broke("container_build.run_evidence_failed", success=False, stage="evidence", evidence=ev_cmd,
                     stderr=(ev["stderr"] or "")[-800:])
@@ -911,7 +922,8 @@ class ContainerBuild:
                         engine_coupled=spec.get("engine_coupled", False),
                         provenance=spec.get("provenance"),
                         runtime_packages=spec.get("runtime_packages"),
-                        version_probe=spec.get("version_probe", ""), timeout=timeout)
+                        version_probe=spec.get("version_probe", ""), timeout=timeout,
+                        workdir=spec.get("evidence_workdir", ""))
 
     def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
         """Invoke a conda-env tool via the engine's run wrapper (`pixi run`)."""

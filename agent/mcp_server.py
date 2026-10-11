@@ -677,6 +677,7 @@ from agent.mcp_tools.freeze_tools import (  # noqa: E402,F401
     freeze,
     freeze_from_image,
     build_env_from_authors_recipe,
+    inspect_image,
     verify_env_recipe,
     generate_user_guide,
 )

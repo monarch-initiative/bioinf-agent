@@ -1839,6 +1839,16 @@ def registry_name(detail: dict, tool: str) -> str:
             or detail.get("resolved_name") or tool)
 
 
+def user_said_mentions(tool: str, user_said: str) -> bool:
+    """Whether free-text `user_said` names `tool`, with case and the separators people vary
+    folded: 'Genome Assembly Booster' names Genome_Assembly_Booster and 'hic pro' names
+    HiC-Pro, while 'concatenate' does not name cat."""
+    def fold(text: str) -> str:
+        return re.sub(r"[\s_\-]+", " ", (text or "").strip().lower())
+    tok, text = fold(tool), fold(user_said)
+    return bool(tok) and re.search(rf"(?<![a-z0-9]){re.escape(tok)}(?![a-z0-9])", text) is not None
+
+
 def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo: str) -> str:
     v = version or detail.get("latest") or ""
     if tier == "author_image":
@@ -2814,9 +2824,7 @@ def resolve(
     # the substitution question is live again and it refuses, with a remedy that names
     # the real front door instead of an impossible action.
     if _user_word and (len(_user_word.split()) > 1):
-        _tok = tool.strip().lower()
-        _mentions = bool(_tok) and re.search(rf"(?<![a-z0-9]){re.escape(_tok)}(?![a-z0-9])",
-                                             _user_word) is not None
+        _mentions = user_said_mentions(tool, _user_word)
         decision["user_said_shape"] = "free_text"
         if _mentions:
             decision["rationale"] = (
