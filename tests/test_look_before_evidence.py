@@ -221,3 +221,34 @@ def test_a_spec_without_a_workdir_runs_its_evidence_from_the_default(monkeypatch
 ])
 def test_user_said_mentions_folds_case_and_separators(tool, said, expect):
     assert R.user_said_mentions(tool, said) is expect
+
+
+def test_engine_coupled_evidence_run_from_the_clone_still_finds_the_pixi_manifest(monkeypatch):
+    """A run-by-path repo with a conda interpreter: its evidence is wrapped in `pixi run`
+    AND must run from its clone. pixi searches upward from the cwd for a manifest, so
+    without naming it the wrapper found no project under /opt/tools/<name> and never
+    reached the env — four broken freezes on one real run. The wrapper names it."""
+    cb, calls = _builder(monkeypatch)
+    cb.install({"command": "git clone x /opt/tools/gab", "evidence": "python run.py -h", "tool": "gab",
+                "purpose": "gab (script repo)", "evidence_workdir": "/opt/tools/gab", "engine_coupled": True})
+    evidence_sh = calls[-1]
+    assert "cd /opt/tools/gab ||" in evidence_sh
+    assert f"pixi run --manifest-path {cb.workdir}/pixi.toml bash -c 'python run.py -h'" in evidence_sh
+    assert CB.PixiEngine().run("x").startswith("pixi run --manifest-path /work/pixi.toml bash -c ")
+
+
+
+def test_a_cheat_shaped_evidence_is_refused_before_a_container_starts(monkeypatch):
+    """`picard --version 2>&1 | grep Version` is rc-laundered by the pipe. check_build
+    refuses it on the shipped image — after a full build. The build now asks the same
+    rule first, and the refusal arrives with no container started."""
+    from agent.skills.env_build import EnvBuild
+    b = EnvBuild("picard_env")
+    b.add_tool({"command": "conda install picard", "evidence": "picard FastqToSam --version 2>&1 | grep -E 'Version'",
+                "tool": "picard", "purpose": "picard (java jar)"})
+    started = []
+    monkeypatch.setattr(b.cb, "start", lambda: started.append(1) or {"success": True})
+    out = b.build()
+    assert out["code"] == "env_build.evidence_shape" and out["stage"] == "evidence_preflight"
+    assert out["tool"] == "picard" and "pipes into another command" in out["error"]
+    assert not started, "a refused evidence must not start a build container"

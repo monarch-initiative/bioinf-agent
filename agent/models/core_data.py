@@ -1918,6 +1918,172 @@ def usage_commands(usage: Any) -> list[str]:
     return [c.strip() for c in ct if isinstance(c, str) and c.strip()]
 
 
+# ---------------------------------------------------------------------------
+# The slot grammar of a how-to — THE one spelling.
+#
+# A how-to names its variable parts as `{UPPER_SNAKE}` slots; the self-test fills them
+# per trial, the I6 walk checks they are declared, the record derivation turns them into
+# samplesheet columns and params, the Nextflow renderer rewrites them, and the patch
+# gate refuses a block that none of those could use. Every one of those readers imports
+# the regex, the output-slot rule and the fill from HERE. When the grammar was spelled
+# at each site, the write gate had no copy at all and accepted `{output_fastq}`, which
+# the seal then reported as "no slots" — one truth, N definitions, the stale one in the
+# load path. `tests/test_usage_slot_grammar.py` fails the build on a second spelling.
+# ---------------------------------------------------------------------------
+
+#: A slot: `{NAME}` with NAME in UPPER_SNAKE (`{R1}`, `{OUTPUT_DIR}`, `{THREADS}`).
+SLOT_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
+#: Any identifier in single braces — the shape of a slot written in the wrong case.
+_BRACE_IDENT_RE = re.compile(r"(?<!\{)\{([A-Za-z_][A-Za-z0-9_]*)\}(?!\})")
+#: `{{NAME}}` — not an escape here; the fill rewrites the inner `{NAME}` and leaves
+#: literal braces around the value.
+_DOUBLE_BRACE_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
+#: `${NAME}` — shell parameter syntax wrapped around a slot; the fill rewrites the inner
+#: `{NAME}`, so the shell then reads `$<value>` and expands an unset variable to nothing.
+_SHELL_VAR_SLOT_RE = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
+#: Stated once so every refusal and hint describes the same rule.
+OUTPUT_SLOT_RULE = ("a slot named {OUTPUT_DIR} or {OUTDIR}, or whose name contains OUTPUT, "
+                    "is the output DIRECTORY: the self-test fills it with a fresh scratch "
+                    "directory and looks there for what the command wrote, so every output "
+                    "file is written through it as {OUTPUT_DIR}/<name>")
+
+
+def slots_in(text: str) -> list[str]:
+    """Every slot in `text`, first-occurrence order, no duplicates."""
+    seen: list[str] = []
+    for m in SLOT_RE.finditer(text or ""):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def usage_slots(usage: Any) -> list[str]:
+    """The slots of a usage block, across every command, first-occurrence order."""
+    return slots_in("\n".join(usage_commands(usage)))
+
+
+def is_output_slot(name: str) -> bool:
+    """Is this slot the output directory? See OUTPUT_SLOT_RULE. The underscore is folded
+    so OUTDIR, OUT_DIR, OUTPUT_DIR and OUTPUTDIR all read as what they obviously are."""
+    t = (name or "").lower().replace("_", "")
+    return "output" in t or "outdir" in t
+
+
+def is_output_dir_slot(name: str) -> bool:
+    """An output slot whose name says it is a directory (OUTPUT_DIR, OUTDIR, OUT_FOLDER).
+    Every output slot is FILLED with a directory; one whose name says otherwise
+    (OUTPUT_FASTQ, OUTPUT_PREFIX) hands the tool a directory where it wants a file."""
+    t = (name or "").lower().replace("_", "")
+    return is_output_slot(name) and ("dir" in t or "folder" in t)
+
+
+def fill_slots(text: str, substitutions: Mapping[str, Any]) -> str:
+    """`text` with every `{SLOT}` replaced by its bound value — textual, no shell."""
+    out = text or ""
+    for slot, val in substitutions.items():
+        out = out.replace("{" + str(slot) + "}", str(val))
+    return out
+
+
+def usage_slot_problems(usage: Any) -> list[str]:
+    """Why the seal could not self-test this how-to, said at the write; one line per
+    problem, empty when the block is runnable.
+
+    The rules are the self-test's own, stated before it runs: slots are `{UPPER_SNAKE}`;
+    `${SLOT}` and `{{SLOT}}` are the two ways a shell-minded author wraps a slot so the
+    fill breaks it; a brace token in another case that the block itself treats as a slot
+    is named with its rename; a template needs an output slot (OUTPUT_SLOT_RULE) and at
+    least one slot at all; every other slot is declared under inputs[*].name, at least one
+    trial is declared, and every trial binds each of them and nothing the template lacks."""
+    commands = usage_commands(usage)
+    template = "\n".join(commands)
+    if not template.strip():
+        return []                       # the shape check already names an empty template
+    get = (usage.get if isinstance(usage, Mapping)
+           else lambda k, d=None: getattr(usage, k, d))
+    slots = set(slots_in(template))
+    trials = [t for t in (get("trials") or []) if isinstance(t, Mapping)]
+    bound: set[str] = set()
+    for t in trials:
+        bound |= {str(k) for k in (t.get("substitutions") or {})}
+    input_names = [str(i.get("name") or "").strip() for i in (get("inputs") or [])
+                   if isinstance(i, Mapping)]
+    problems: list[str] = []
+
+    shell_wrapped = list(dict.fromkeys(_SHELL_VAR_SLOT_RE.findall(template)))
+    if shell_wrapped:
+        fixes = ", ".join(f"`${{{s}}}` → `{{{s}}}`" for s in shell_wrapped)
+        problems.append(f"slots are filled textually, not through the shell: `${{{shell_wrapped[0]}}}` "
+                        f"becomes `$<value>`, which the shell reads as an unset variable — "
+                        f"write the slot bare: {fixes}")
+    doubled = list(dict.fromkeys(_DOUBLE_BRACE_RE.findall(template)))
+    if doubled:
+        fixes = ", ".join(f"`{{{{{s}}}}}` → `{{{s.upper()}}}`" for s in doubled)
+        problems.append(f"double braces are not an escape: `{{{{{doubled[0]}}}}}` fills to "
+                        f"`{{<value>}}` — write the slot once: {fixes}")
+
+    # Brace tokens the block treats as slots but the self-test cannot see.
+    meant = [tok for tok in dict.fromkeys(_BRACE_IDENT_RE.findall(template))
+             if tok not in slots and (tok in bound or tok in input_names or not slots)]
+    if meant:
+        # A lowercase output FILE slot is not renamed to its uppercase twin — that twin
+        # would be filled with a directory. It becomes a file under the directory slot.
+        renames = ", ".join(f"`{{{t}}}` → `{{OUTPUT_DIR}}/<name>`"
+                            if is_output_slot(t) and not is_output_dir_slot(t)
+                            else f"`{{{t}}}` → `{{{t.upper()}}}`" for t in meant)
+        problems.append(f"command_template slots must be UPPER_SNAKE `{{SLOT}}` — the self-test, the "
+                        f"trials and the render recognise nothing else: rename {renames} in the "
+                        f"template, in trials[*].substitutions and in inputs[*].name")
+    elif not slots and not (shell_wrapped or doubled):
+        problems.append("command_template has no `{SLOT}`: a how-to with no slots cannot be re-run on "
+                        "new data — write every input path as a slot (`{R1}`, `{VCF}`) and every output "
+                        "path through `{OUTPUT_DIR}/<name>`, and bind each slot in trials[*].substitutions")
+    if not slots:
+        return problems
+
+    outputs = {s for s in slots if is_output_slot(s)}
+    needed = sorted(slots - outputs)
+    file_shaped = sorted(s for s in outputs if not is_output_dir_slot(s))
+    if file_shaped:
+        fixes = ", ".join(f"`{{{s}}}` → `{{OUTPUT_DIR}}/<name>`" for s in file_shaped)
+        problems.append(f"output slots are directories: the self-test fills {', '.join('{' + s + '}' for s in file_shaped)} "
+                        f"with a fresh directory and the tool is handed a directory where it wants a "
+                        f"file — write each output file through the one directory slot ({fixes}) and "
+                        f"declare its name under outputs[*].files")
+    if not outputs:
+        problems.append("no output slot: write every output path through `{OUTPUT_DIR}/<name>` so the "
+                        f"self-test can find what the command wrote ({OUTPUT_SLOT_RULE}); "
+                        f"slots seen: {', '.join(sorted(slots))}")
+    undeclared = [s for s in needed if s not in input_names]
+    if undeclared:
+        problems.append(f"{', '.join('{' + s + '}' for s in undeclared)} not declared under "
+                        f"inputs[*].name — every slot but the output directory is an input "
+                        f"(name, format, description); declared: {', '.join(input_names) or '(none)'}")
+    stray = [n for n in input_names if n and n not in slots]
+    if stray:
+        problems.append(f"inputs[*].name {', '.join(repr(n) for n in stray)} match no slot in the "
+                        f"template — fix the name or write the slot")
+    if not trials and needed:
+        # The self-test can only run the how-to on values; guessing them from the
+        # recorded steps filled a script's slots positionally and burned a seal on a
+        # command that never could have worked. The author ran the commands and knows
+        # the values: they are the trial.
+        problems.append("no trials: declare usage.trials with at least one trial whose substitutions "
+                        f"bind {', '.join('{' + s + '}' for s in needed)} to the values the run used "
+                        "(one trial per input shape the how-to must handle)")
+    for t in trials:
+        subs = {str(k) for k in (t.get("substitutions") or {})}
+        name = t.get("name") or "?"
+        missing = [s for s in needed if s not in subs]
+        extra = sorted(subs - slots)
+        if missing:
+            problems.append(f"trial {name!r} binds no value for {', '.join('{' + m + '}' for m in missing)}")
+        if extra:
+            problems.append(f"trial {name!r} binds {', '.join('{' + e + '}' for e in extra)}, which the "
+                            f"template does not contain")
+    return problems
+
+
 def step_is_validated(step: Any) -> bool:
     """THE one reading of "did this pipeline_step's outputs get validated" — for every
     consumer (the I3 walk, the RUN dashboard, the markdown guide, the inventory row,

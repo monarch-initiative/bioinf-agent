@@ -261,7 +261,9 @@ def test_patch_pipeline_allows_agent_authored_keys():
     r = ps.patch("allowed_test", {
         "notes": ["hello"],
         "runtime_environment": {"type": "conda"},
-        "usage": {"description": "x", "command_template": "echo {X}"},
+        "usage": {"description": "x", "command_template": "echo {X} > {OUTPUT_DIR}/o.txt",
+                  "inputs": [{"name": "X"}], "outputs": [{"name": "o", "files": ["o.txt"]}],
+                  "trials": [{"name": "t", "substitutions": {"X": "hi"}}]},
     })
     assert "error" not in r, f"agent-authored patch should pass; got {r}"
     assert set(r["patched_keys"]) == {"notes", "runtime_environment", "usage"}
@@ -2931,7 +2933,7 @@ def test_install_spec_engine_coupling_wraps_with_engine_run(monkeypatch):
     cb.install({"command": "cargo install rasusa --root /usr/local --locked",
                 "evidence": "command -v rasusa", "purpose": "rasusa", "engine_coupled": True})
     # baked form is wrapped in `pixi run bash -c '...'` (shell so builtins/pipes work)
-    assert cb.longtail[-1]["command"].startswith("pixi run bash -c ")
+    assert cb.longtail[-1]["command"].startswith("pixi run --manifest-path /work/pixi.toml bash -c ")
     assert "cargo install rasusa --root /usr/local --locked" in cb.longtail[-1]["command"]
     # self-contained → bare
     cb.install({"command": "install -m0755 /tmp/x /usr/local/bin/x", "evidence": "command -v x",
@@ -5284,6 +5286,7 @@ def test_envbuild_prebaked_lock_skips_solve_calls_declare_locked(monkeypatch):
     inst.conda_specs = ["samtools=1.21"]
     inst.pip_specs = []
     inst.tools = []
+    inst.verifications = []
     inst.lock_text = ""
     inst.lock_files = {}
     inst.prebaked_lock_files = {"pixi.toml": "T", "pixi.lock": "L"}

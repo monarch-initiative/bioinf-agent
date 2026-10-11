@@ -42,8 +42,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from agent.skills.env_report_html import _close_page, _created_line, _e, _empty, _header_banner, _open_page
+from agent.models.core_data import SLOT_RE
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, SCRIPT_DIR, PipelineParam, PipelineRecord,
-                                          PipelineStage, StageResources, _PLACEHOLDER_RE)
+                                          PipelineStage, StageResources)
 from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_RECORDS, SAMPLESHEET_PARAM, bound_commands,
                                                    run_lines)
 
@@ -160,7 +161,7 @@ def _display(record: PipelineRecord, artifact: str) -> str:
     def sub(m) -> str:
         ph = m.group(1)
         return f"<{col_of[ph]}>" if ph in col_of else f"<params.{ph.lower()}>"
-    return _PLACEHOLDER_RE.sub(sub, artifact)
+    return SLOT_RE.sub(sub, artifact)
 
 
 def _results_dir(stage: PipelineStage) -> str:

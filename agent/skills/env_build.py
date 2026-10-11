@@ -103,11 +103,26 @@ class EnvBuild:
                                    # install_commands.script_repo for why that would
                                    # launder the anti-echo-cheat rule.
                                    "workdir": spec.get("evidence_workdir", ""),
+                                   # the other names that count as invoking this tool
+                                   # (a run-by-path repo's entrypoint), from the install
+                                   # arguments, so the token rule reads structure.
+                                   "tool_aliases": list(spec.get("tool_aliases") or []),
                                    "engine_coupled": spec.get("engine_coupled", False)})
         return self
 
     # -- BUILD in the container -------------------------------------------
     def build(self) -> dict[str, Any]:
+        # The shape rule reads a string and costs nothing; the build costs minutes. A
+        # cheat shape is refused here with check_build's own words, before a container
+        # starts — check_build still runs it on the shipped image, so nothing is lost
+        # by asking early.
+        for v in self.verifications:
+            shape = _honesty.evidence_shape_violation(v.get("check", ""), v.get("tool", ""),
+                                                      v.get("tool_aliases") or ())
+            if shape:
+                return broke("env_build.evidence_shape", success=False, stage="evidence_preflight",
+                             tool=v.get("tool", ""), label=v.get("label", ""),
+                             evidence=v.get("check", ""), error=shape)
         s = self.cb.start()
         if not s.get("success"):
             return broke("env_build.start_failed", **{**s, "success": False, "stage": "start"})
@@ -206,6 +221,7 @@ class EnvBuild:
                 vacuous.append(f"{tool or v['label']}: {v['check']!r} — {note}")
             records.append({"label": v["label"], "tool": tool,
                             "check": v["check"], "engine_coupled": v["engine_coupled"],
+                            "tool_aliases": list(v.get("tool_aliases") or []),
                             "rc": r.get("rc"), "passed": passed,
                             "out": r.get("out", ""),
                             "banner": banners.get(tool, ""),

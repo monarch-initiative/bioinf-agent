@@ -139,13 +139,13 @@ def _local_trial_mounts(draft: dict, missing: list | None = None):
     least one sibling named `<basename>.<suffix>` is on this host, mounted at its
     parent."""
     from pathlib import Path
-    from agent.skills.spec_writer import _infer_substitutions, _is_output_slot
-    from agent.models.core_data import usage_commands
+    from agent.skills.spec_writer import _infer_substitutions
+    from agent.models.core_data import is_output_slot, usage_commands, usage_slots
     usage = draft.get("usage") or {}
     template = "\n".join(usage_commands(usage))
     if not template:
         return []
-    placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
+    placeholders = set(usage_slots(usage))
     trials = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
     if trials:
         subs_sets = [dict(t.get("substitutions") or {}) for t in trials]
@@ -154,7 +154,7 @@ def _local_trial_mounts(draft: dict, missing: list | None = None):
     mounts: list[tuple[str, str]] = []
     for subs in subs_sets:
         for slot, val in subs.items():
-            if _is_output_slot(slot):
+            if is_output_slot(slot):
                 continue                       # replaced by the per-trial scratch dir
             s = str(val)
             if not s.startswith("/"):
@@ -658,8 +658,8 @@ def seal_workflow(
         if problems:
             return refused(
                 "seal.usage_block_invalid", success=False, stage="usage_shape",
-                error=("the draft's `usage` block does not fit the WorkflowSpec schema, so "
-                       "the seal would fail after the self-test: " + "; ".join(problems)
+                error=("the draft's `usage` block is not a how-to the self-test can run, so "
+                       "the seal would fail: " + "; ".join(problems)
                        + ". Fix it with patch_pipeline(usage=…) and re-seal."),
                 problems=problems, usage_shape=USAGE_SHAPE,
             )

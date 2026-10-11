@@ -74,6 +74,7 @@ from typing import Any, Mapping, Optional
 
 import yaml
 
+from agent.models.core_data import SLOT_RE
 from agent.skills import compute_access
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, MANAGER_JOB_REQUEST,
                                           NEXTFLOW_QUEUE_SIZE, NEXTFLOW_SUBMIT_RATE, SCRIPT_DIR, PipelineParam,
@@ -94,7 +95,7 @@ _SCRIPT_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
 #: text. Integers only: a leading zero is an octal literal in Groovy and a decimal
 #: loses its trailing zeros through YAML.
 _INT_RE = re.compile(r"^(0|[1-9][0-9]*)$")
-_PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
+_PLACEHOLDER_RE = SLOT_RE
 _NOT_EXPRESSIBLE = ("which a Nextflow script block rewrites in transit; re-seal the how-to with "
                     "a command free of it")
 _INDENT = "    "

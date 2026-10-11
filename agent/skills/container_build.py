@@ -430,8 +430,11 @@ class PixiEngine(EnvEngine):
         return broke("container_build.pixi_add_pypi_failed", success=False, stderr=(r["stderr"] or "")[-800:])
     def run(self, tool_cmd):
         # wrap in a shell so builtins/pipes/env-prefixes in tool_cmd work (pixi run
-        # execs directly otherwise — `pixi run command -v X` would fail).
-        return f"pixi run bash -c {shlex.quote(tool_cmd)}"
+        # execs directly otherwise — `pixi run command -v X` would fail). The manifest
+        # is named outright: pixi otherwise searches upward from the cwd, and a command
+        # that must run from its own directory (a run-by-path repo's evidence, executed
+        # from its clone) would find no project there and never reach the env.
+        return f"pixi run --manifest-path {self.workdir}/pixi.toml bash -c {shlex.quote(tool_cmd)}"
     def bootstrap_lines(self):
         return [f"RUN {self.install_commands()}", f'ENV PATH="{self._BIN}:$PATH"', ""]
     def materialize_lines(self):
