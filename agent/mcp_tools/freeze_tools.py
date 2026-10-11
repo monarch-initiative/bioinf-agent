@@ -1081,7 +1081,7 @@ def build_env_from_authors_recipe(
     repo: str,
     tools: list,
     name: str,
-    recipe: str = "Dockerfile",
+    recipe: str = "",
     ref: str = "",
     version: str = "",
     platform: str = "linux/amd64",
@@ -1099,8 +1099,14 @@ def build_env_from_authors_recipe(
 
     Clones `repo` (a GitHub 'owner/repo', a full git URL, or a `file://` local mirror) at
     `ref` (PIN a tag/commit — a bare default branch drifts), `docker build`s its `recipe`
-    (default 'Dockerfile') for `platform`, then hands the built image to freeze_from_image
-    (honesty contract + deliverables). `tools`: [{name, evidence}] — evidence must RUN each
+    for `platform`, then hands the built image to freeze_from_image (honesty contract +
+    deliverables). `recipe` is repo-relative (`docker/Dockerfile`); left empty it is the
+    checkout's one recipe — a root Dockerfile/Containerfile, else the single one below the
+    root — and a checkout with several refuses (`authors_recipe.recipe_ambiguous`) listing
+    them, as does a `recipe` that is not there (`authors_recipe.recipe_not_found`), so no
+    build runs against a file the repository lacks. resolve_tool's `authors_recipe`
+    assessment names the path it found. A build that dies of memory comes back with
+    `cause: out_of_memory` and the Docker VM's size. `tools`: [{name, evidence}] — evidence must RUN each
     tool in-image. The recipe records the pinned source — repo, resolved commit, Dockerfile
     path, build args, and every patch — so the build is reproducible.
 

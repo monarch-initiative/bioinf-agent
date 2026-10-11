@@ -42,7 +42,7 @@ _ALIASES = {"yaml": "pyyaml", "dotenv": "python-dotenv", "PIL": "pillow"}
 #: convention documented at tests/conftest.py. They are files in this directory, not
 #: packages, and requiring them in requirements.txt would be nonsense.
 _LOCAL = {"env_records", "workflow_records", "_artifacts", "conftest", "real_inputs",
-          "pipeline_fixtures"}
+          "pipeline_fixtures", "freeze_fixtures"}
 
 
 def _declared() -> set[str]:

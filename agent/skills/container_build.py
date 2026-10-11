@@ -329,6 +329,36 @@ def registry_manifest_digest(ref: str) -> str:
 # EnvEngine strategies — the swappable conda/pip solve+lock+invoke layer.
 # ---------------------------------------------------------------------------
 
+#: What a `docker build` that died of memory says, in the words BuildKit and the kernel use.
+_OOM_SIGNS = ("cannot allocate memory", "ResourceExhausted", "out of memory", "exit code: 137", "Killed")
+
+
+def docker_memory_gib() -> Optional[float]:
+    """The memory the Docker daemon's VM has, in GiB, or None when docker does not answer."""
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.MemTotal}}"],
+                           capture_output=True, text=True, timeout=20)
+        return int(r.stdout.strip()) / (1024 ** 3) if r.returncode == 0 and r.stdout.strip().isdigit() else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def build_failure_fields(stderr: str) -> dict:
+    """What a failed build's stderr says about WHY, when the cause is one a reader would
+    otherwise have to know to look for. Today: an out-of-memory kill, named with the
+    memory the Docker VM actually has, so the remedy (a larger VM, or another host) is
+    read off the record instead of guessed. Empty when the stderr names nothing of the kind."""
+    text = stderr or ""
+    if not any(sign in text for sign in _OOM_SIGNS):
+        return {}
+    mem = docker_memory_gib()
+    have = f"{mem:.1f} GiB" if mem else "an unknown amount of memory"
+    return {"cause": "out_of_memory",
+            "hint": (f"the build ran out of memory inside Docker's VM, which has {have}; raise the "
+                     "VM's memory limit (Docker Desktop: Settings → Resources) or build where more "
+                     "memory is available, then retry")}
+
+
 class EnvEngine:
     """Strategy for the conda/pip layer. Subclasses implement: how to install the
     engine (in the build container AND the ship Dockerfile), how to declare+co-
@@ -929,7 +959,7 @@ class ContainerBuild:
                       "--load", "-t", tag, str(build_dir)], timeout=2400)
         if b["returncode"] != 0:
             return broke("container_build.freeze_build_failed", success=False, stage="build", dockerfile=str(build_dir / "Dockerfile"),
-                    stderr=(b["stderr"] or "")[-1200:])
+                    stderr=(b["stderr"] or "")[-1200:], **build_failure_fields(b["stderr"] or ""))
         return proven("container_build.frozen", success=True, image=tag, engine=self.engine.name,
                 dockerfile=str(build_dir / "Dockerfile"),
                 build_method="container-native", platform=self.platform)

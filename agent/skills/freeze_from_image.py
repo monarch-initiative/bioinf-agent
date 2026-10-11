@@ -690,6 +690,50 @@ def _apply_patches(checkout: Path, patches: list[dict]) -> dict:
     return {"applied": applied}
 
 
+#: The recipes a checkout is searched for, by root name first.
+_ROOT_RECIPES = ("Dockerfile", "Containerfile")
+
+
+def _recipe_candidates(checkout: Path) -> list[str]:
+    """Every container recipe in the checkout, repo-relative, the most likely first."""
+    from agent.skills.authors_sources import recipe_paths_in
+    paths = [p.relative_to(checkout).as_posix() for p in checkout.rglob("*")
+             if p.is_file() and ".git" not in p.relative_to(checkout).parts]
+    return recipe_paths_in(paths)
+
+
+def _resolve_recipe(checkout: Path, recipe: str) -> dict:
+    """The Dockerfile to build, as `{"path": repo-relative}`: `recipe` when given and
+    present; else the root `Dockerfile`/`Containerfile`; else the checkout's single recipe
+    anywhere below the root. Otherwise a refusal that lists what the checkout holds, so
+    the next call names one instead of guessing."""
+    cands = _recipe_candidates(checkout)
+    if recipe:
+        if (checkout / recipe).is_file():
+            return {"path": recipe}
+        return refused("authors_recipe.recipe_not_found",
+                       error=f"{recipe!r} is not a file in the repository at the pinned ref"
+                             + (f"; container recipes there: {', '.join(cands)}" if cands
+                                else "; it holds no Dockerfile, Containerfile or .def file"),
+                       recipe=recipe, candidates=cands,
+                       remedy=("pass recipe=<one of candidates>" if cands
+                               else "this repository ships no container recipe at this ref — route by another tier"))
+    root = [c for c in cands if c in _ROOT_RECIPES]
+    if root:
+        return {"path": root[0]}
+    if len(cands) == 1:
+        return {"path": cands[0]}
+    if not cands:
+        return refused("authors_recipe.recipe_not_found",
+                       error="the repository holds no Dockerfile, Containerfile or .def file at the pinned ref",
+                       recipe="", candidates=[],
+                       remedy="this repository ships no container recipe at this ref — route by another tier")
+    return refused("authors_recipe.recipe_ambiguous",
+                   error=f"the repository holds {len(cands)} container recipes and none at the root: "
+                         f"{', '.join(cands)}",
+                   recipe="", candidates=cands, remedy="pass recipe=<one of candidates> to name the one to build")
+
+
 def build_from_authors_recipe(
     *,
     repo: str,
@@ -697,7 +741,7 @@ def build_from_authors_recipe(
     name: str,
     env_cache,
     env_dir: str | Path,
-    recipe: str = "Dockerfile",
+    recipe: str = "",
     ref: str = "",
     version: str = "",
     platform: str = "linux/amd64",
@@ -708,7 +752,10 @@ def build_from_authors_recipe(
 ) -> dict[str, Any]:
     """Clone the tool's OWN repo at a pinned `ref`, apply any `patches`, `docker build` its
     `recipe` (their Dockerfile), then hand the built image to freeze_from_image (same
-    honesty contract + deliverables). The declarative executor for resolve_tool's
+    honesty contract + deliverables). `recipe` is a repo-relative path; left empty, it is
+    the checkout's one container recipe (a root `Dockerfile` or `Containerfile` first, else
+    the single one anywhere below), and a checkout with several or none refuses naming
+    what it holds (`_resolve_recipe`) rather than building a file that is not there. The declarative executor for resolve_tool's
     `authors_recipe` tier — the path taken when the authors' recipe installs pieces a
     conda/pip reconstruction would silently DROP. The pinned source (repo + resolved
     commit + tag + Dockerfile as built + every patch) is recorded so the build is
@@ -744,6 +791,10 @@ def build_from_authors_recipe(
                     return broke("authors_recipe.checkout_failed",
                                  error=f"could not checkout {ref!r}: {co['err'][:300]}")
         commit = _sh(["git", "-C", td, "rev-parse", "HEAD"], timeout=60)["out"].strip()
+        picked = _resolve_recipe(Path(td), recipe)
+        if "path" not in picked:
+            return picked
+        recipe = picked["path"]
         # PATCH AFTER THE PIN, BEFORE THE BUILD — and refuse before anything is built if a
         # patch does not apply as written. The commit above is the authors' source; what
         # docker consumes is that source plus exactly these recorded edits.
@@ -757,9 +808,10 @@ def build_from_authors_recipe(
         buildx.append(td)
         bd = _sh(buildx, timeout=3600)
         if bd["rc"] != 0:
+            from agent.skills.container_build import build_failure_fields
             return broke("authors_recipe.build_failed",
                          error=f"docker build of {recipe} failed: {(bd['err'] or '')[-800:]}",
-                         dockerfile=recipe)
+                         dockerfile=recipe, **build_failure_fields(bd["err"] or ""))
         # The Dockerfile AS BUILT — after the patches, because that is the text docker
         # consumed; the patches list beside it says how it differs from the pinned commit.
         try:

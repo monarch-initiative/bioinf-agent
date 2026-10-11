@@ -1843,9 +1843,11 @@ def _install_call(tier: str, tool: str, version: str, detail: dict, github_repo:
     v = version or detail.get("latest") or ""
     if tier == "author_image":
         img = detail.get("ref") or "<author-image-ref>"
-        return (f'freeze_from_image(image="{img}", name="{tool}", '
+        tags = [t for t in (detail.get("tags") or []) if t != "latest"]
+        return (f'freeze_from_image(image="{img}:<release tag>", name="{tool}", '
                 f'tools=[{{"name": "{tool}", "evidence": "<cmd that RUNS {tool} in-image>"}}])'
-                '  # adopt the authors\' own image by digest')
+                '  # adopt the authors\' own image by digest'
+                + (f"; tags seen: {', '.join(tags[-6:])}" if tags else ""))
     if tier == "authors_recipe":
         repo = detail.get("repo") or github_repo or "<owner/repo>"
         rec = (detail.get("recipe") or {})
@@ -1904,8 +1906,9 @@ def pullable_image(availability: dict[str, dict], tool: str,
     """The unified "is there a pre-built image/container we can PULL (not build)?" answer.
 
     Spans the two TRUSTED image sources, in preference order:
-      1. the authors' OWN published image — `availability['author_image']` (ghcr, adopt by
-         digest; provenance = the authors' own namespace, and only for an ANCHORED repo)
+      1. the authors' OWN published image — `availability['author_image']` (ghcr.io, Docker
+         Hub or quay.io under the authors' own name, or the image their README declares;
+         adopt by digest; only for an ANCHORED repo)
       2. a BioContainer — quay.io/biocontainers, the bioconda auto-build (provenance = the
          curated biocontainers namespace; nf-core pins these same images per process)
 
@@ -1935,9 +1938,10 @@ def pullable_image(availability: dict[str, dict], tool: str,
     if ai.get("available"):
         ref = ai.get("ref") or ai.get("image") or ""
         return {"found": True, "source": "author_image", "image": ref or None,
-                "image_by_digest": None,   # the ghcr probe confirms pullability, not a digest
+                "image_by_digest": None,   # the registry probe confirms pullability, not a digest
                 "digest": None, "adopt_call": _adopt_call(ref or "<author-image-ref>"),
-                "provenance": "the authors' own published image (ghcr, anchored repo)"}
+                "provenance": (f"the authors' own published image ({ai.get('source') or 'registry'}, "
+                               "anchored repo)")}
 
     conda = availability.get("conda") or {}
     if chosen == "conda" and conda.get("available") and _resolve_biocontainer is not None:

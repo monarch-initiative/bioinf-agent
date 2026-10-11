@@ -160,19 +160,16 @@ def _stub_authors_io(monkeypatch, *, dockerfile: str = "", ghcr_package: str = "
         return None
     def _get_json(url, timeout=12):
         return []
-    def _probe_image(owner, repo, tag="latest", timeout=12):
-        # The author-image signal is "can we PULL ghcr.io/{owner}/{repo}?", answered by
-        # the registry. It used to be "is a package listed under this org?", answered by
-        # api.github.com/orgs/{owner}/packages — which returns 401 for EVERY org, public
-        # ones included, because that API always requires auth. No token was ever plumbed
-        # and the 401 was swallowed, so this tier was 100% dead while reporting "the
-        # authors ship no image" (audit 2026-07-16 Tier 6).
+    def _probe_image(owner, repo, tag="latest", timeout=12, declared=()):
+        # The author-image signal is "can we PULL {owner}/{repo} from a registry?", answered
+        # by the registry's own anonymous token flow (never GitHub's package index, which
+        # needs auth for every org).
         if ghcr_package and ghcr_package.lower() == repo.lower():
-            return {"ref": f"ghcr.io/{owner}/{repo}", "source": "ghcr", "tag": tag}
+            return {"ref": f"ghcr.io/{owner}/{repo}", "source": "ghcr", "tag": tag, "tags": [], "tags_total": 0}
         return None
     monkeypatch.setattr(A, "_default_get_text", _get_text)
     monkeypatch.setattr(A, "_default_get_json", _get_json)
-    monkeypatch.setattr(A, "_default_probe_ghcr_image", _probe_image)
+    monkeypatch.setattr(A, "_default_probe_author_image", _probe_image)
 
 
 def test_resolve_prefers_authors_recipe_when_reconstruction_incomplete(monkeypatch):
@@ -363,11 +360,13 @@ def test_author_image_probe_asks_the_registry_not_the_github_package_index():
     import textwrap
     # Read the CODE, not the prose: the docstring deliberately names api.github.com to
     # record why it's gone, and a naive substring check would flag its own explanation.
-    tree = ast.parse(textwrap.dedent(inspect.getsource(A._default_probe_ghcr_image)))
-    fn = tree.body[0]
-    if ast.get_docstring(fn):
-        fn.body = fn.body[1:]
-    code = "\n".join(ast.unparse(n) for n in fn.body)
+    code = ""
+    for fn_obj in (A._probe_registry_image, A._registry_token_url, A._default_probe_author_image):
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn_obj)))
+        fn = tree.body[0]
+        if ast.get_docstring(fn):
+            fn.body = fn.body[1:]
+        code += "\n".join(ast.unparse(n) for n in fn.body)
     assert "api.github.com" not in code, (
         "the author-image probe must not use GitHub's package index — it 401s for every "
         "org, so the tier would be dead again")
@@ -403,26 +402,18 @@ def test_author_image_probe_failure_is_disclosed_never_read_as_no_image(monkeypa
     assert "UNCHECKED" in out["recommendation"], out["recommendation"]
 
 
-def test_a_clean_ghcr_miss_does_not_claim_the_authors_ship_no_image():
-    """R2 on the SUCCESS path, not just the error path.
-
-    The probe checks ghcr.io and nothing else, yet the verdict said "no authoring
-    image/recipe found" — a claim about every registry on earth drawn from one. The blind
-    spot is not incidental: bioinformatics publishes on Docker Hub and quay (biocontainers),
-    so the registries we skip are exactly the ones our tools live on. The gate is green in
-    its own test case (uv, a Rust tool that happens to be on ghcr) and blind across the
-    actual domain — and it fails as a CONFIDENT NEGATIVE, so "the gate returns results"
-    passes while the answer is fiction.
-
-    Asserted as substring-absence on OUR OWN string (per the corpus row
-    `dorado-author-image-invisible-ghcr-only`), never against live registry text."""
+def test_a_clean_registry_miss_scopes_the_negative_to_what_was_asked():
+    """R2 on the SUCCESS path, not just the error path. The probe asks three registries
+    for `owner/repo` and whatever the README declares; a clean miss says exactly that and
+    leaves an image published under another name UNCHECKED, never "the authors ship no
+    image". Asserted on OUR OWN string, never against live registry text."""
     out = A.assess_tool_sources("dorado", owner="nanoporetech", repo="dorado", sources={
         "container_recipes": [], "env_specs": [], "build_scripts": [],
-        "author_image": None})          # a CLEAN miss: probe ran, ghcr had nothing
+        "author_image": None})          # a CLEAN miss: the probe ran and found nothing
     rec = out["recommendation"]
     assert "no authoring image/recipe found" not in rec, rec
     assert "ghcr.io" in rec and "UNCHECKED" in rec, rec
-    assert "Docker Hub" in rec and "quay" in rec, rec
+    assert "Docker Hub" in rec and "quay" in rec and "nanoporetech/dorado" in rec, rec
     # ...and it must NOT masquerade as a probe failure — nothing broke here
     assert "author_image_error" not in out
 

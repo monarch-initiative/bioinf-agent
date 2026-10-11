@@ -112,41 +112,9 @@ Two lifecycles. **Layer 1 — the environment** is solved *once*, frozen, and co
 
 ---
 
-## Protocol
+## Protocol and async pattern
 
-The full flow, in order — two layers (env, then workflow):
-
-1. **`start_pipeline(name, description)`** — returns `pipeline_id`. Thread it through every subsequent call.
-2. **Compose install primitives** to build the env. Conda first; then R / pip / JAR / binary / source / cargo / go / perl; then `download_reference_database` for any large external data. Each primitive auto-merges its install_step into the draft.
-3. **`select_test_data(...)`** — pick a dataset from `<resources>/core_test_data_hg38/manifest.yaml` (or generate one with `phenopacket_to_vcf` or a small script). It sha256-anchors every path it records so I8 can re-verify the inputs at seal, and it declares the matched dataset's core genome (`test_data.reference_fasta` + `.fai`), which is what makes an aligner's reference input traceable. The result states which of three things happened (`genome_reference.state`: recorded · declared-but-not-on-disk · none-declared).
-4. **`run_pipeline_step(...)`** — run the tool against test inputs on the host for fast iteration. Every detected output is auto-validated.
-5. **`patch_pipeline(pipeline_id, {usage: {...}, ...})`** — fill the fields no tool provides. Most important is **`usage`**: command_template with `{PLACEHOLDER}` slots, inputs[].format, outputs[].files globs. This is the contract `seal_workflow` self-tests against.
-6. **`freeze(env, tools, pipeline_id=…)`** — **Layer 1.** Returns a `freeze_request_key`. Docker daemon required. **Pass `evidence={tool: command}` when you can write a command that RUNS the tool** — the adopt path's default is a conda-metadata presence probe, which proves the package is in the image and nothing about whether it works. Authored evidence is held to the same two guards as `freeze_from_image`'s (shape rule + the control-image experiment).
-7. **`run_step_in_container(freeze_request_key, …)`** — re-run the workflow's steps INSIDE the frozen image so the recorded run is the one that ships (validated == shipped; in-container `resource_usage`).
-8. **`seal_workflow(pipeline_id, freeze_request_key)`** — **Layer 2.** Validates the run-side invariants, self-tests `usage.command_template` (I4), pins the env BY DIGEST, writes the `WorkflowSpec` + RUN dashboard. **This is the last step** — the sealed spec IS the record of the run.
-
-**Three ways in, and which one is canonical is NOT settled.** The eight steps above are the protocol itself. `interpret_request` → `plan_request` is the typed front door. `install_pipeline_brief(name)` hands back the invariants and primitives for one tool as a structured brief a subagent can execute unsupervised. All three reach the same primitives; they differ in how much is decided before the first install runs.
-
-To execute the *same* frozen env ON HPC, the Phase 2 bridge consumes the `freeze_request_key` directly: `run_step_on_cluster` for the validate-then-seal flow; `stage_apptainer_image` → `run_production_pipeline` → `cluster_job_status` → `download` for production runs. See **HPC bridge — Phase 2**.
-
----
-
-## Async pattern — for anything that may run silently >5 minutes
-
-The agent's stream-watchdog kills a tool call that goes silent for ~600s. Seven primitives can legitimately run past it and carry **`background=True`** — `freeze`, `freeze_from_image`, `build_env_from_authors_recipe`, `install_conda_packages`, `install_release_binary`, `run_step_in_container`, `seal_workflow`. Pass it and the call returns a `job_id` immediately; `check_job` then carries the tool's **real return value inline under `result`** once `state=='exited'`. Prefer the flag over hand-rolling the same thing with `run_in_background`, which is for arbitrary shell (`download_reference_database` backgrounds itself internally).
-
-```python
-job = freeze(env_name="x", tools=["dorado"], background=True)
-while (r := check_job(job["job_id"], wait_s=300))["state"] == "running":
-    pass                      # each call blocks up to wait_s; start other jobs between calls
-r["result"]                   # the freeze record itself, or result_missing saying why not
-```
-
-**Never end your turn to wait for a job.** A headless session ends with the turn, so a job left for "later" is never read back. Wait inside `check_job(wait_s=…)` (cap 540 s, under the watchdog) and keep calling until `state` is `exited`.
-
-Parallel background installs into ONE conda prefix are serialized (different envs still run fully in parallel), so a batch can fan out freely.
-
-Resuming a session and don't know what you left running? `check_job` needs a `job_id` you already hold; **`list_jobs`** answers the prior question — everything ever backgrounded on this machine, newest first, `include_terminated=False` for just the live ones. `agent_status` reports the same jobs alongside drafts, envs and reachable compute.
+The operating protocol — the order of calls from `start_pipeline` to `seal_workflow`, the route order (the authors' image, then their Dockerfile, then a packaged install, then source), how to read an outcome, and the `background=True` / `check_job` pattern for anything that may run silently past the client's watchdog — ships with the server as its MCP instructions, read from [`agent/operator_instructions.md`](agent/operator_instructions.md) at startup. Every client that attaches the server receives it with the tool list; the headless experiments (`scripts/experiments.py`) run on it and the tool descriptions alone, with no CLAUDE.md in reach. Edit the protocol there, not here; `tests/test_operator_instructions.py` pins what it must name.
 
 ---
 
