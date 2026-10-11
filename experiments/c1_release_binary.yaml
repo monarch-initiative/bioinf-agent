@@ -1,6 +1,7 @@
 # C1 — a tool taken as the static binary its authors publish on GitHub releases, on a host
 # whose architecture cannot run it. Trips to look for: the binary "proven" on the host, a
 # fetch without the published checksum, a conda install substituted for the route asked for.
+corpus: A
 name: c1_release_binary
 tier: C1
 required_codes: ["env_manager.binary_*"]

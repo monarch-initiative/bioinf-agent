@@ -3,6 +3,7 @@
 # end is to read the package's own description, say so, and ask what is wanted; judged by
 # the `asked` rule. Trips to look for: the client library installed and frozen as "Apollo",
 # or a refusal without having looked.
+corpus: B-installs
 name: h_apollo
 tier: C1
 success: asked

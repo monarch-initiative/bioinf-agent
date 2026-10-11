@@ -246,7 +246,7 @@ class TestParseRun:
         row = metrics.parse_run(_write_run(tmp_path / "r", records=[]))
         assert row["success"] is None
         assert row["terminal_reason"] == "none"
-        assert row["tool_calls"] == 0 and row["cost_usd"] == 0.0
+        assert row["tool_calls"] == 0 and row["cost_usd"] is None     # no result event, no figure
 
     def test_a_timed_out_run_is_judged_a_failure(self, tmp_path):
         recs = [r for r in transcript_records() if r["type"] != "result"]
@@ -604,7 +604,7 @@ class TestReport:
         page = report.write_report(rows, tmp_path / "out", title="t")
         assert page.name == "report.html" and page.exists()
         csv = (tmp_path / "out" / "metrics.csv").read_text().splitlines()
-        assert len(csv) == 3 and csv[0].startswith("experiment,tier,model")
+        assert len(csv) == 3 and csv[0].startswith("experiment,tier,corpus,model")
         j = json.loads((tmp_path / "out" / "metrics.json").read_text())
         assert len(j["rows"]) == 2 and len(j["groups"]) == 2 and j["columns"] == list(metrics.METRIC_NAMES)
 
@@ -953,3 +953,116 @@ class TestFigureLabels:
         ys = sorted(float(y) for _, y, _ in labels)
         assert all(b - a >= 12 for a, b in zip(ys, ys[1:]) if b - a < 100), "stacked labels keep a line of clearance"
         assert all(0 < float(y) < 260 for _, y, _ in labels), "labels stay inside the panel"
+
+
+# ---------------------------------------------------------------------------
+# Corpora, killed runs, and the three freeze routes
+# ---------------------------------------------------------------------------
+
+
+def _records_with_freeze_tool(tool: str, code: str) -> list[dict]:
+    """The fixture transcript with its degraded freeze answered by another freeze route."""
+    recs = []
+    for r in transcript_records():
+        r = json.loads(json.dumps(r))
+        if r.get("type") == "assistant" and r["message"]["id"] == "m3":
+            r["message"]["content"][0]["name"] = f"mcp__bioinf__{tool}"
+        if r.get("type") == "user":
+            for c in r["message"]["content"]:
+                if c.get("tool_use_id") == "t3":
+                    c["content"][0]["text"] = json.dumps({"success": True, "outcome": "proven", "code": code})
+        recs.append(r)
+    return recs
+
+
+class TestCorporaKilledRunsAndFreezeRoutes:
+    def test_a_freeze_by_any_of_the_three_routes_counts_as_frozen(self, tmp_path):
+        env_only = {k: v for k, v in SEALED_FILES.items() if k.endswith(".ENV.html")}
+        for tool, code in (("freeze_from_image", "freeze_from_image.frozen"),
+                           ("build_env_from_authors_recipe", "authors_recipe.frozen")):
+            row = metrics.parse_run(_write_run(tmp_path / tool, records=_records_with_freeze_tool(tool, code),
+                                               meta={"success": "frozen", "required_codes": [code.split(".")[0] + "*"]},
+                                               workspace_files=env_only))
+            assert row["frozen"] is True, tool
+            assert row["success"] is True, tool
+        assert metrics.FREEZE_TOOLS == ("freeze", "freeze_from_image", "build_env_from_authors_recipe")
+
+    def test_a_killed_run_has_no_cost_and_the_means_leave_it_out(self, tmp_path):
+        killed = [r for r in transcript_records() if r["type"] != "result"]
+        a = metrics.parse_run(_write_run(tmp_path / "a", records=killed, meta={"timed_out": True}))
+        b = metrics.parse_run(_write_run(tmp_path / "b"))
+        assert a["cost_usd"] is None and a["success"] is False
+        assert b["cost_usd"] == pytest.approx(0.4321)
+        [g] = metrics.aggregate([a, b])
+        assert g["cost_usd_mean"] == pytest.approx(0.4321) and g["cost_unreported"] == 1
+        assert report._fmt(a["cost_usd"], "usd") == "—"
+        assert report._dots([a], "cost_usd", "usd", "cost per run") == ""      # nothing to plot, no crash
+        assert "<svg" in report._dots([a, b], "cost_usd", "usd", "cost per run")
+        csv_text = metrics.rows_to_csv([a, b])
+        assert "corpus" in csv_text.splitlines()[0]
+
+    def test_the_corpus_is_read_off_the_definition_or_its_directory(self, tmp_path):
+        d = tmp_path / "experiments" / "hard"
+        d.mkdir(parents=True)
+        (d / "h_x.yaml").write_text("corpus: B-installs\nname: h_x\ntier: C1\nprompt: p\nmodels: [sonnet]\n")
+        (d / "h_y.yaml").write_text("name: h_y\ntier: C1\nprompt: p\nmodels: [sonnet]\n")
+        assert experiments.load_experiment(d / "h_x.yaml")["corpus"] == "B-installs"
+        assert experiments.load_experiment(d / "h_y.yaml")["corpus"] == "hard"
+        # a run that recorded its corpus, one that only names its source, one with neither
+        assert metrics.corpus_of({"corpus": "A", "source": str(d / "h_x.yaml")}) == "A"
+        assert metrics.corpus_of({"source": str(d / "h_x.yaml")}) == "B-installs"
+        assert metrics.corpus_of({"source": str(d / "h_y.yaml")}) == "hard"
+        assert metrics.corpus_of({}) == "uncategorised"
+        row = metrics.parse_run(_write_run(tmp_path / "r", meta={"corpus": "A"}))
+        assert row["corpus"] == "A"
+
+    def test_every_definition_in_the_repo_names_its_corpus(self):
+        root = Path(__file__).resolve().parents[1] / "experiments"
+        for f in sorted(root.glob("*.yaml")) + sorted((root / "hard").glob("*.yaml")):
+            exp = experiments.load_experiment(f)
+            assert exp["corpus"] in ("A", "B-installs", "B-sealed"), f
+
+    def test_the_report_command_writes_one_page_per_corpus_and_an_index(self, tmp_path, monkeypatch):
+        exps = tmp_path / "experiments"
+        _write_run(exps / "c1_a" / "sonnet__r1__x", meta={"name": "c1_a", "corpus": "A"})
+        _write_run(exps / "h_b" / "sonnet__r1__x", meta={"name": "h_b", "corpus": "B-installs", "success": "frozen"})
+        monkeypatch.setattr(experiments.workspace, "experiments_dir", lambda: exps)
+        rc = experiments.main(["report"])
+        assert rc == 0
+        assert (exps / "_report" / "A" / "report.html").exists()
+        assert (exps / "_report" / "B-installs" / "report.html").exists()
+        index = (exps / "_report" / "index.html").read_text()
+        assert 'href="A/report.html"' in index and 'href="B-installs/report.html"' in index
+        # the A page carries only A's runs
+        a_rows = json.loads((exps / "_report" / "A" / "metrics.json").read_text())["rows"]
+        assert {r["experiment"] for r in a_rows} == {"c1_a"}
+        # explicit directories still render one page where asked
+        rc = experiments.main(["report", str(exps / "c1_a"), "--out", str(tmp_path / "one")])
+        assert rc == 0 and (tmp_path / "one" / "report.html").exists()
+
+    def test_the_scoreboard_prints_a_dash_for_an_unreported_cost(self, tmp_path, capsys):
+        killed = [r for r in transcript_records() if r["type"] != "result"]
+        row = metrics.parse_run(_write_run(tmp_path / "a", records=killed, meta={"timed_out": True}))
+        experiments.print_scoreboard([row])
+        out = capsys.readouterr().out
+        assert "c1_seqkit" in out and "—" in out
+
+    def test_a_killed_runs_live_jobs_are_stopped_and_say_so(self, tmp_path):
+        import subprocess
+        jobs = tmp_path / "jobs"
+        jobs.mkdir()
+        proc = subprocess.Popen(["sleep", "300"], start_new_session=True)
+        try:
+            (jobs / "j1.status.json").write_text(json.dumps({"job_id": "freeze.x.1", "state": "running",
+                                                            "pid": proc.pid, "pgid": proc.pid}))
+            (jobs / "j2.status.json").write_text(json.dumps({"job_id": "freeze.x.2", "state": "exited", "pid": 1}))
+            stopped = experiments.stop_live_jobs(jobs, grace_s=5.0)
+            assert stopped == ["freeze.x.1"]
+            assert proc.wait(timeout=5) != 0           # the group was signalled
+            d = json.loads((jobs / "j1.status.json").read_text())
+            assert d["state"] == "killed" and "runner" in d["killed_by"]
+            assert json.loads((jobs / "j2.status.json").read_text())["state"] == "exited"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        assert experiments.stop_live_jobs(tmp_path / "nowhere") == []

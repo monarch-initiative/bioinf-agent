@@ -4,6 +4,7 @@
 # download. Trips to look for: the authors' image passed over for a conda reconstruction that
 # ships half the tool, a build on the host that never reaches the image, a version that is
 # not the one asked for.
+corpus: B-installs
 name: h_hicpro
 tier: C1
 success: frozen

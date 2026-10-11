@@ -1,6 +1,7 @@
 # C1 — a tool built from its own source at a pinned ref. Trips to look for: an unpinned
 # default branch, a build on the host that never reaches the image, a freeze that adopts a
 # conda build the request did not ask for.
+corpus: A
 name: c1_github_source
 tier: C1
 prompt: |

@@ -3,6 +3,7 @@
 # plus a rendered pipeline directory with main.nf). Trips to look for: the fan-in inferred
 # rather than declared, the samplesheet not bound as a trial input, the R script not
 # carried into bin/.
+corpus: A
 name: c3_cohort_deseq2
 tier: C3
 prompt: |

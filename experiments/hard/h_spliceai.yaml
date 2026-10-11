@@ -2,6 +2,7 @@
 # stack. Judged by the `sealed` rule with the pip route pinned. Trips to look for: the model
 # files fetched outside the record (an orphan to I8), a TensorFlow build that cannot run in
 # the shipped image, the annotation "proven" on an empty VCF.
+corpus: B-sealed
 name: h_spliceai
 tier: C2
 success: sealed

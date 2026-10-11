@@ -6,6 +6,7 @@
 # repo and recorded as extracted or authored, carried into an image the entry script runs in.
 # Trips to look for: packages pinned to today's versions without saying so, the scripts left
 # on the host, a wrapper that hides which Python runs them, a seal attempted with no data.
+corpus: B-installs
 name: h_gab
 tier: C1
 success: frozen

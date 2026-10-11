@@ -202,3 +202,37 @@ def test_subject_pins_the_shipped_image_and_digest():
     assert len(att["subject"]) == 1
     assert att["subject"][0]["name"] == "test_env:1.0"
     assert att["subject"][0]["digest"]   # non-empty dict
+
+
+_PATCH = {"file": "docker/Dockerfile", "find": "apt-get install -y curl",
+          "replace": "apt-get install -y curl git", "reason": "uv needs git for a lock-file dependency",
+          "sha256_before": "1" * 64, "sha256_after": "2" * 64}
+
+
+@pytest.mark.integration
+def test_authors_dockerfile_provenance_marks_each_patch_agent_authored():
+    """A build from `commit` plus these edits produced the subject. A provenance naming the
+    commit alone would describe a Dockerfile that was never built, and a verifier must be
+    able to tell the authors' recipe from the requester's edits to it."""
+    rec = _build_record(build_method="authors-dockerfile", conda_specs=[],
+                        dockerfile_source={"repo": "https://github.com/o/r", "commit": "c" * 40,
+                                           "patches": [_PATCH]})
+    src = build_attestation(rec)["predicate"]["buildDefinition"]["externalParameters"]["authors_recipe"]
+    assert src["patches"] == [{**_PATCH, "authored_by": "agent"}]
+
+
+@pytest.mark.integration
+def test_authors_dockerfile_provenance_omits_patches_when_none_were_applied():
+    rec = _build_record(build_method="authors-dockerfile", conda_specs=[],
+                        dockerfile_source={"repo": "https://github.com/o/r", "commit": "c" * 40,
+                                           "patches": []})
+    src = build_attestation(rec)["predicate"]["buildDefinition"]["externalParameters"]["authors_recipe"]
+    assert "patches" not in src
+
+
+@pytest.mark.integration
+def test_image_origin_rides_in_internal_parameters_only_when_observed():
+    ip = build_attestation(_adopt_record(image_origin="local"))["predicate"]["buildDefinition"]["internalParameters"]
+    assert ip["image_origin"] == "local"
+    ip = build_attestation(_adopt_record())["predicate"]["buildDefinition"]["internalParameters"]
+    assert "image_origin" not in ip, "an unobserved origin is absent, never blanked"

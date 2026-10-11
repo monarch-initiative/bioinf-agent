@@ -3,6 +3,7 @@
 # route pinned. Trips to look for: a GPU claimed on an image run without one, the model files
 # read from outside the record, an output VCF validated by existence alone, the run on the
 # host rather than inside the shipped image.
+corpus: B-sealed
 name: h_deepvariant
 tier: C2
 success: sealed

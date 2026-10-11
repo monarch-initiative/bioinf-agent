@@ -305,7 +305,10 @@ def test_pullable_image_surfaces_the_biocontainer_for_a_conda_pick(monkeypatch):
     pull = d["pullable_image"]
     assert pull["found"] is True and pull["source"] == "biocontainer"
     assert pull["image_by_digest"] == digest_ref
-    assert 'build_method="adopt-image"' in pull["adopt_call"]
+    # The generated call targets the MCP tool, which takes no build method: an adopted
+    # image's provenance is observed by the freeze, never asserted by the caller.
+    assert pull["adopt_call"].startswith("freeze_from_image(")
+    assert "build_method" not in pull["adopt_call"]
     assert "biocontainers" in pull["provenance"]
     # the pull-by-digest shortcut is named in the human-readable rationale too:
     assert digest_ref in d["rationale"]

@@ -390,3 +390,89 @@ def test_the_verify_instruction_appears_exactly_once():
     places is this codebase's stated failure mode."""
     md = R.render_recipe_markdown(_build_recipe(), {})
     assert md.count("verify_env_recipe") == 1
+
+
+# ---------------------------------------------------------------------------
+# The patches an authors build applied, and where an adopted image came from
+# ---------------------------------------------------------------------------
+
+_PATCH = {"file": "docker/Dockerfile", "find": "apt-get install -y curl",
+          "replace": "apt-get install -y curl git",
+          "reason": "uv clones a git dependency from the lock file; the image lacks git",
+          "sha256_before": "a" * 64, "sha256_after": "b" * 64}
+
+
+def _authors_recipe(patches):
+    return er.extract_recipe(None, name="talos", version="12.2.0", conda_deps=[],
+                             primary_tools=["talos"], content_digest="sha256:" + "7f" * 32,
+                             build_method="authors-dockerfile",
+                             dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
+                                                "commit": "c" * 40, "tag": "v12.2.0",
+                                                "recipe_path": "docker/Dockerfile",
+                                                "patches": patches})
+
+
+def test_an_authors_recipe_renders_each_patch_as_file_reason_and_substitution():
+    md = R.render_recipe_markdown(_authors_recipe([_PATCH]), {})
+    assert "### Patches applied to the authors' source (1)" in md
+    assert "**1. `docker/Dockerfile`** · uv clones a git dependency from the lock file" in md
+    assert "```diff\n--- find\napt-get install -y curl\n+++ replace\napt-get install -y curl git\n```" in md
+    assert "sha256 before `aaaaaaaaaaaaaaaaaaa…` → after `bbbbbbbbbbbbbbbbbbb…`" in md
+    assert "re-apply each one to the pinned commit before building" in md
+
+
+def test_the_verify_section_counts_the_patches_a_rebuild_must_reapply():
+    v = _verify_block(R.render_recipe_markdown(_authors_recipe([_PATCH, dict(_PATCH, reason="second")]), {}))
+    assert "there is no digest check for this env" in v
+    assert "patches=<the recorded patches>" in v
+    assert "the 2 recorded patches above would have to be re-applied to the pinned source first" in v
+
+
+def test_an_authors_recipe_without_patches_renders_no_patch_block():
+    md = R.render_recipe_markdown(_authors_recipe([]), {})
+    assert "Patches applied" not in md
+    assert "re-applied" not in md and "patches=" not in md
+
+
+def test_a_patch_reason_and_file_are_neutralised_as_inline_markdown():
+    hostile = dict(_PATCH, file="docker/[Dockerfile](http://x)", reason="![p](http://attacker/t.png)")
+    md = R.render_recipe_markdown(_authors_recipe([hostile]), {})
+    assert "](http://attacker" not in md and "](http://x)" not in md
+
+
+def test_extract_recipe_carries_the_patch_list_by_copy():
+    src = {"repo": "https://github.com/o/r", "commit": "c" * 40, "patches": [dict(_PATCH)]}
+    r = er.extract_recipe(None, name="x", conda_deps=[], primary_tools=["x"],
+                          build_method="authors-dockerfile", dockerfile_source=src)
+    assert r["dockerfile_source"]["patches"] == [_PATCH]
+    src["patches"][0]["reason"] = "mutated after the fact"
+    assert r["dockerfile_source"]["patches"][0]["reason"] == _PATCH["reason"]
+
+
+def test_a_local_adopt_recipe_says_the_build_was_not_observed():
+    r = er.extract_recipe(None, name="talos", version="12.2.0", conda_deps=[],
+                          primary_tools=["talos"], content_digest="sha256:" + "65" * 32,
+                          build_method="adopt", adopt_image="", image_origin="local")
+    assert r["image_origin"] == "local"
+    md = R.render_recipe_markdown(r, {"image": "talos-amd64:v12.2.0",
+                                      "adopt_pin_error": "talos-amd64:v12.2.0 carries no registry manifest digest"})
+    assert "| **Image origin** | local — a local image whose build this record did not observe |" in md
+    assert "**A local image whose build this record did not observe.**" in md
+    assert "build_env_from_authors_recipe" in md and "patches=" in md
+    assert "docker pull talos-amd64" not in md
+
+
+def test_a_registry_adopt_recipe_states_its_origin_without_the_local_warning():
+    r = er.extract_recipe(None, name="samtools", version="1.21", conda_deps=["samtools=1.21"],
+                          primary_tools=["samtools"], content_digest="sha256:" + "cd" * 32,
+                          build_method="adopt", image_origin="registry",
+                          adopt_image="quay.io/biocontainers/samtools@sha256:" + "ef" * 32)
+    md = R.render_recipe_markdown(r, {})
+    assert "| **Image origin** | registry — pulled from a registry and pinned by its manifest digest |" in md
+    assert "did not observe" not in md
+
+
+def test_a_recipe_without_an_observed_origin_has_no_origin_row():
+    r = er.extract_recipe(None, name="x", conda_deps=["x"], primary_tools=["x"])
+    assert "image_origin" not in r, "an unobserved origin is absent, never blanked"
+    assert "Image origin" not in R.render_recipe_markdown(r, {})

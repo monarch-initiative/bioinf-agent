@@ -1,6 +1,7 @@
 # C1 — one conda tool, core test data, the whole two-layer protocol from cold: install,
 # prove it on data already on disk, freeze, seal. Judged by the `sealed` rule: a workflow
 # record whose usage self-test passed, with the ENV and RUN reports written.
+corpus: A
 name: c1_seqkit
 tier: C1
 prompt: |

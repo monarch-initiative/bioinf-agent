@@ -408,6 +408,54 @@ def _empty(msg: str) -> str:
     return f'<p class="empty">{_e(msg)}</p>'
 
 
+def _dockerfile_source_block(r: dict) -> list[str]:
+    """The authors' Dockerfile source an image was built from — repo, commit, recipe path,
+    build args — and every patch the executor applied to it before the build, each shown
+    as file · reason · the substitution. Rendered only when the record carries a
+    `dockerfile_source`; a container-native build has none and shows nothing here.
+
+    The patches are the load-bearing part: a reader who re-clones the pinned commit gets a
+    Dockerfile that is NOT the one that was built, and this is where they learn that, and
+    how it differs, before they try."""
+    ds = r.get("dockerfile_source") if isinstance(r.get("dockerfile_source"), dict) else None
+    if not ds:
+        return []
+    P: list[str] = []
+    pin = [("Repository", f'<code>{_e(ds["repo"])}</code>' if ds.get("repo") else ""),
+           ("Commit", f'<code>{_e(ds["commit"])}</code>'
+                      + (f' <span class="note">(tag {_e(ds["tag"])})</span>' if ds.get("tag") else "")
+                      if ds.get("commit") else ""),
+           ("Dockerfile", f'<code>{_e(ds["recipe_path"])}</code>' if ds.get("recipe_path") else ""),
+           ("Build args", " ".join(f'<code>{_e(k)}={_e(v)}</code>'
+                                   for k, v in (ds.get("build_args") or {}).items())
+                          if ds.get("build_args") else "")]
+    P.append('<p style="margin:10px 0 2px"><b>Built from the authors\' own Dockerfile</b> '
+             '<span class="note">the source this image was built from, as recorded by the '
+             'build</span></p>')
+    P.append(_kv_table(pin))
+    patches = [p for p in (ds.get("patches") or []) if isinstance(p, dict)]
+    if patches:
+        n = len(patches)
+        P.append(f'<p style="margin:10px 0 2px"><b>{n} patch{"es" if n != 1 else ""} applied '
+                 f'to the authors\' source before the build</b> <span class="note">written by '
+                 f'the agent and recorded with the build — the Dockerfile that was built is '
+                 f'the pinned commit plus exactly these edits</span></p>')
+        for p in patches:
+            file = _e(p.get("file") or "(file not recorded)")
+            reason = _e(p.get("reason") or "(no reason recorded)")
+            P.append(f'<p style="margin:8px 0 2px"><code>{file}</code> · {reason}</p>')
+            P.append(f'<pre>--- find\n{_e(p.get("find") or "")}\n+++ replace\n'
+                     f'{_e(p.get("replace") or "")}</pre>')
+            sb, sa = p.get("sha256_before") or "", p.get("sha256_after") or ""
+            if sb or sa:
+                P.append(f'<p class="note" style="margin:2px 0 6px">file sha256 before '
+                         f'<code>{_e(sb[:12])}…</code> → after <code>{_e(sa[:12])}…</code></p>')
+    elif "patches" in ds:
+        P.append('<p class="note" style="margin:4px 0 8px">No patches: the Dockerfile at the '
+                 'pinned commit was built as published.</p>')
+    return P
+
+
 def _accel_declared_vs_observed(r: dict, accel: dict | None, accel_type: str) -> str:
     """The accelerator row: what was DECLARED, beside what the image actually carries.
 
@@ -846,6 +894,16 @@ def render_env_report_html(record: dict) -> str:
         mode_desc += f" · {r['build_method']}"
     if r.get("engine") and r.get("engine") != "none":
         mode_desc += f" · engine {r['engine']}"
+    # Where an adopted image came from, as the freeze OBSERVED it. A local tag is the
+    # case that matters: something built it and this record did not watch, and the
+    # first row a reader scans must say so rather than let "adopt" read as "published".
+    image_origin = str(r.get("image_origin") or "")
+    if image_origin:
+        mode_desc += " · " + {
+            "registry": "pulled from a registry",
+            "local": "a local image whose build this record did not observe",
+            "built": "built under this record",
+        }.get(image_origin, f"origin {image_origin}")
     # -- THE TOOLS LINE. The count a reader takes away, and unqualified it can sit
     # over an env whose tool cannot import its own plotting module — `--help`
     # evidence is answered by argparse before any dependency is touched. The
@@ -986,7 +1044,22 @@ def render_env_report_html(record: dict) -> str:
             # green validation badge: this is what the tool CLAIMS to be, never proof it is.
             # A human reads "Translate Spreadsheet Cell Ranges" under `cellranger` and knows.
             idn = identities.get(t.lower())
-            if idn is not None and idn.self_description:
+            if idn is not None and idn.collision is not None:
+                # A NAME COLLISION, shown as one. The same-named registry package points at
+                # a different project than the one this env was built from; its words are
+                # not this tool's words, so the row names the collision and nothing else.
+                c = idn.collision
+                P.append(
+                    f'<tr class="id-row"><td colspan="5" title="a package with this name '
+                    f'exists in a registry, but its own homepage or repository points at a '
+                    f'different project than the one this environment was built from. Its '
+                    f'description is withheld: it would describe the other project.">'
+                    f'<span class="muted">name collision:</span> a same-named '
+                    f'<b>{_e(c.registry)}</b> package exists elsewhere '
+                    f'(<code>{_e(c.points_at)}</code>); it is not '
+                    f'<code>{_e(c.known_repo)}</code>, so its description is not shown.'
+                    f'</td></tr>')
+            elif idn is not None and idn.self_description:
                 who = _e(idn.source) if idn.source else "its registry"
                 P.append(
                     f'<tr class="id-row"><td colspan="5" title="the package\'s own '
@@ -1033,28 +1106,48 @@ def render_env_report_html(record: dict) -> str:
         # (legacy records have just `image`, which is enough to reconstruct).
         image_ref = r.get("image", "")
         pull_cmd = f"apptainer pull docker://{image_ref}" if image_ref else ""
-        P.append('<h2>Install commands '
-                 '<span class="note">(adopt — pull the published biocontainer '
-                 'by manifest digest; the digest IS the provenance)</span></h2>')
-        P.append('</summary><div class="bx-body">')
-        if adopt_source and adopt_source.get("tag"):
+        if image_origin == "local":
+            # A LOCAL IMAGE HAS NO PULL COMMAND. `apptainer pull docker://<local tag>`
+            # is a line that works on exactly one machine, printed under a heading that
+            # says "the digest IS the provenance" — so the heading and the command both
+            # go, and the panel says what the record actually knows.
+            P.append('<h2>Install commands '
+                     '<span class="note">(adopt — a local image whose build this record '
+                     'did not observe)</span></h2>')
+            P.append('</summary><div class="bx-body">')
             P.append('<p style="margin:10px 0 2px"><b>'
-                     f'{_e(adopt_source.get("repo") or "biocontainer")} '
-                     f'@ tag <code>{_e(adopt_source["tag"])}</code></b></p>')
-        elif image_ref:
-            P.append('<p style="margin:10px 0 2px"><b>'
-                     'biocontainer (tag not captured at freeze time; '
-                     'manifest digest pins identity)</b></p>')
-        if pull_cmd:
-            P.append(f'<pre>{_e(pull_cmd)}</pre>')
+                     f'<code>{_e(image_ref)}</code> was already in the local daemon when it '
+                     'was frozen.</b></p>')
+            P.append(_empty("(no install command — nothing in this record saw how the image "
+                            "was built, so there is no pull line and no build line to show. "
+                            "The validated tools and the SBOM above describe what the image "
+                            "contains; to record a build, use build_env_from_authors_recipe, "
+                            "with patches= if the authors' Dockerfile needs a fix.)"))
+            P.append('</div></details></section>')
         else:
-            P.append(_empty("(no image ref recorded — cannot reconstruct command)"))
-        P.append('</div></details></section>')
+            P.append('<h2>Install commands '
+                     '<span class="note">(adopt — pull the published biocontainer '
+                     'by manifest digest; the digest IS the provenance)</span></h2>')
+            P.append('</summary><div class="bx-body">')
+            if adopt_source and adopt_source.get("tag"):
+                P.append('<p style="margin:10px 0 2px"><b>'
+                         f'{_e(adopt_source.get("repo") or "biocontainer")} '
+                         f'@ tag <code>{_e(adopt_source["tag"])}</code></b></p>')
+            elif image_ref:
+                P.append('<p style="margin:10px 0 2px"><b>'
+                         'biocontainer (tag not captured at freeze time; '
+                         'manifest digest pins identity)</b></p>')
+            if pull_cmd:
+                P.append(f'<pre>{_e(pull_cmd)}</pre>')
+            else:
+                P.append(_empty("(no image ref recorded — cannot reconstruct command)"))
+            P.append('</div></details></section>')
     else:
         P.append(f'<h2>Install commands <span class="note">({len(shipped)} long-tail '
                  'step(s) baked verbatim into the shipped image — the command IS '
                  'the provenance)</span></h2>')
         P.append('</summary><div class="bx-body">')
+        P.extend(_dockerfile_source_block(r))
         # Parse ONCE, and survive a record that does not conform. `shipped` above is the
         # RAW list (used only for the count); this is the typed read, and on a legacy
         # record it raises. Letting that raise escape the renderer costs the user the

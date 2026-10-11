@@ -50,6 +50,13 @@ def _mock_docker(monkeypatch, *, evidence_rc=0, digest="sha256:" + "ab" * 32):
     import agent.skills.container_build as CB
     monkeypatch.setattr(CB.ContainerBuild, "conda_sbom_from_image", staticmethod(lambda *a, **k: []))
     monkeypatch.setattr(CB.ContainerBuild, "apt_sbom_from_image", staticmethod(lambda *a, **k: []))
+    # The image carries no source label unless a test says so, and the identity probes
+    # reach no registry: the freeze under test must not depend on the network or on which
+    # images this machine's daemon happens to hold.
+    monkeypatch.setattr(F, "_image_source_label", lambda image: "")
+    import agent.skills.resolver as R
+    monkeypatch.setattr(R, "probe_pypi", lambda name, timeout=12: {"available": False})
+    monkeypatch.setattr(R, "probe_conda", lambda name, timeout=12: {"available": False})
 
 
 def test_adopt_image_happy_path_registers_and_renders(tmp_path, monkeypatch):
@@ -424,3 +431,532 @@ def test_the_cached_record_carries_the_pin_the_recipe_carries(tmp_path, monkeypa
         build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
     rec = list(cache.registered.values())[0]
     assert rec["image_by_digest"] == "quay.io/biocontainers/miniprot@sha256:" + "2e" * 32
+
+
+# ---------------------------------------------------------------------------
+# Provenance is OBSERVED, never claimed
+# ---------------------------------------------------------------------------
+#
+# `build_method` and `dockerfile_source` are observations: only the executor that built
+# the image may write them. The MCP surface does not accept them, an image handed in by
+# reference is adopted, and a LOCAL image (no registry digest) is recorded as a build this
+# record did not observe — in the record, the recipe, the ENV report and the attestation.
+
+import asyncio
+from pathlib import Path
+
+import yaml
+
+
+def _mcp_tool(name):
+    from agent.mcp_server import mcp
+    return asyncio.run(mcp.get_tool(name))
+
+
+def test_the_mcp_freeze_from_image_accepts_no_build_method_or_dockerfile_source():
+    """The parameters a caller could use to CLAIM a provenance are gone from the surface,
+    and the description says what happens to an image built outside the record."""
+    tool = _mcp_tool("freeze_from_image")
+    props = tool.parameters["properties"]
+    assert "build_method" not in props, "build_method is an observation, not an input"
+    assert "dockerfile_source" not in props, "dockerfile_source is an observation, not an input"
+    assert {"image", "tools", "name", "version", "platform", "gated", "licenses"} <= set(props)
+    desc = " ".join((tool.description or "").split())   # the served text keeps its line wraps
+    assert "adopted with its build unobserved" in desc
+    assert "build_env_from_authors_recipe(patches=" in desc
+
+
+def test_the_mcp_authors_recipe_tool_publishes_patches_and_explains_them():
+    tool = _mcp_tool("build_env_from_authors_recipe")
+    props = tool.parameters["properties"]
+    assert props["patches"]["type"] == "array"
+    assert props["patches"]["default"] == []
+    desc = " ".join((tool.description or "").split())
+    for needle in ("`patches`", "find", "replace", "reason",
+                   "authors_recipe.patch_no_match", "authors_recipe.patch_ambiguous",
+                   "never claims an unmodified Dockerfile"):
+        assert needle in desc, f"the patches paragraph does not say {needle!r}"
+
+
+def _adopt_local(tmp_path, monkeypatch, image="talos-amd64:v12.2.0"):
+    """A tag that is present in the daemon and carries no registry manifest digest —
+    the shape of an image the agent built by hand and then handed in."""
+    _mock_docker(monkeypatch, digest="sha256:" + "65" * 32)
+    _mock_registry_digest(monkeypatch, "")
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image=image, name="talos", version="12.2.0",
+        tools=[{"name": "talos", "evidence": "talos --help"}],
+        env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    return out, cache.registered[out["request_key"]]
+
+
+def test_a_local_image_is_adopted_with_its_build_unobserved(tmp_path, monkeypatch):
+    out, rec = _adopt_local(tmp_path, monkeypatch)
+    assert out["build_method"] == "adopt-image" and out["image_origin"] == "local"
+    assert rec["build_method"] == "adopt-image"
+    assert rec["image_origin"] == "local"
+    assert "dockerfile_source" not in rec, "nothing observed a build, so none is recorded"
+
+
+def test_a_local_image_recipe_and_report_say_the_build_was_not_observed(tmp_path, monkeypatch):
+    _adopt_local(tmp_path, monkeypatch)
+    recipe = yaml.safe_load((tmp_path / "talos.recipe.yaml").read_text())
+    assert recipe["image_origin"] == "local"
+    assert recipe["build_method"] == "adopt" and recipe["dockerfile_source"] == {}
+    md = (tmp_path / "talos.recipe.md").read_text()
+    assert "local — a local image whose build this record did not observe" in md
+    assert "A local image whose build this record did not observe" in md
+    assert "docker pull talos-amd64" not in md
+    html = (tmp_path / "talos.ENV.html").read_text()
+    assert "a local image whose build this record did not observe" in html
+    assert "apptainer pull docker://talos-amd64" not in html, (
+        "a pull line for a local tag works on exactly one machine")
+    assert "nothing in this record saw how the image was built" in html
+    att = json.loads((tmp_path / "talos.attestation.json").read_text())
+    assert att["predicate"]["buildDefinition"]["internalParameters"]["image_origin"] == "local"
+    assert "authors_recipe" not in att["predicate"]["buildDefinition"]["externalParameters"]
+
+
+def test_an_image_already_local_with_a_registry_digest_is_origin_registry(tmp_path, monkeypatch):
+    _mock_docker(monkeypatch, digest="sha256:" + "65" * 32)
+    _mock_registry_digest(monkeypatch, "sha256:" + "2e" * 32)
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="quay.io/biocontainers/miniprot:0.13", name="miniprot_bc", version="0.13",
+        tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
+        env_cache=cache, env_dir=tmp_path)
+    assert out["image_origin"] == "registry"
+    rec = list(cache.registered.values())[0]
+    assert rec["image_origin"] == "registry"
+    html = (tmp_path / "miniprot_bc.ENV.html").read_text()
+    assert "pulled from a registry" in html and "did not observe" not in html
+    md = (tmp_path / "miniprot_bc.recipe.md").read_text()
+    assert "registry — pulled from a registry" in md
+
+
+def test_an_image_pulled_by_this_call_is_origin_registry(tmp_path, monkeypatch):
+    """The image is absent, the call pulls it: that pull IS the observation of where it
+    came from, even when the daemon then reports no repo digest for it."""
+    _mock_docker(monkeypatch, digest="sha256:" + "65" * 32)
+    _mock_registry_digest(monkeypatch, "")
+    pulled = {"done": False}
+    monkeypatch.setattr(F, "_image_present",
+                        lambda image: image == F._CONTROL_IMAGE or pulled["done"])
+
+    def fake_sh(argv, timeout=300, **kw):
+        if argv[:2] == ["docker", "pull"]:
+            pulled["done"] = True
+            return {"rc": 0, "out": "", "err": ""}
+        return {"rc": 1, "out": "", "err": "not mocked"}
+    monkeypatch.setattr(F, "_sh", fake_sh)
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="quay.io/x/y:1", name="y", version="1",
+        tools=[{"name": "y", "evidence": "y --version"}],
+        env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    assert pulled["done"] is True
+    assert out["image_origin"] == "registry"
+
+
+# ---------------------------------------------------------------------------
+# patches= on the authors' path — the honest way to fix an authors' recipe
+# ---------------------------------------------------------------------------
+#
+# The clone and the build are faked: `git clone` materialises a Dockerfile into the
+# checkout, `docker buildx build` succeeds, and the freeze half runs under _mock_docker.
+# What is under test is the step between them — apply, record, refuse — and that every
+# deliverable carries the edits.
+
+_DOCKERFILE = ("FROM debian:bookworm-slim\n"
+               "RUN apt-get update && apt-get install -y curl\n"
+               "RUN pip install uv\n")
+
+
+def _mock_authors_build(monkeypatch, dockerfile=_DOCKERFILE, build_rc=0,
+                        recipe_path="docker/Dockerfile"):
+    calls: list[list[str]] = []
+
+    def fake_sh(argv, timeout=300, **kw):
+        calls.append(list(argv))
+        if argv[:2] == ["git", "clone"]:
+            target = Path(argv[-1]) / recipe_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(dockerfile)
+            return {"rc": 0, "out": "", "err": ""}
+        if argv[:2] == ["git", "-C"] and "rev-parse" in argv:
+            return {"rc": 0, "out": "56b47ee" + "0" * 33 + "\n", "err": ""}
+        if argv[:3] == ["docker", "buildx", "build"]:
+            # the build reads the Dockerfile as it is at this moment — remember it
+            df = argv[argv.index("-f") + 1]
+            calls.append(["<built>", Path(df).read_text()])
+            return {"rc": build_rc, "out": "",
+                    "err": "" if build_rc == 0 else "error: git: command not found"}
+        return {"rc": 1, "out": "", "err": "not mocked"}
+    monkeypatch.setattr(F, "_sh", fake_sh)
+    return calls
+
+
+_GIT_PATCH = {"file": "docker/Dockerfile",
+              "find": "apt-get install -y curl",
+              "replace": "apt-get install -y curl git",
+              "reason": "uv clones a git dependency from the lock file; the authors' image lacks git"}
+
+
+def _build(tmp_path, monkeypatch, patches, dockerfile=_DOCKERFILE):
+    _mock_docker(monkeypatch)
+    calls = _mock_authors_build(monkeypatch, dockerfile=dockerfile)
+    cache = _Cache()
+    out = F.build_from_authors_recipe(
+        repo="populationgenomics/talos", ref="v12.2.0", recipe="docker/Dockerfile",
+        name="talos", version="12.2.0",
+        tools=[{"name": "talos", "evidence": "talos --help"}],
+        patches=patches, env_cache=cache, env_dir=tmp_path)
+    return out, cache, calls
+
+
+def test_a_patch_is_applied_before_the_build_and_recorded_with_it(tmp_path, monkeypatch):
+    out, cache, calls = _build(tmp_path, monkeypatch, [_GIT_PATCH])
+    assert out["outcome"] == "proven", out
+    assert out["build_method"] == "authors-dockerfile" and out["image_origin"] == "built"
+    built = [c[1] for c in calls if c[0] == "<built>"]
+    assert built and "apt-get install -y curl git" in built[0], "docker built the UNPATCHED file"
+    rec = cache.registered[out["request_key"]]
+    ds = rec["dockerfile_source"]
+    assert ds["repo"] == "https://github.com/populationgenomics/talos"
+    assert ds["commit"].startswith("56b47ee") and ds["tag"] == "v12.2.0"
+    assert "apt-get install -y curl git" in ds["dockerfile"], "the Dockerfile AS BUILT is recorded"
+    assert len(ds["patches"]) == 1
+    p = ds["patches"][0]
+    assert {k: p[k] for k in ("file", "find", "replace", "reason")} == _GIT_PATCH
+    assert len(p["sha256_before"]) == 64 and len(p["sha256_after"]) == 64
+    assert p["sha256_before"] != p["sha256_after"]
+    import hashlib
+    assert p["sha256_before"] == hashlib.sha256(_DOCKERFILE.encode()).hexdigest()
+    assert p["sha256_after"] == hashlib.sha256(ds["dockerfile"].encode()).hexdigest()
+
+
+def test_the_recorded_patches_reach_every_deliverable(tmp_path, monkeypatch):
+    out, cache, _ = _build(tmp_path, monkeypatch, [_GIT_PATCH])
+    assert out["outcome"] == "proven", out
+    recipe = yaml.safe_load((tmp_path / "talos.recipe.yaml").read_text())
+    assert recipe["image_origin"] == "built"
+    assert recipe["dockerfile_source"]["patches"][0]["find"] == _GIT_PATCH["find"]
+    assert recipe["dockerfile_source"]["patches"][0]["reason"] == _GIT_PATCH["reason"]
+    md = (tmp_path / "talos.recipe.md").read_text()
+    assert "### Patches applied to the authors' source (1)" in md
+    assert "`docker/Dockerfile`** · uv clones a git dependency" in md
+    assert "--- find\napt-get install -y curl\n+++ replace\napt-get install -y curl git" in md
+    assert "the 1 recorded patch above would have to be re-applied to the pinned source" in md
+    html = (tmp_path / "talos.ENV.html").read_text()
+    assert "Built from the authors&#x27; own Dockerfile" in html or "Built from the authors' own Dockerfile" in html
+    assert "1 patch applied" in html
+    assert "uv clones a git dependency from the lock file" in html
+    assert "apt-get install -y curl git" in html
+    assert "built under this record" in html
+    att = json.loads((tmp_path / "talos.attestation.json").read_text())
+    bd = att["predicate"]["buildDefinition"]
+    src = bd["externalParameters"]["authors_recipe"]
+    assert src["repo"] == "https://github.com/populationgenomics/talos"
+    assert src["patches"] == [{**_GIT_PATCH,
+                               "sha256_before": recipe["dockerfile_source"]["patches"][0]["sha256_before"],
+                               "sha256_after": recipe["dockerfile_source"]["patches"][0]["sha256_after"],
+                               "authored_by": "agent"}]
+    assert bd["internalParameters"]["image_origin"] == "built"
+
+
+def test_an_unpatched_authors_build_records_an_empty_patch_list(tmp_path, monkeypatch):
+    """No patches is a statement — "built as published" — and the record makes it."""
+    out, cache, calls = _build(tmp_path, monkeypatch, [])
+    assert out["outcome"] == "proven", out
+    rec = cache.registered[out["request_key"]]
+    assert rec["dockerfile_source"]["patches"] == []
+    assert rec["dockerfile_source"]["dockerfile"] == _DOCKERFILE
+    md = (tmp_path / "talos.recipe.md").read_text()
+    assert "Patches applied" not in md and "re-applied" not in md
+    html = (tmp_path / "talos.ENV.html").read_text()
+    assert "No patches: the Dockerfile at the pinned commit was built as published" in html
+    att = json.loads((tmp_path / "talos.attestation.json").read_text())
+    assert "patches" not in att["predicate"]["buildDefinition"]["externalParameters"]["authors_recipe"]
+
+
+def test_a_patch_whose_text_is_absent_is_refused_before_anything_is_built(tmp_path, monkeypatch):
+    bad = dict(_GIT_PATCH, find="RUN pip install nothing-of-the-sort")
+    out, cache, calls = _build(tmp_path, monkeypatch, [bad])
+    assert out["outcome"] == "refused" and out["code"] == "authors_recipe.patch_no_match"
+    assert "docker/Dockerfile" in out["error"]
+    assert "RUN pip install nothing-of-the-sort" in out["error"]
+    assert out["file"] == "docker/Dockerfile" and out["patch_index"] == 0
+    assert not any(c[:3] == ["docker", "buildx", "build"] for c in calls), "it built anyway"
+    assert cache.registered == {}
+
+
+def test_a_no_match_refusal_quotes_at_most_80_characters_of_the_find_text(tmp_path, monkeypatch):
+    long_find = "Z" * 200
+    out, _, _ = _build(tmp_path, monkeypatch, [dict(_GIT_PATCH, find=long_find)])
+    assert out["code"] == "authors_recipe.patch_no_match"
+    assert "Z" * 80 + "…" in out["error"]
+    assert "Z" * 81 not in out["error"]
+
+
+def test_a_missing_file_is_a_no_match_that_names_the_file(tmp_path, monkeypatch):
+    out, _, calls = _build(tmp_path, monkeypatch, [dict(_GIT_PATCH, file="docker/Dockerfile.gpu")])
+    assert out["code"] == "authors_recipe.patch_no_match"
+    assert "docker/Dockerfile.gpu" in out["error"] and "does not exist" in out["error"]
+    assert not any(c[:3] == ["docker", "buildx", "build"] for c in calls)
+
+
+def test_a_patch_that_matches_twice_is_refused_as_ambiguous(tmp_path, monkeypatch):
+    twice = "FROM debian\nRUN apt-get update\nRUN apt-get update\n"
+    out, cache, calls = _build(tmp_path, monkeypatch,
+                               [dict(_GIT_PATCH, find="apt-get update", replace="apt-get update -q")],
+                               dockerfile=twice)
+    assert out["outcome"] == "refused" and out["code"] == "authors_recipe.patch_ambiguous"
+    assert out["occurrences"] == 2 and "occurs 2 times" in out["error"]
+    assert "docker/Dockerfile" in out["error"]
+    assert not any(c[:3] == ["docker", "buildx", "build"] for c in calls)
+    assert cache.registered == {}
+
+
+@pytest.mark.parametrize("broken,missing", [
+    ({"file": "docker/Dockerfile", "find": "curl", "replace": "curl git"}, "`reason`"),
+    ({"find": "curl", "replace": "curl git", "reason": "r"}, "`file`"),
+    ({"file": "docker/Dockerfile", "replace": "x", "reason": "r"}, "`find`"),
+    ({"file": "docker/Dockerfile", "find": "curl", "replace": None, "reason": "r"}, "`replace`"),
+])
+def test_a_malformed_patch_is_refused_naming_the_missing_field(tmp_path, monkeypatch, broken, missing):
+    out, cache, calls = _build(tmp_path, monkeypatch, [broken])
+    assert out["outcome"] == "refused" and out["code"] == "authors_recipe.patch_malformed"
+    assert missing in out["error"]
+    assert not any(c[:3] == ["docker", "buildx", "build"] for c in calls)
+
+
+def test_a_patch_may_not_reach_outside_the_checkout(tmp_path, monkeypatch):
+    out, _, _ = _build(tmp_path, monkeypatch,
+                       [dict(_GIT_PATCH, file="../../../../etc/hosts", find="localhost")])
+    assert out["code"] == "authors_recipe.patch_malformed"
+    assert "not a path inside the checkout" in out["error"]
+
+
+def test_a_non_dict_patch_is_refused_as_malformed(tmp_path, monkeypatch):
+    out, _, _ = _build(tmp_path, monkeypatch, ["sed -i s/curl/curl git/ Dockerfile"])
+    assert out["code"] == "authors_recipe.patch_malformed"
+
+
+def test_patches_apply_in_order_and_each_sees_the_previous_result(tmp_path, monkeypatch):
+    second = {"file": "docker/Dockerfile", "find": "curl git", "replace": "curl git ca-certificates",
+              "reason": "git over https needs the CA bundle"}
+    out, cache, calls = _build(tmp_path, monkeypatch, [_GIT_PATCH, second])
+    assert out["outcome"] == "proven", out
+    ds = cache.registered[out["request_key"]]["dockerfile_source"]
+    assert [p["reason"] for p in ds["patches"]] == [_GIT_PATCH["reason"], second["reason"]]
+    assert ds["patches"][0]["sha256_after"] == ds["patches"][1]["sha256_before"]
+    assert "apt-get install -y curl git ca-certificates" in ds["dockerfile"]
+    md = (tmp_path / "talos.recipe.md").read_text()
+    assert "Patches applied to the authors' source (2)" in md
+    assert "the 2 recorded patches above would have to be re-applied" in md
+
+
+def test_a_patched_build_that_still_fails_is_the_same_honest_build_failure(tmp_path, monkeypatch):
+    _mock_docker(monkeypatch)
+    _mock_authors_build(monkeypatch, build_rc=1)
+    out = F.build_from_authors_recipe(
+        repo="populationgenomics/talos", ref="v12.2.0", recipe="docker/Dockerfile",
+        name="talos", tools=[{"name": "talos", "evidence": "talos --help"}],
+        patches=[_GIT_PATCH], env_cache=_Cache(), env_dir=tmp_path)
+    assert out["outcome"] == "broke" and out["code"] == "authors_recipe.build_failed"
+
+
+# ---------------------------------------------------------------------------
+# verify_env_recipe knows about the patches and about a local adopt image
+# ---------------------------------------------------------------------------
+
+def test_verify_env_recipe_names_the_patches_a_rebuild_must_reapply(tmp_path):
+    from agent.mcp_tools import freeze_tools as FT
+    recipe = {"name": "talos", "build_method": "authors-dockerfile",
+              "content_digest": "sha256:" + "7f" * 32,
+              "dockerfile_source": {"repo": "https://github.com/populationgenomics/talos",
+                                    "commit": "c" * 40, "recipe_path": "docker/Dockerfile",
+                                    "patches": [dict(_GIT_PATCH, sha256_before="1" * 64,
+                                                     sha256_after="2" * 64)]}}
+    p = tmp_path / "talos.recipe.yaml"
+    p.write_text(yaml.safe_dump(recipe))
+    out = FT.verify_env_recipe(str(p))
+    assert out["outcome"] == "refused" and out["code"] == "freeze.recipe_verify_unavailable"
+    assert out["success"] is False and out["patches_recorded"] == 1
+    assert "patches=<the 1 recorded patch>" in out["proves"]
+    assert "docker/Dockerfile" in out["proves"]
+    assert "would have to be re-applied to the pinned source" in out["proves"]
+
+
+def test_verify_env_recipe_without_patches_does_not_mention_them(tmp_path):
+    from agent.mcp_tools import freeze_tools as FT
+    recipe = {"name": "talos", "build_method": "authors-dockerfile",
+              "content_digest": "sha256:" + "7f" * 32,
+              "dockerfile_source": {"repo": "https://github.com/populationgenomics/talos",
+                                    "commit": "c" * 40, "patches": []}}
+    p = tmp_path / "talos.recipe.yaml"
+    p.write_text(yaml.safe_dump(recipe))
+    out = FT.verify_env_recipe(str(p))
+    assert out["code"] == "freeze.recipe_verify_unavailable" and out["patches_recorded"] == 0
+    assert "patch" not in out["proves"]
+
+
+def test_verify_env_recipe_explains_a_local_adopt_image_has_nothing_to_re_pull(tmp_path):
+    from agent.mcp_tools import freeze_tools as FT
+    recipe = {"name": "talos", "build_method": "adopt", "adopt_image": "",
+              "image_origin": "local", "content_digest": "sha256:" + "65" * 32}
+    p = tmp_path / "talos.recipe.yaml"
+    p.write_text(yaml.safe_dump(recipe))
+    out = FT.verify_env_recipe(str(p))
+    assert out["outcome"] == "refused" and out["code"] == "freeze.recipe_adopt_no_image"
+    assert out["image_origin"] == "local"
+    assert "did not observe" in out["error"] and "build_env_from_authors_recipe" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Identity by name is not identity — the known repo reaches capture()
+# ---------------------------------------------------------------------------
+
+_PYPI_OTHER_TALOS = {"available": True,
+                     "summary": "Reproducible parameter sweeps for Keras, TensorFlow and PyTorch",
+                     "home_page": "https://github.com/autonomio/talos",
+                     "project_urls": {}, "package_url": "https://pypi.org/project/talos/"}
+
+
+def _pypi_says(monkeypatch, probe):
+    import agent.skills.resolver as R
+    monkeypatch.setattr(R, "probe_pypi", lambda name, timeout=12: probe)
+
+
+def test_the_authors_repo_turns_a_same_named_pypi_hit_into_a_collision(tmp_path, monkeypatch):
+    """THE h_talos case: the SBOM says `talos` (pypi), PyPI's `talos` is a Keras sweep
+    library, and the record KNOWS it was built from populationgenomics/talos. The other
+    project's words must not describe this env — anywhere."""
+    _mock_docker(monkeypatch)
+    _pypi_says(monkeypatch, _PYPI_OTHER_TALOS)
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="talos:12.2.0", name="talos", version="12.2.0",
+        tools=[{"name": "talos", "evidence": "talos --help"}],
+        build_method="authors-dockerfile",
+        dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
+                           "commit": "c" * 40, "tag": "v12.2.0", "patches": []},
+        env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] == "proven", out
+    idn = cache.registered[out["request_key"]]["tool_identities"][0]
+    assert idn["tool"] == "talos" and idn["package"] == "talos" and idn["source"] == "pypi"
+    assert idn["self_description"] is None
+    assert idn["collision"] == {"registry": "pypi",
+                                "points_at": "https://github.com/autonomio/talos",
+                                "known_repo": "https://github.com/populationgenomics/talos"}
+    assert "same-named pypi package `talos` exists elsewhere" in idn["note"]
+    html = (tmp_path / "talos.ENV.html").read_text()
+    assert "name collision" in html and "autonomio/talos" in html
+    assert "Reproducible parameter sweeps" not in html
+    assert "describes it as" not in html
+    md = (tmp_path / "talos.recipe.md").read_text()
+    assert "name collision" in md and "Reproducible parameter sweeps" not in md
+    att = json.loads((tmp_path / "talos.attestation.json").read_text())
+    ti = att["predicate"]["buildDefinition"]["internalParameters"]["tool_identities"][0]
+    assert ti["collision"]["registry"] == "pypi" and ti["self_description"] is None
+
+
+def test_an_adopted_image_source_label_is_the_known_repo(tmp_path, monkeypatch):
+    """No Dockerfile source on the adopt path — but the image names its own repository in
+    `org.opencontainers.image.source`, and that observation anchors identity the same way."""
+    _mock_docker(monkeypatch)
+    _mock_registry_digest(monkeypatch, "")
+    monkeypatch.setattr(F, "_image_source_label",
+                        lambda image: "https://github.com/populationgenomics/talos")
+    _pypi_says(monkeypatch, _PYPI_OTHER_TALOS)
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="talos-amd64:v12.2.0", name="talos", version="12.2.0",
+        tools=[{"name": "talos", "evidence": "talos --help"}],
+        env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    rec = cache.registered[out["request_key"]]
+    assert rec["image_source_label"] == "https://github.com/populationgenomics/talos"
+    idn = rec["tool_identities"][0]
+    assert idn["self_description"] is None
+    assert idn["collision"]["points_at"] == "https://github.com/autonomio/talos"
+
+
+def test_a_registry_hit_anchored_to_the_known_repo_keeps_its_description(tmp_path, monkeypatch):
+    _mock_docker(monkeypatch)
+    _pypi_says(monkeypatch, dict(_PYPI_OTHER_TALOS,
+                                 summary="Rare-disease variant prioritisation",
+                                 home_page="https://github.com/populationgenomics/talos"))
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="talos:12.2.0", name="talos", version="12.2.0",
+        tools=[{"name": "talos", "evidence": "talos --help"}],
+        build_method="authors-dockerfile",
+        dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
+                           "commit": "c" * 40, "patches": []},
+        env_cache=cache, env_dir=tmp_path)
+    idn = cache.registered[out["request_key"]]["tool_identities"][0]
+    assert idn["self_description"] == "Rare-disease variant prioritisation"
+    assert idn["collision"] is None and idn["note"] is None
+
+
+def test_without_a_known_repo_the_sbom_tie_is_the_anchor_as_before(tmp_path, monkeypatch):
+    """No Dockerfile source, no label: nothing to check against, so the install-tied
+    registry summary is disclosed as it always was — labelled unverified by the renders."""
+    _mock_docker(monkeypatch)
+    _mock_registry_digest(monkeypatch, "")
+    _pypi_says(monkeypatch, _PYPI_OTHER_TALOS)
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="talos-amd64:v12.2.0", name="talos", version="12.2.0",
+        tools=[{"name": "talos", "evidence": "talos --help"}],
+        env_cache=cache, env_dir=tmp_path)
+    rec = cache.registered[out["request_key"]]
+    assert "image_source_label" not in rec
+    idn = rec["tool_identities"][0]
+    assert idn["self_description"] == _PYPI_OTHER_TALOS["summary"]
+    assert idn["collision"] is None
+
+
+def test_the_known_repo_is_tied_to_the_primary_tool_only(tmp_path, monkeypatch):
+    """The repo builds talos; the bcftools fork baked beside it has its own home. A
+    registry `bcftools` pointing at samtools/bcftools is not a collision with
+    populationgenomics/talos — the check must not spill onto the other tools."""
+    monkeypatch.setattr(F, "_image_present", lambda image: True)
+    monkeypatch.setattr(F, "_image_digest", lambda image: "sha256:" + "cd" * 32)
+    monkeypatch.setattr(F, "_image_source_label", lambda image: "")
+    import agent.skills.locus as LOC
+    monkeypatch.setattr(LOC, "image_arch", lambda ref: {"resolved": True, "arch": "amd64"})
+    import agent.skills.container_build as CB
+    monkeypatch.setattr(CB.ContainerBuild, "conda_sbom_from_image", staticmethod(lambda *a, **k: []))
+    monkeypatch.setattr(CB.ContainerBuild, "apt_sbom_from_image", staticmethod(lambda *a, **k: []))
+
+    def _run(image, platform, command, timeout=300, maxlen=400):
+        if image == F._CONTROL_IMAGE:
+            return {"rc": 127, "out": "command not found"}
+        if "importlib.metadata" in command:
+            return {"rc": 0, "out": json.dumps(["talos==12.2.0", "bcftools==1.23"])}
+        return {"rc": 0, "out": "ran"}
+    monkeypatch.setattr(F, "_run_in_image", _run)
+    import agent.skills.resolver as R
+    monkeypatch.setattr(R, "probe_conda", lambda name, timeout=12: {"available": False})
+    monkeypatch.setattr(R, "probe_pypi", lambda name, timeout=12: {
+        "available": True, "summary": f"PYPI::{name}",
+        "home_page": f"https://github.com/elsewhere/{name}", "project_urls": {}})
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="talos:12.2.0", name="talos", version="12.2.0",
+        tools=[{"name": "talos", "evidence": "talos --help"},
+               {"name": "bcftools", "evidence": "bcftools --version"}],
+        build_method="authors-dockerfile",
+        dockerfile_source={"repo": "https://github.com/populationgenomics/talos",
+                           "commit": "c" * 40, "patches": []},
+        env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] == "proven", out
+    ids = {i["tool"]: i for i in cache.registered[out["request_key"]]["tool_identities"]}
+    assert ids["talos"]["collision"] is not None and ids["talos"]["self_description"] is None
+    assert ids["bcftools"]["collision"] is None
+    assert ids["bcftools"]["self_description"] == "PYPI::bcftools"
