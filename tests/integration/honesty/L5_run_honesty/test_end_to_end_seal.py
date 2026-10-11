@@ -81,9 +81,9 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
             "inputs":  [{"name": "INPUT",  "format": "txt"},
                         {"name": "OUTPUT", "format": "txt"}],
             "outputs": [{"name": "OUTPUT", "files": ["*.txt"]}],
-            # Empty trials → single inferred trial; usage_verified gets short-
-            # circuited below via the spec_writer.self_test_usage monkeypatch.
-            "trials":  [],
+            # One trial binding the input slot (the write requires it); usage_verified
+            # gets short-circuited below via the spec_writer.self_test_usage monkeypatch.
+            "trials":  [{"name": "t", "substitutions": {"INPUT": "/data/in.txt"}}],
         },
     })
     m._pipeline_state.add_install_step(pipeline_id, {

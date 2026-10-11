@@ -113,6 +113,32 @@ def _compact_freeze_response(out: dict) -> dict:
     return out
 
 
+#: The build-result fields that carry the record's bulk — the lock file text, the
+#: resolved closure and the apt layer — kept for the record a successful freeze writes
+#: and useless in a refusal, where they buried the one violation under a hundred
+#: kilobytes the client could not even display.
+_BUILD_BULK = ("lock_files", "resolved_packages", "system_packages")
+
+
+def _build_for_return(br: object) -> object:
+    """A failed build's result as the caller reads it inline: every field but the bulk,
+    and in their place what was omitted and how much of it."""
+    if not isinstance(br, dict):
+        return br
+    out = {k: v for k, v in br.items() if k not in _BUILD_BULK}
+    omitted = {}
+    lf = br.get("lock_files")
+    if isinstance(lf, dict) and lf:
+        omitted["lock_files"] = {str(n): len(c or "") for n, c in lf.items()}
+    for k in ("resolved_packages", "system_packages"):
+        v = br.get(k)
+        if isinstance(v, (list, dict)) and v:
+            omitted[k] = len(v)
+    if omitted:
+        out["omitted_for_size"] = omitted
+    return out
+
+
 def _compact_verification(v: object) -> object:
     if not isinstance(v, dict):
         return v
@@ -509,7 +535,7 @@ def freeze(
                         f"{soft_threshold:.0f} GB — pruning to avoid cascade")
             return broke("freeze.container_build_failed", success=False,
                     stage="container_build", request_key=rkey,
-                    adopt_attempt=adopt, build=br, **extra)
+                    adopt_attempt=adopt, build=_build_for_return(br), **extra)
         mode, build_method, image = "build", "container-native", br["image"]
         image_digest = br["image_digest"]
         build_cd = br.get("content_digest", "")   # the real, unique, reproducible anchor

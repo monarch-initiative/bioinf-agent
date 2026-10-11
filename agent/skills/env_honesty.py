@@ -45,7 +45,7 @@ hand-built BuildResult (no container needed).
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 # The declared shape of the sub-records WELL_FORMED asserts. core_data is a leaf
 # (pydantic/yaml only) so this keeps the module import-cycle-free; it is not
@@ -122,23 +122,25 @@ _PROBE_HINTS = ("command -v", "which ", "--version", "-version", "version",
                 "test -f", "test -e", "import ", "-e1", "rscript", "perl -m")
 
 
-def _tool_tokens(tool: str) -> set[str]:
+def _tool_tokens(tool: str, aliases: Iterable[str] = ()) -> set[str]:
     """The tool plus its conda-prefix-stripped forms — mirrors evidence.r_namespace
-    (r-ape→ape, bioconductor-deseq2→deseq2, python-foo→foo, perl-bio-x→bio-x)."""
-    toks = {tool}
+    (r-ape→ape, bioconductor-deseq2→deseq2, python-foo→foo, perl-bio-x→bio-x) — plus
+    the structural `aliases` the install primitive declared (a run-by-path repo's
+    entrypoint file), which name the same artifact by another handle."""
+    toks = {tool, *aliases}
     for pre in ("r-", "bioconductor-", "python-", "perl-"):
         if tool.lower().startswith(pre):
             toks.add(tool[len(pre):])
     return {t for t in toks if t}
 
 
-def _references_tool(evidence: str, tool: str) -> bool:
-    """Does `evidence` invoke `tool` as a word-boundary token? Boundary = the
-    adjacent char is not an alphanumeric continuation (so `cat` does NOT match
-    inside `concatenate`), with a perl `-M` exception (`-MBio::DB::HTS` glues the
-    module to a capital letter, which is legitimate)."""
+def _references_tool(evidence: str, tool: str, aliases: Iterable[str] = ()) -> bool:
+    """Does `evidence` invoke `tool` (or one of its `aliases`) as a word-boundary
+    token? Boundary = the adjacent char is not an alphanumeric continuation (so `cat`
+    does NOT match inside `concatenate`), with a perl `-M` exception (`-MBio::DB::HTS`
+    glues the module to a capital letter, which is legitimate)."""
     low = evidence.lower()
-    for t in _tool_tokens(tool):
+    for t in _tool_tokens(tool, aliases):
         tl = t.lower()
         idx = low.find(tl)
         while idx != -1:
@@ -380,9 +382,12 @@ def is_shallow_evidence(evidence: str, tool: str = "") -> bool:
     return evidence_depth(evidence, tool) in _SHALLOW_DEPTHS
 
 
-def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
+def evidence_shape_violation(evidence: str, tool: str = "",
+                             aliases: Iterable[str] = ()) -> Optional[str]:
     """Return a reason string if `evidence` is a cheat shape, else None. Public so
     a face (MCP/CLI) can pre-flight an agent-authored evidence before a build.
+    `aliases` are the other structural names of the same artifact (a run-by-path
+    repo's entrypoint file) that satisfy the token rule beside `tool`.
 
     DEFENSE IN DEPTH, NOT THE DEFENSE. This reads a string, and a string rule cannot win
     against a string author — the audit walked through the previous version with four
@@ -445,8 +450,10 @@ def evidence_shape_violation(evidence: str, tool: str = "") -> Optional[str]:
     if _BARE_ECHO.match(ex) and "$(" not in ex and "`" not in ex:
         return f"evidence {ev!r} only echoes a string — it never invokes the tool"
     if tool:
-        if not _references_tool(ex, tool):
-            return (f"evidence {ev!r} never references the tool token {tool!r} as a "
+        if not _references_tool(ex, tool, aliases):
+            others = [a for a in aliases if a and a != tool]
+            also = f" (nor its entrypoint {', '.join(repr(a) for a in others)})" if others else ""
+            return (f"evidence {ev!r} never references the tool token {tool!r}{also} as a "
                     f"word-boundary invocation — it cannot prove {tool!r} is present")
         return None
     # no tool token (e.g. an authored file): require a recognizable presence probe
@@ -1399,7 +1406,8 @@ def evaluate_build(result: dict) -> BuildContract:
             f"[{', '.join(sorted(set(depths)))}]"))
     for ver in verifications:
         label = ver.get("label", "?")
-        shape = evidence_shape_violation(ver.get("check", ""), ver.get("tool", ""))
+        shape = evidence_shape_violation(ver.get("check", ""), ver.get("tool", ""),
+                                         ver.get("tool_aliases") or ())
         if shape:
             violations.append({"invariant": "VALIDATED_IN_IMAGE.evidence_shape",
                                "where": f"verifications[{label}]",

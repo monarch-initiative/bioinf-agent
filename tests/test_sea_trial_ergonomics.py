@@ -24,13 +24,15 @@ from pathlib import Path
 import pytest
 
 from agent.skills import spec_writer
-from agent.skills.spec_writer import _is_output_slot, _run_one_trial
+from agent.models.core_data import is_output_slot as _is_output_slot
+from agent.skills.spec_writer import _run_one_trial
 
 
 # ── 1. the output-slot convention, in one tested place ──────────────────────
 @pytest.mark.parametrize("slot,expected", [
     ("OUTPUT_DIR", True),
     ("OUT_DIR", True),
+    ("OUTDIR", True),           # the underscore is folded
     ("MY_OUTPUT", True),        # contains 'output'
     ("output_path", True),
     ("OUT_TSV", False),         # the sea-trial trap — reads like output, isn't recognized

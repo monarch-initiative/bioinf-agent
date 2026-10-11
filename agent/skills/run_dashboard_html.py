@@ -610,7 +610,7 @@ def _subs_table(subs: dict, output_slots: list, proven: bool) -> str:
     that no longer exists and invite them to reuse it.
 
     `output_slots` comes from the record (spec_writer stamps it when it overrides the
-    slot), never from re-deriving `_is_output_slot` here."""
+    slot), never from re-deriving `is_output_slot` here."""
     outs = set(output_slots or [])
     rows = []
     for slot in sorted(subs):

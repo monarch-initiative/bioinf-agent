@@ -74,3 +74,18 @@ def test_resource_rows_omit_nanopore_fields_that_are_null(tmp_path, monkeypatch)
     short, nano = rows
     assert "chemistry" not in short and "kit" not in short and short["r2"] is None
     assert nano["chemistry"] == "R10.4.1" and "flowcell" not in nano
+
+
+def test_a_failed_build_returns_without_the_lock_text_and_says_what_it_left_out():
+    """A refused freeze once carried the whole pixi.lock (99 KB of a 129 KB result) past
+    what the client could display, burying the one violation it needed to read."""
+    br = {"success": False, "stage": "verify", "honesty_violations": [{"invariant": "x"}],
+          "lock_files": {"pixi.toml": "a" * 10, "pixi.lock": "b" * 1000},
+          "resolved_packages": [{"name": "numpy"}] * 3, "system_packages": [{"name": "libc"}]}
+    out = freeze_tools._build_for_return(br)
+    assert "lock_files" not in out and "resolved_packages" not in out and "system_packages" not in out
+    assert out["honesty_violations"] == [{"invariant": "x"}] and out["stage"] == "verify"
+    assert out["omitted_for_size"] == {"lock_files": {"pixi.toml": 10, "pixi.lock": 1000},
+                                       "resolved_packages": 3, "system_packages": 1}
+    assert freeze_tools._build_for_return({"stage": "start", "error": "e"}) == {"stage": "start", "error": "e"}
+    assert freeze_tools._build_for_return("not a dict") == "not a dict"

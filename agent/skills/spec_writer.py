@@ -24,7 +24,8 @@ from typing import Any, Optional
 import yaml
 
 from agent.models import core_data as _core_data
-from agent.models.core_data import step_is_validated, usage_commands
+from agent.models.core_data import (OUTPUT_SLOT_RULE, fill_slots, is_output_slot,
+                                    step_is_validated, usage_commands, usage_slots)
 from agent.skills import invariants as _invariants
 from agent.skills.outcomes import refused
 # The READER for a step's validation dict. Imported (not re-implemented) so the invariant
@@ -390,9 +391,14 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
             "no conda_env on spec and no frozen env image supplied — nothing to run the "
             "how-to in. Freeze the env and re-seal to self-test against the shipped bytes.")
 
-    placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
+    placeholders = set(usage_slots(usage))
     if not placeholders:
-        return _not_attempted("command_template has no {PLACEHOLDER} slots")
+        lower = list(dict.fromkeys(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", template)))
+        hint = ((" — the template has " + ", ".join(f"`{{{t}}}`" for t in lower)
+                 + "; slots are UPPER_SNAKE (`{" + lower[0].upper() + "}`), rename them in the "
+                   "template, the trials and the inputs") if lower else
+                " — write every input path as a `{SLOT}` and every output through `{OUTPUT_DIR}/<name>`")
+        return _not_attempted("command_template has no {PLACEHOLDER} slots" + hint)
 
     declared_trials = usage.get("trials") or []
     inputs_spec     = usage.get("inputs", [])  or []
@@ -417,7 +423,7 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
         # so it self-tested as FAILED and (once I4 gates the seal) became unsealable — the
         # how-to was fine; our trial was not.
         missing = sorted(p for p in placeholders
-                         if not _is_output_slot(p) and p not in inferred)
+                         if not is_output_slot(p) and p not in inferred)
         if missing:
             return _not_attempted(
                 f"could not infer a value for {', '.join('{'+m+'}' for m in missing)} from "
@@ -444,21 +450,6 @@ def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = Non
         "passed":      sum(1 for t in trial_results if t.get("ok")),
         "source":      "trials" if declared_trials else "inferred",
     }
-
-
-def _is_output_slot(slot: str) -> bool:
-    """The I4 self-test convention, in ONE place (was duplicated inline).
-
-    The self-test runs each trial in a fresh scratch dir and scans ONLY that dir
-    for usage.outputs[*].files. So it must know which template placeholders are
-    OUTPUT targets — those get the scratch path substituted so produced files land
-    where the scan looks. A placeholder is an output slot when its name is
-    {OUTPUT_DIR}/{OUT_DIR} or contains 'output'. Any other slot keeps the trial's
-    declared value; an output written through an UNRECOGNIZED slot lands outside
-    the scratch dir and is invisible to the scan (the `{OUT_TSV}` trap).
-    Referenced by the I4 failure hint so the refusal explains this convention."""
-    s = slot.lower()
-    return "output" in s or "out_dir" in s
 
 
 def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> dict:
@@ -489,7 +480,7 @@ def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> di
 
     substitutions: dict = {}
     for slot in placeholders:
-        if _is_output_slot(slot):
+        if is_output_slot(slot):
             continue   # _run_one_trial fills these with scratch
         slot_spec = next((i for i in inputs_spec if i.get("name") == slot), None)
         fmt = (slot_spec.get("format") or "").lower() if slot_spec else ""
@@ -545,10 +536,10 @@ def _run_one_trial(
     # input slot holds a durable path to real test data, an output slot holds a temp
     # directory that is deleted before anyone reads the report. Without this the run
     # dashboard would have to re-derive the distinction by re-implementing
-    # `_is_output_slot` at the render site — a second reading of the convention that
+    # `is_output_slot` at the render site — a second reading of the convention that
     # decides where the self-test looks for outputs, which is exactly the shape of
     # drift this codebase keeps paying for.
-    output_slots = sorted(s for s in placeholders if _is_output_slot(s))
+    output_slots = sorted(s for s in placeholders if is_output_slot(s))
     for slot in output_slots:
         subs[slot] = str(scratch)
 
@@ -561,14 +552,9 @@ def _run_one_trial(
             "substitutions": subs, "output_slots": output_slots,
         }
 
-    def _fill(cmd: str) -> str:
-        for slot, val in subs.items():
-            cmd = cmd.replace("{" + slot + "}", str(val))
-        return cmd
-
     ran: list[str] = []
     for i, raw in enumerate(commands, start=1):
-        command = _fill(raw)
+        command = fill_slots(raw, subs)
         ran.append(command)
         result = env_manager.run_in_env(env_name, command, timeout=600, watch_dir=str(scratch))
         rc = result.get("returncode")
@@ -596,19 +582,30 @@ def _run_one_trial(
         if p.is_file():
             produced.append(str(p.relative_to(scratch)))
 
-    # Step 1: every declared pattern must match at least one produced file.
+    # Step 1: every declared pattern must match at least one produced file. A pattern
+    # is written in the same grammar as the template (`{SAMPLE}.sorted.bam` names the
+    # file the command `-o {OUTPUT_DIR}/{SAMPLE}.sorted.bam` wrote), so it is filled with
+    # this trial's bindings first; a pattern that spells the output directory itself is
+    # read relative to the scratch dir the scan walks.
+    def _filled(pat: str) -> str:
+        p = fill_slots(pat, subs)
+        prefix = str(scratch).rstrip("/") + "/"
+        return p[len(prefix):] if p.startswith(prefix) else p
+
     missing_outputs = []
     matched_files: dict[str, list[tuple[str, str]]] = {}   # pattern → [(produced_rel, declared_type)]
     for o in outputs_spec:
         patterns = o.get("files") or []
         declared_type = (o.get("type") or "").lower()
         for pat in patterns:
+            want = _filled(pat)
             matches = [
                 f for f in produced
-                if fnmatch.fnmatch(f, pat) or fnmatch.fnmatch(Path(f).name, pat)
+                if fnmatch.fnmatch(f, want) or fnmatch.fnmatch(Path(f).name, want)
             ]
             if not matches:
-                missing_outputs.append({"slot": o.get("name"), "pattern": pat})
+                missing_outputs.append({"slot": o.get("name"), "pattern": pat,
+                                        **({"pattern_filled": want} if want != pat else {})})
             else:
                 matched_files.setdefault(pat, []).extend((m, declared_type) for m in matches)
 
@@ -619,7 +616,7 @@ def _run_one_trial(
         # output slot (so it kept the agent's own absolute path instead of the
         # scratch dir). Disclose the convention + which slots WERE recognized so the
         # fix is obvious — without weakening the check.
-        recognized = sorted(s for s in placeholders if _is_output_slot(s))
+        recognized = sorted(s for s in placeholders if is_output_slot(s))
         out = {
             "name": trial_name, "ok": False,
             "reason": "command ran but expected outputs missing",
@@ -632,8 +629,7 @@ def _run_one_trial(
         if not produced:
             out["hint"] = (
                 "Nothing landed in the self-test scratch dir. The self-test scans "
-                "ONLY a fresh scratch dir and fills that path into OUTPUT slots — "
-                "placeholders named {OUTPUT_DIR}/{OUT_DIR} or containing 'output' "
+                f"ONLY a fresh scratch dir and fills that path into OUTPUT slots — {OUTPUT_SLOT_RULE} "
                 f"(recognized here: {recognized or 'NONE'}). An output written via "
                 "e.g. `-o {OUT_TSV}` uses an unrecognized slot, so the file lands "
                 "outside the scratch dir and is invisible. Fix: write outputs under "
@@ -842,8 +838,8 @@ def check_invariants(spec: dict) -> list[dict]:
 
     # ------------------------------------------------------------------
     # I6: every {PLACEHOLDER} in usage.command_template must resolve to a
-    # declared usage.inputs[*].name OR be one of the auto-allocated scratch
-    # slots (OUTPUT_DIR / OUT_DIR). A typo like {OUPUT_DIR} reads as a
+    # declared usage.inputs[*].name OR be the output directory the self-test
+    # allocates (core_data.is_output_slot). A typo like {OUPUT_DIR} reads as a
     # placeholder everywhere paths are checked, and the dynamic self-test
     # only catches it when a trial actually runs — this static check
     # surfaces it sooner.
@@ -853,24 +849,22 @@ def check_invariants(spec: dict) -> list[dict]:
         # Scan EVERY command (str or list[str]) through the one reader — an undeclared
         # placeholder in command 3 of a multi-step how-to is exactly as broken as one in
         # command 1, and re-reading the raw field here would have seen only the first.
-        template = "\n".join(usage_commands(usage))
-        if template:
-            template_placeholders = set(re.findall(r"\{([A-Z][A-Z0-9_]*)\}", template))
+        template_placeholders = set(usage_slots(usage))
+        if template_placeholders:
             declared_input_names = {
                 (inp.get("name") or "").strip()
                 for inp in (usage.get("inputs") or [])
                 if isinstance(inp, dict) and inp.get("name")
             }
-            scratch_slots = {"OUTPUT_DIR", "OUT_DIR"}
-            legal = declared_input_names | scratch_slots
+            legal = declared_input_names | {p for p in template_placeholders if is_output_slot(p)}
             undeclared = sorted(template_placeholders - legal)
             if undeclared:
                 violations.append({
                     "invariant": "I6.template_placeholders_declared",
                     "message":   f"usage.command_template references placeholders "
                                  f"{undeclared} that are not declared in usage.inputs[*].name "
-                                 f"(and aren't OUTPUT_DIR/OUT_DIR). Either add them to "
-                                 f"usage.inputs or fix the typo. Declared inputs: "
+                                 f"and are not the output directory ({OUTPUT_SLOT_RULE}). Either "
+                                 f"add them to usage.inputs or fix the typo. Declared inputs: "
                                  f"{sorted(declared_input_names) or '(none)'}.",
                     "where":     "usage.command_template",
                     "undeclared_placeholders": undeclared,

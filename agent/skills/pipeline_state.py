@@ -47,17 +47,20 @@ USAGE_SHAPE = {
 
 
 def usage_block_problems(usage) -> list[str]:
-    """Validate a draft's `usage` block against the WorkflowSpec model; one line per
-    problem, empty when it fits."""
+    """Validate a draft's `usage` block against the WorkflowSpec model AND against the
+    slot grammar the seal's self-test runs (core_data.usage_slot_problems); one line per
+    problem, empty when it fits. The shape alone let through a how-to whose slots the
+    self-test could not see, so the seal answered "no slots" to a block the writer
+    thought was fine; the grammar now refuses at the write, naming the exact change."""
     from pydantic import ValidationError
-    from agent.models.core_data import UsageTemplate
+    from agent.models.core_data import UsageTemplate, usage_slot_problems
     if not isinstance(usage, dict):
         return ["usage must be a mapping"]
     try:
         UsageTemplate.model_validate(usage)
     except ValidationError as e:
         return [f"{'.'.join(str(x) for x in err['loc']) or 'usage'}: {err['msg']}" for err in e.errors()]
-    return []
+    return usage_slot_problems(usage)
 
 
 def validation_key(path: str) -> str:
@@ -640,8 +643,8 @@ class PipelineState:
             if problems:
                 return refused(
                     "pipeline_state.usage_invalid",
-                    error=("patch refused — the merged `usage` block does not fit the "
-                           "WorkflowSpec schema (the seal would refuse it): " + "; ".join(problems)),
+                    error=("patch refused — the merged `usage` block is not a how-to the seal "
+                           "could self-test (it would refuse it): " + "; ".join(problems)),
                     problems=problems,
                     usage_shape=USAGE_SHAPE,
                 )

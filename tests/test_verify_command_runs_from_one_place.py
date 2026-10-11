@@ -127,3 +127,23 @@ def test_verifications_without_a_workdir_do_not_synthesize_one():
     ]
     workdirs = {v["check"]: v["workdir"] for v in eb.verifications if v.get("workdir")}
     assert workdirs == {_VERIFY: "/opt/tools/gab"}
+
+
+def test_a_run_by_path_repos_entrypoint_counts_as_the_tool():
+    """`python run_hicAssembler.py -h` from the clone proves the repo's code is present as
+    surely as the wrapper does; the token rule refused it for not spelling the repo's
+    name. The entrypoint's file name is a structural alias set from the install
+    arguments, carried on the verification record, never read from the evidence."""
+    from agent.skills.env_build import EnvBuild
+    spec = ic.script_repo("Genome_Assembly_Booster", "https://github.com/x/Genome_Assembly_Booster",
+                          ref="v1", script_rel="HIC_ASSEMBLER/run_hicAssembler.py", interpreter="python",
+                          evidence="bash -c 'cd HIC_ASSEMBLER && python run_hicAssembler.py -h'")
+    assert spec["tool_aliases"] == ["run_hicAssembler", "run_hicAssembler.py"]
+    assert evidence_shape_violation(spec["evidence"], spec["tool"]) is not None
+    assert evidence_shape_violation(spec["evidence"], spec["tool"], spec["tool_aliases"]) is None
+    b = EnvBuild("gab").add_tool(spec)
+    assert b.verifications[-1]["tool_aliases"] == ["run_hicAssembler", "run_hicAssembler.py"]
+    msg = evidence_shape_violation('python -c "import foo"', "Genome_Assembly_Booster", spec["tool_aliases"])
+    assert "nor its entrypoint 'run_hicAssembler', 'run_hicAssembler.py'" in msg
+    assert "tool_aliases" not in ic.script_repo("t", "https://github.com/x/t", ref="v1"), \
+        "a pure clone has no entrypoint to alias"

@@ -48,9 +48,10 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 from agent.skills.pipeline_page_html import render_pipeline_page
+from agent.models.core_data import SLOT_RE
 from agent.skills.pipeline_record import (RECORD_FILENAME, PipelineDerivationError,
                                           PipelineRecord, PipelineStage, _TOKEN_CHARS,
-                                          _PLACEHOLDER_RE, _collapse, record_yaml,
+                                          _collapse, record_yaml,
                                           render_samplesheet)
 from agent.skills.pipeline_render_nextflow import render_nextflow
 
@@ -86,7 +87,7 @@ def _binding_pattern(template: str, out_slots: list[str]) -> re.Pattern:
     if out_slots:
         slots = "|".join(re.escape(s) for s in sorted(out_slots))
         alternatives.append(r"\{(?:" + slots + r")\}/" + _TOKEN_CHARS)
-    alternatives.append(_PLACEHOLDER_RE.pattern)
+    alternatives.append(SLOT_RE.pattern)
     unit_re = re.compile("|".join(alternatives))
     parts: list[str] = []
     pos = 0

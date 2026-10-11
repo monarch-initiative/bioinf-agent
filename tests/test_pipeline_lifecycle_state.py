@@ -209,7 +209,8 @@ def test_lifecycle_pointers_are_blocked_from_patch(tmp_path):
 
 _GOOD_USAGE = {"description": "count reads", "command_template": "t {IN} > {OUTPUT_DIR}/o.tsv",
                "inputs": [{"name": "IN", "format": "fastq"}],
-               "outputs": [{"name": "OUTPUT_DIR", "files": ["o.tsv"]}]}
+               "outputs": [{"name": "OUTPUT_DIR", "files": ["o.tsv"]}],
+               "trials": [{"name": "t", "substitutions": {"IN": "/d/r.fastq"}}]}
 
 
 def test_a_usage_patch_missing_required_fields_is_refused_with_the_problems(tmp_path):

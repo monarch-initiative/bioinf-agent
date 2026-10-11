@@ -51,10 +51,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 from agent.models import core_data
-from agent.skills.spec_writer import _SIDECAR_SUFFIXES, _is_output_slot
+from agent.models.core_data import SLOT_RE, is_output_slot, slots_in as placeholders
+from agent.skills.spec_writer import _SIDECAR_SUFFIXES
 
-#: The I6 reading of a placeholder — `{NAME}`, upper-case, as the seal scans it.
-_PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
 #: Characters that can appear in a filename token named inside an output slot.
 _TOKEN_CHARS = r"[^\s'\"|;&<>()]+"
 #: Formats whose inputs are per-sample by nature when only one trial exists.
@@ -288,15 +287,6 @@ def _collapse(piece: str) -> str:
     return re.sub(r"\s+", " ", piece)
 
 
-def placeholders(text: str) -> list[str]:
-    """Every `{NAME}` in `text`, first-occurrence order, no duplicates."""
-    seen: list[str] = []
-    for m in _PLACEHOLDER_RE.finditer(text):
-        if m.group(1) not in seen:
-            seen.append(m.group(1))
-    return seen
-
-
 def artifact_tokens(template: str, out_slots: set[str]) -> list[str]:
     """The `<name>` fragments the template names inside an output slot,
     `{OUTPUT_DIR}/<name>`, first-occurrence order."""
@@ -318,7 +308,7 @@ def _template_regex(template: str, subs: Mapping[str, str], out_slots: set[str])
     (the seal's steps and the I4 self-test wrote to different output dirs)."""
     parts: list[str] = []
     pos = 0
-    for m in _PLACEHOLDER_RE.finditer(template):
+    for m in SLOT_RE.finditer(template):
         parts.append(re.escape(_collapse(template[pos:m.start()])))
         name = m.group(1)
         if name in out_slots:
@@ -552,7 +542,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         for p in placeholders(t):
             if p not in all_placeholders:
                 all_placeholders.append(p)
-    out_slots = {p for p in all_placeholders if _is_output_slot(p)}
+    out_slots = {p for p in all_placeholders if is_output_slot(p)}
     in_placeholders = [p for p in all_placeholders if p not in out_slots]
     declared_inputs = {i.get("name"): i for i in (usage_d.get("inputs") or []) if isinstance(i, dict)}
     declared_outputs = [o for o in (usage_d.get("outputs") or []) if isinstance(o, dict)]
@@ -750,6 +740,17 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     for e in (spec_d.get("envs") or []):
         if isinstance(e, dict) and e.get("image_digest"):
             env_map[str(e["image_digest"])] = e
+    if not env_map:
+        # Every stage runs in an image, and the seal pins only the images its steps
+        # ran in. A workflow whose steps all ran on the host pins none, and saying so
+        # by way of "command matches no step" sent a reader to compare command text for
+        # three rounds when the command was fine and the locus was the fault.
+        raise PipelineDerivationError(
+            "pipeline.no_container_steps",
+            "no sealed step ran inside a frozen image, so no stage can name the image it "
+            "runs in (the workflow pins 0 envs)",
+            "run each how-to command with run_step_in_container (not run_pipeline_step), "
+            "then re-seal: the pipeline executes inside the images the seal pins")
 
     produced_by: dict[str, int] = {}           # artifact token -> template index
     observed: dict[tuple[int, str], list[Optional[str]]] = {}   # (template, token) -> per-row observed basename
@@ -906,7 +907,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         base_from = tool
         if tool in _INTERPRETERS:
             # `Rscript {SCRIPT} …`: the script, not the interpreter, is what the stage does
-            m = re.search(re.escape(tool) + r"\s+\{([A-Z][A-Z0-9_]*)\}", templates[g[0]])
+            m = re.search(re.escape(tool) + r"\s+" + SLOT_RE.pattern, templates[g[0]])
             sc = next((sc for sc in scripts if m and sc.param == m.group(1)), None)
             if sc is not None:
                 tool = f"{tool} {sc.name}"

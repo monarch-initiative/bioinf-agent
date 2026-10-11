@@ -221,3 +221,17 @@ def test_a_spec_without_a_workdir_runs_its_evidence_from_the_default(monkeypatch
 ])
 def test_user_said_mentions_folds_case_and_separators(tool, said, expect):
     assert R.user_said_mentions(tool, said) is expect
+
+
+def test_engine_coupled_evidence_run_from_the_clone_still_finds_the_pixi_manifest(monkeypatch):
+    """A run-by-path repo with a conda interpreter: its evidence is wrapped in `pixi run`
+    AND must run from its clone. pixi searches upward from the cwd for a manifest, so
+    without naming it the wrapper found no project under /opt/tools/<name> and never
+    reached the env — four broken freezes on one real run. The wrapper names it."""
+    cb, calls = _builder(monkeypatch)
+    cb.install({"command": "git clone x /opt/tools/gab", "evidence": "python run.py -h", "tool": "gab",
+                "purpose": "gab (script repo)", "evidence_workdir": "/opt/tools/gab", "engine_coupled": True})
+    evidence_sh = calls[-1]
+    assert "cd /opt/tools/gab ||" in evidence_sh
+    assert f"pixi run --manifest-path {cb.workdir}/pixi.toml bash -c 'python run.py -h'" in evidence_sh
+    assert CB.PixiEngine().run("x").startswith("pixi run --manifest-path /work/pixi.toml bash -c ")

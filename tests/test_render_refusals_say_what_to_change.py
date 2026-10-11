@@ -46,3 +46,15 @@ def test_a_well_sized_record_has_no_form_problems():
     rec = pr.derive_pipeline_record(sealed_rnaseq_spec(), name="x",
                                     resources={"HISAT2": {"mem": "8G", "time": "02:00:00"}})
     assert nf.form_problems(rec) == []
+
+
+def test_a_workflow_whose_steps_ran_on_the_host_is_refused_by_locus_not_by_command_text():
+    """The seal pins only the images its steps ran in. Steps run on the host pin none, and
+    the old answer — "command matches no sealed step" — sent a reader to compare command
+    text for three rounds when the command was fine and the locus was the fault."""
+    spec = sealed_rnaseq_spec().model_copy(update={"envs": []})
+    with pytest.raises(pr.PipelineDerivationError) as e:
+        pr.derive_pipeline_record(spec, name="x")
+    assert e.value.code == "pipeline.no_container_steps"
+    assert "pins 0 envs" in e.value.error
+    assert "run_step_in_container" in e.value.remedy and "re-seal" in e.value.remedy

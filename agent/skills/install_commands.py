@@ -633,6 +633,14 @@ def script_repo(name: str, repo_url: str, *, ref: str = "", script_rel: str = ""
             "purpose": f"{name} (script repo @ {ref or 'HEAD'})",
             "runtime_packages": list(runtime_packages or []),
             "engine_coupled": engine_coupled}
+    if script_rel:
+        # The entrypoint IS the tool for a run-by-path repo: `python run_x.py -h` from
+        # the clone proves the repo's code is present and answers, as surely as the
+        # wrapper does. The honesty rule's token anchor accepts these names beside the
+        # wrapper's — structural, set here from the install arguments, never from the
+        # evidence text itself.
+        entry_name = PurePosixPath(script_rel).name
+        spec["tool_aliases"] = sorted({entry_name, PurePosixPath(entry_name).stem} - {wrap})
     if evidence:
         # A caller-supplied `verify_command` runs on the HOST from the clone dir
         # (`env_manager` passes `working_dir=share_dir`, as its docstring promises).
