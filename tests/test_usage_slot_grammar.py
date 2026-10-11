@@ -71,7 +71,7 @@ def test_a_lowercase_slot_the_block_treats_as_a_slot_is_named_with_its_rename():
     problems = PS.usage_block_problems(u)
     assert len(problems) == 1
     assert "UPPER_SNAKE" in problems[0]
-    assert "`{output_fastq}` → `{OUTPUT_FASTQ}`" in problems[0]
+    assert "`{output_fastq}` → `{OUTPUT_DIR}/<name>`" in problems[0], "an output file slot is not renamed to a slot a directory would fill"
     assert "`{input_fastq}` → `{INPUT_FASTQ}`" in problems[0]
     assert "trials[*].substitutions" in problems[0] and "inputs[*].name" in problems[0]
 
@@ -230,3 +230,28 @@ def test_a_block_without_trials_is_refused_naming_the_slots_a_trial_must_bind():
     assert PS.usage_block_problems(u) == []
     only_output = _usage("make-report > {OUTPUT_DIR}/r.txt", inputs=(), trials=[])
     assert PS.usage_block_problems(only_output) == [], "nothing to bind, nothing to declare"
+
+
+def test_a_file_shaped_output_slot_is_refused_with_the_directory_idiom():
+    """`-o {OUTPUT_FASTQ}` reads as an output slot, so the self-test filled it with the
+    scratch directory and cutadapt answered "Is a directory". Three runs paid a seal for it."""
+    u = _usage("cutadapt -a AGATCG -o {OUTPUT_FASTQ} {INPUT_FASTQ}", inputs=("INPUT_FASTQ",),
+               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/d/r1.fq.gz"}}])
+    problems = PS.usage_block_problems(u)
+    assert len(problems) == 1 and problems[0].startswith("output slots are directories")
+    assert "`{OUTPUT_FASTQ}` → `{OUTPUT_DIR}/<name>`" in problems[0] and "outputs[*].files" in problems[0]
+    for ok_slot in ("OUTPUT_DIR", "OUTDIR", "OUTPUT_FOLDER", "OUTPUT_DIRECTORY"):
+        assert CD.is_output_dir_slot(ok_slot) and PS.usage_block_problems(
+            _usage(f"cutadapt -o {{{ok_slot}}}/t.fq.gz {{INPUT_FASTQ}}",
+                   trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/d/r1.fq.gz"}}])) == []
+    assert not CD.is_output_dir_slot("OUTPUT_PREFIX") and not CD.is_output_dir_slot("FASTQ")
+
+
+def test_an_is_a_directory_failure_names_the_output_slot_trap():
+    class _Dir:
+        def run_in_env(self, env_name, command, timeout=None, watch_dir=None, **kw):
+            return {"returncode": 1, "stdout": "", "stderr": "[Errno 21] Is a directory: '/tmp/x'"}
+    res = SW._run_one_trial({"name": "t", "substitutions": {"IN": "/d/in"}}, ["seqkit stats -o {OUTPUT_DIR} {IN}"],
+                            {"IN", "OUTPUT_DIR"}, [{"name": "o", "files": ["*.tsv"]}], _Dir(), "x",
+                            {"pipeline_name": "p"}, None)
+    assert res["ok"] is False and "{OUTPUT_DIR}/<name>" in res["hint"] and "{OUTPUT_DIR}" in res["hint"]

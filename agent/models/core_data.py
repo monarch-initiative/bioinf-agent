@@ -1943,8 +1943,9 @@ _DOUBLE_BRACE_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 _SHELL_VAR_SLOT_RE = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 #: Stated once so every refusal and hint describes the same rule.
 OUTPUT_SLOT_RULE = ("a slot named {OUTPUT_DIR} or {OUTDIR}, or whose name contains OUTPUT, "
-                    "is the output directory: the self-test fills it with a fresh scratch "
-                    "directory and looks there for what the command wrote")
+                    "is the output DIRECTORY: the self-test fills it with a fresh scratch "
+                    "directory and looks there for what the command wrote, so every output "
+                    "file is written through it as {OUTPUT_DIR}/<name>")
 
 
 def slots_in(text: str) -> list[str]:
@@ -1966,6 +1967,14 @@ def is_output_slot(name: str) -> bool:
     so OUTDIR, OUT_DIR, OUTPUT_DIR and OUTPUTDIR all read as what they obviously are."""
     t = (name or "").lower().replace("_", "")
     return "output" in t or "outdir" in t
+
+
+def is_output_dir_slot(name: str) -> bool:
+    """An output slot whose name says it is a directory (OUTPUT_DIR, OUTDIR, OUT_FOLDER).
+    Every output slot is FILLED with a directory; one whose name says otherwise
+    (OUTPUT_FASTQ, OUTPUT_PREFIX) hands the tool a directory where it wants a file."""
+    t = (name or "").lower().replace("_", "")
+    return is_output_slot(name) and ("dir" in t or "folder" in t)
 
 
 def fill_slots(text: str, substitutions: Mapping[str, Any]) -> str:
@@ -2017,7 +2026,11 @@ def usage_slot_problems(usage: Any) -> list[str]:
     meant = [tok for tok in dict.fromkeys(_BRACE_IDENT_RE.findall(template))
              if tok not in slots and (tok in bound or tok in input_names or not slots)]
     if meant:
-        renames = ", ".join(f"`{{{t}}}` → `{{{t.upper()}}}`" for t in meant)
+        # A lowercase output FILE slot is not renamed to its uppercase twin — that twin
+        # would be filled with a directory. It becomes a file under the directory slot.
+        renames = ", ".join(f"`{{{t}}}` → `{{OUTPUT_DIR}}/<name>`"
+                            if is_output_slot(t) and not is_output_dir_slot(t)
+                            else f"`{{{t}}}` → `{{{t.upper()}}}`" for t in meant)
         problems.append(f"command_template slots must be UPPER_SNAKE `{{SLOT}}` — the self-test, the "
                         f"trials and the render recognise nothing else: rename {renames} in the "
                         f"template, in trials[*].substitutions and in inputs[*].name")
@@ -2030,6 +2043,13 @@ def usage_slot_problems(usage: Any) -> list[str]:
 
     outputs = {s for s in slots if is_output_slot(s)}
     needed = sorted(slots - outputs)
+    file_shaped = sorted(s for s in outputs if not is_output_dir_slot(s))
+    if file_shaped:
+        fixes = ", ".join(f"`{{{s}}}` → `{{OUTPUT_DIR}}/<name>`" for s in file_shaped)
+        problems.append(f"output slots are directories: the self-test fills {', '.join('{' + s + '}' for s in file_shaped)} "
+                        f"with a fresh directory and the tool is handed a directory where it wants a "
+                        f"file — write each output file through the one directory slot ({fixes}) and "
+                        f"declare its name under outputs[*].files")
     if not outputs:
         problems.append("no output slot: write every output path through `{OUTPUT_DIR}/<name>` so the "
                         f"self-test can find what the command wrote ({OUTPUT_SLOT_RULE}); "

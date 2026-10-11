@@ -77,10 +77,9 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
         "usage": {
             # Both placeholders declared in usage.inputs[*].name (I6).
             "description":      "fake_pkg canonical command.",
-            "command_template": "fake_pkg --in {INPUT} --out {OUTPUT}",
-            "inputs":  [{"name": "INPUT",  "format": "txt"},
-                        {"name": "OUTPUT", "format": "txt"}],
-            "outputs": [{"name": "OUTPUT", "files": ["*.txt"]}],
+            "command_template": "fake_pkg --in {INPUT} --out {OUTPUT_DIR}/result.txt",
+            "inputs":  [{"name": "INPUT",  "format": "txt"}],
+            "outputs": [{"name": "OUTPUT_DIR", "files": ["*.txt"]}],
             # One trial binding the input slot (the write requires it); usage_verified
             # gets short-circuited below via the spec_writer.self_test_usage monkeypatch.
             "trials":  [{"name": "t", "substitutions": {"INPUT": "/data/in.txt"}}],

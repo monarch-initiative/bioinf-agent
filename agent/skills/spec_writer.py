@@ -563,7 +563,7 @@ def _run_one_trial(
             # produce the declared outputs on top of a broken earlier one.
             step = (f"command {i} of {len(commands)}" if len(commands) > 1
                     else "command_template")
-            return {
+            failed = {
                 "name": trial_name, "ok": False,
                 "reason": f"{step} execution failed (rc={rc})",
                 "command_run": command, "commands_run": ran,
@@ -571,6 +571,13 @@ def _run_one_trial(
                 "stderr_tail": (result.get("stderr") or "")[-500:],
                 "substitutions": subs, "output_slots": output_slots,
             }
+            if re.search(r"is a directory", result.get("stderr") or "", re.I) and output_slots:
+                failed["hint"] = (
+                    f"the tool was handed a directory where it wants a file: every output slot "
+                    f"({', '.join('{' + s + '}' for s in output_slots)}) is filled with the "
+                    f"self-test's scratch directory. Write the file through it — "
+                    f"`{{OUTPUT_DIR}}/<name>` — and declare the name under usage.outputs[*].files.")
+            return failed
 
     # Every command succeeded. From here on the trial is judged on its OUTPUTS, and
     # what "ran" means is the whole sequence — reporting only the last command would
