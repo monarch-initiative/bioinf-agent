@@ -55,8 +55,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:321",
-    "end_line": 322,
+    "where": "agent/mcp_tools/run_tools.py:374",
+    "end_line": 375,
     "named_in_test": false
   },
   {
@@ -65,8 +65,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:425",
-    "end_line": 425,
+    "where": "agent/mcp_tools/run_tools.py:487",
+    "end_line": 487,
     "named_in_test": false
   },
   {
@@ -2165,9 +2165,9 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:424",
-    "end_line": 424,
-    "named_in_test": false
+    "where": "agent/mcp_tools/run_tools.py:486",
+    "end_line": 486,
+    "named_in_test": true
   },
   {
     "code": "service.probe_recorded",
@@ -3345,8 +3345,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_pipeline_step",
-    "where": "agent/mcp_tools/run_tools.py:121",
-    "end_line": 122,
+    "where": "agent/mcp_tools/run_tools.py:123",
+    "end_line": 124,
     "named_in_test": false
   },
   {
@@ -3355,8 +3355,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:272",
-    "end_line": 273,
+    "where": "agent/mcp_tools/run_tools.py:325",
+    "end_line": 326,
     "named_in_test": false
   },
   {
@@ -3365,8 +3365,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:282",
-    "end_line": 286,
+    "where": "agent/mcp_tools/run_tools.py:335",
+    "end_line": 339,
     "named_in_test": false
   },
   {
@@ -3375,8 +3375,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:290",
-    "end_line": 292,
+    "where": "agent/mcp_tools/run_tools.py:343",
+    "end_line": 345,
     "named_in_test": true
   },
   {
@@ -3385,8 +3385,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:296",
-    "end_line": 297,
+    "where": "agent/mcp_tools/run_tools.py:349",
+    "end_line": 350,
     "named_in_test": false
   },
   {
@@ -3395,8 +3395,8 @@
     "source": "helper",
     "tagged": true,
     "func": "run_step_in_container",
-    "where": "agent/mcp_tools/run_tools.py:311",
-    "end_line": 316,
+    "where": "agent/mcp_tools/run_tools.py:364",
+    "end_line": 369,
     "named_in_test": false
   },
   {
@@ -3405,8 +3405,8 @@
     "source": "helper",
     "tagged": true,
     "func": "validate_output",
-    "where": "agent/mcp_tools/run_tools.py:568",
-    "end_line": 571,
+    "where": "agent/mcp_tools/run_tools.py:631",
+    "end_line": 634,
     "named_in_test": false
   },
   {
@@ -5215,8 +5215,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "_check_composition_coherence",
-    "where": "agent/skills/spec_writer.py:1649",
-    "end_line": 1675,
+    "where": "agent/skills/spec_writer.py:1663",
+    "end_line": 1689,
     "named_in_test": true
   },
   {

@@ -19,23 +19,29 @@ from agent.skills.spec_writer import untraced_step_inputs
 @pytest.fixture
 def _runner(monkeypatch, tmp_path):
     """run_pipeline_step with the run and the validation stubbed; the step record, the
-    draft and the lineage walk are real."""
+    draft and the lineage walk are real.
+
+    The singleton INSTANCES are stubbed, never their classes. A test elsewhere that stubs
+    `_env_mgr.run_in_env` on the instance leaves pytest's undo writing the bound method
+    back onto the instance, and that instance attribute shadows any later class-level
+    stub — the real run_in_env then runs and fails on an env that does not exist. An
+    instance stub is correct whatever ran before it on the same worker."""
     pid = "p_lineage"
     m._pipeline_state.discard(pid)
     m._pipeline_state.start(pid, "lineage test")
-    monkeypatch.setattr(type(m._validator), "validate",
-                        lambda self, path, etype, env_name="": {"passed": True, "expected_type": etype, "path": path})
+    monkeypatch.setattr(m._validator, "validate",
+                        lambda path, etype, env_name="": {"passed": True, "expected_type": etype, "path": path})
 
     def _run(inputs: list[str], out_name: str):
         outp = tmp_path / out_name
         outp.write_text("x")
 
-        def _fake_run_in_env(self, env_name, command, working_dir=None, timeout=1800, inputs=None, watch_dir=None):
+        def _fake_run_in_env(env_name, command, working_dir=None, timeout=1800, inputs=None, watch_dir=None):
             return {"returncode": 0, "stdout": "", "stderr": "", "command": command, "env_name": env_name,
                     "detected_outputs": [str(outp)],
                     "resource_usage": {"wall_seconds": 0.01, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0},
                     "inputs": inputs or []}
-        monkeypatch.setattr(type(m._env_mgr), "run_in_env", _fake_run_in_env)
+        monkeypatch.setattr(m._env_mgr, "run_in_env", _fake_run_in_env)
         return m.run_pipeline_step(env_name="e", command=f"tool {' '.join(inputs)} > {outp}", pipeline_id=pid,
                                    inputs=[{"path": p} for p in inputs], watch_dir=str(tmp_path)), str(outp)
     return pid, _run
