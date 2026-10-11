@@ -52,8 +52,8 @@ LLM-in-the-loop eval exists to grade the ride's judgment, or they stay declared.
 enumeration, and never by a tool-name table.
 
 ### New meters / new MCP tools
-Standing exclusion for v1 ("ship, don't scaffold"). The intent grid, outcomes dashboard
-and capability map are maintained as-is, not extended.
+Standing exclusion for v1 ("ship, don't scaffold"). The intent grid and outcomes dashboard
+are maintained as-is, not extended.
 
 ---
 

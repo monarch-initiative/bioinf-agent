@@ -768,14 +768,14 @@ class TestClusterShippedImageBadge:
 
     @pytest.mark.integration
     def test_cluster_step_without_fingerprint_is_not_shipped(self):
-        from agent.skills.user_guide import validated_in_shipped_image
+        from agent.models.core_data import validated_in_shipped_image
         spec = {"pipeline_steps": [self._cluster_step(verified=False)]}
         assert validated_in_shipped_image(spec, valid_digests={self._DIG}) is False, \
             "a cluster step whose .sif was never fingerprinted must NOT earn the badge"
 
     @pytest.mark.integration
     def test_cluster_step_with_fingerprint_is_shipped(self):
-        from agent.skills.user_guide import validated_in_shipped_image
+        from agent.models.core_data import validated_in_shipped_image
         spec = {"pipeline_steps": [self._cluster_step(verified=True)]}
         assert validated_in_shipped_image(spec, valid_digests={self._DIG}) is True
 
@@ -784,7 +784,7 @@ class TestClusterShippedImageBadge:
         """A local run_step_in_container step gets its digest from `docker
         inspect` of the image that really ran — it must still earn the badge
         with no cluster_image_verified field."""
-        from agent.skills.user_guide import validated_in_shipped_image
+        from agent.models.core_data import validated_in_shipped_image
         spec = {"pipeline_steps": [{
             "step": 1, "tool": "samtools", "returncode": 0,
             "ran_in_container": True, "container_image_digest": self._DIG,

@@ -136,29 +136,15 @@ _STALE_ADVICE = {"hpc_delivery": {
     "source_note": "registry-free transfer"}}
 
 
-def test_guide_and_dashboard_agree_a_staged_sif_outranks_stored_advice():
-    # The measured defect: the guide printed the head-node build advice for
-    # the same workflow whose dashboard said "never built on the head node".
-    # Both now consult core_data.staged_sif_steps.
-    from agent.skills.user_guide import render_user_guide
+def test_the_dashboard_shows_a_staged_sif_over_stored_advice():
+    # The measured defect: a renderer printed the head-node build advice for the same
+    # workflow whose dashboard said "never built on the head node". Every renderer
+    # consults core_data.staged_sif_steps.
     from agent.skills.run_dashboard_html import render_run_dashboard_html
     spec = _staged_spec()
     spec["env_hpc_delivery"] = dict(_STALE_ADVICE["hpc_delivery"])
-    guide = render_user_guide(spec, freeze_record=dict(_STALE_ADVICE))
     dash = render_run_dashboard_html(spec)
-    for page, name in ((guide, "guide"), (dash, "dashboard")):
-        assert "then on the HPC" not in page, (
-            f"the {name} still shows the stored head-node build advice "
-            f"over a step-recorded staged .sif (F21)")
-    assert "already staged on the cluster" in guide
+    assert "then on the HPC" not in dash, (
+        "the dashboard still shows the stored head-node build advice over a "
+        "step-recorded staged .sif (F21)")
     assert "Staged .sif (cluster)" in dash
-
-
-def test_without_staged_evidence_the_stored_advice_still_reaches_the_guide():
-    from agent.skills.user_guide import render_user_guide
-    spec = _staged_spec()
-    step = spec["pipeline_steps"][0]
-    for k in ("cluster_sif_sha256", "container_image"):
-        step.pop(k, None)
-    guide = render_user_guide(spec, freeze_record=dict(_STALE_ADVICE))
-    assert "Get the container" in guide

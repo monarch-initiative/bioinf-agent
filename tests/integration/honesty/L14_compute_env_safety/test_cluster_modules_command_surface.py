@@ -67,7 +67,7 @@ class TestPatternValidator:
     ])
     def test_accepts_good_patterns(self, good):
         # Doesn't raise; empty string returns None.
-        result = cluster_modules._validate_pattern(good)
+        result = cluster_modules.validate_pattern(good)
         assert result == (good or None)
 
     @pytest.mark.integration
@@ -82,19 +82,19 @@ class TestPatternValidator:
     ])
     def test_refuses_shell_metacharacters(self, bad):
         with pytest.raises(ValueError) as exc:
-            cluster_modules._validate_pattern(bad)
+            cluster_modules.validate_pattern(bad)
         assert "forbidden" in str(exc.value)
 
     @pytest.mark.integration
     def test_refuses_over_length(self):
         with pytest.raises(ValueError) as exc:
-            cluster_modules._validate_pattern("x" * 129)
+            cluster_modules.validate_pattern("x" * 129)
         assert "exceeds 128" in str(exc.value)
 
     @pytest.mark.integration
     def test_refuses_non_string(self):
         with pytest.raises(ValueError):
-            cluster_modules._validate_pattern(42)  # type: ignore[arg-type]
+            cluster_modules.validate_pattern(42)  # type: ignore[arg-type]
 
 
 # ===========================================================================

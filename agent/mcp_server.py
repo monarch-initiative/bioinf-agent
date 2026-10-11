@@ -88,7 +88,6 @@ from agent.skills import freeze as _freeze
 from agent.skills import resolver as _resolver
 from agent.skills import intent as _intent
 from agent.skills import plan as _plan
-from agent.skills import user_guide as _user_guide
 from agent.skills import env_report_html as _env_report_html
 from agent.skills import attestation as _attestation
 from agent.skills import locus as _locus
@@ -523,7 +522,7 @@ def _effective_push_target(push_target: str, registry: str, name: str,
 #                        install_cargo_tool, install_go_tool, install_jar_tool,
 #                        install_r_package, install_pip_package,
 #                        run_install_command
-# freeze_tools         — freeze, verify_env_recipe, generate_user_guide
+# freeze_tools         — freeze, verify_env_recipe
 # jobs_tools           — run_in_background, check_job, cancel_job, list_jobs
 # observability_tools  — agent_status, snapshot_project
 # run_tools            — run_pipeline_step, run_step_in_container,
@@ -679,7 +678,6 @@ from agent.mcp_tools.freeze_tools import (  # noqa: E402,F401
     build_env_from_authors_recipe,
     inspect_image,
     verify_env_recipe,
-    generate_user_guide,
 )
 from agent.mcp_tools.intent_tools import (  # noqa: E402,F401
     interpret_request,
