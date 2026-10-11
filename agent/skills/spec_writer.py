@@ -1516,6 +1516,20 @@ def _check_lineage_integrity(spec: dict) -> list[dict]:
     return violations
 
 
+def untraced_step_inputs(spec: dict, step_n) -> list[dict]:
+    """The inputs of pipeline_step `step_n` that trace to nothing the draft knows — no
+    prior step's output, no declared external source — each with the remedy the seal
+    would give. I8 read at run time: the run tools disclose these on the step's result,
+    so the fix (select the test data, register the reference, stage the script) costs
+    one call rather than a seal round trip. The walk is the seal's own, so the two
+    cannot disagree about what traces."""
+    where = f"pipeline_steps[step={step_n}].inputs"
+    return [{"path": v["orphan_path"], "remedy": v.get("remedy", "")}
+            for v in _check_composition_coherence(spec)
+            if v.get("invariant") == "I8.composition_coherence"
+            and v.get("where") == where and v.get("orphan_path")]
+
+
 def _check_composition_coherence(spec: dict) -> list[dict]:
     """Walk pipeline_steps in step-order; verify each input is producible by
     something upstream. See I8 description.

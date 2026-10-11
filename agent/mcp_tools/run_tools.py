@@ -113,7 +113,9 @@ def run_pipeline_step(
                   (default: the first input's directory). A missing watch_dir is
                   created, so no shell is needed to prepare an output directory.
     Long stdout/stderr is cut to head+tail in the response; the full text is on
-    disk at `log_path`.
+    disk at `log_path`. `untraced_inputs`, when present, lists the inputs that trace to
+    nothing the draft knows (no prior step's output, no declared external source) with
+    the remedy for each — the seal refuses those as I8, so declare them now.
 
     pipeline_id is required (this primitive's purpose is the merged flow).
     """
@@ -218,7 +220,28 @@ def run_pipeline_step(
         )
     if watch_dir_created:
         out["watch_dir_created"] = watch_dir
+    out.update(_lineage_disclosure(pipeline_id, idx))
     return _ms._shrink_stdio_for_response(out, label=f"step.{pipeline_id}", log_subdir="step_logs")
+
+
+def _lineage_disclosure(pipeline_id: str, step_n) -> dict:
+    """What to say about the step just recorded as number `step_n` (what add_step
+    returns) whose inputs trace to nothing the draft knows. Empty when every input
+    traces. Disclosure only — a run is a run — but the seal refuses these as I8, so
+    saying it here is the cheap point."""
+    if step_n is None:
+        return {}
+    from agent.skills.spec_writer import untraced_step_inputs
+    untraced = untraced_step_inputs(_ms._pipeline_state.get_draft(pipeline_id) or {}, step_n)
+    if not untraced:
+        return {}
+    n = len(untraced)
+    return {
+        "untraced_inputs": untraced,
+        "lineage_hint": (f"{n} input{'s' if n != 1 else ''} of this step trace{'s' if n == 1 else ''} to "
+                         f"nothing the draft knows — the seal refuses that as I8. Declare each by kind "
+                         f"now (the remedy is on each entry) rather than at the seal."),
+    }
 
 
 def _ensure_watch_dir(watch_dir: str) -> bool:
@@ -267,7 +290,9 @@ def run_step_in_container(
     extra_mounts: ["host:container", …] for data outside data_dir. `platform` defaults
     to the frozen record's own (an arm64 image runs as arm64); pass one only to override.
     A missing watch_dir is created. Long stdout/stderr is cut to head+tail in the
-    response; the full text is on disk at `log_path`."""
+    response; the full text is on disk at `log_path`. `untraced_inputs`, when present,
+    lists the inputs that trace to nothing the draft knows, with the remedy for each —
+    the seal refuses those as I8, so declare them now."""
     if not pipeline_id:
         return refused("run_container.pipeline_id_required",
                        error="pipeline_id is required for run_step_in_container")
@@ -415,6 +440,7 @@ def run_step_in_container(
     }
     if watch_dir_created:
         payload["watch_dir_created"] = watch_dir
+    payload.update(_lineage_disclosure(pipeline_id, idx))
     if res.get("returncode") != 0 and not payload.get("error"):
         payload["error"] = (last_informative_line(res.get("stderr")) or last_informative_line(res.get("stdout"))
                             or f"exit {res.get('returncode')} with nothing on stderr")
@@ -522,6 +548,7 @@ def run_in_env(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
+        result.update(_lineage_disclosure(pipeline_id, idx))
     return result
 
 
