@@ -68,12 +68,11 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+from agent.skills.cluster_modules import SAFE_PATTERN_CHARS_RE, validate_pattern
 from agent.skills.outcomes import refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 
-# Same boring subset the sibling uses for `module avail` patterns.
-_SAFE_PATTERN_CHARS_RE = re.compile(r"^[A-Za-z0-9_+./-]+$")
 
 # The pinned field order. Changing this changes the parser — both are pinned
 # by a test so they cannot drift apart.
@@ -103,26 +102,6 @@ _SCONTROL_SENTINEL = "__BIOINF_SCONTROL__"
 # "this partition has A100s" are different answers to a sizing question.
 _GRES_GPU_RE = re.compile(r"\bgpu:(?:([A-Za-z0-9_.-]+):)?(\d+)")
 
-
-def _validate_pattern(pattern: Optional[str]) -> Optional[str]:
-    """Pattern is optional and filtered CLIENT-side only — `sinfo` has no
-    substring filter, and `-p <name>` requires an exact partition name, which
-    is the opposite of what a discovery call wants. Still validated as a safe
-    token: it costs nothing and keeps one rule for both cluster probes."""
-    if pattern is None:
-        return None
-    if not isinstance(pattern, str):
-        raise ValueError(
-            f"pattern must be a string or None, got {type(pattern).__name__}")
-    if not pattern:
-        return None                       # treat empty as absent
-    if len(pattern) > 128:
-        raise ValueError(f"pattern length {len(pattern)} exceeds 128")
-    if not _SAFE_PATTERN_CHARS_RE.match(pattern):
-        raise ValueError(
-            f"pattern {pattern!r} contains forbidden characters — "
-            f"only alnum + '_+.-/' allowed")
-    return pattern
 
 
 def _build_sinfo_cmd() -> str:
@@ -241,7 +220,7 @@ def _parse_sinfo_output(text: str) -> list[dict]:
         # `%P` marks the cluster default with a trailing `*`.
         is_default = name.endswith("*")
         name = name.rstrip("*")
-        if not _SAFE_PATTERN_CHARS_RE.match(name):
+        if not SAFE_PATTERN_CHARS_RE.match(name):
             continue
         gres = row["gres"]
         gpus = _parse_gres_gpus(gres)
@@ -360,7 +339,7 @@ def cluster_partitions(project_name: str,
     visible in `partitions[]` with `qos_observed: False`.
     """
     try:
-        norm_pattern = _validate_pattern(pattern)
+        norm_pattern = validate_pattern(pattern)
 
         access = compute_access.load_access(
             Path(access_path) if access_path else None)

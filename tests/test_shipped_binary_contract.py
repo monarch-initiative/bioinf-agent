@@ -191,7 +191,6 @@ def test_check_build_refuses_to_SERVE_a_stale_dialect_record():
 def test_no_reader_renders_the_string_None(tmp_path, monkeypatch):
     """Rule 2 — absence of data must never render as data. `user_guide` printed the
     literal `None` for four binaries because it read two keys no producer writes."""
-    from agent.skills.user_guide import _shipped_binaries as ug_reader   # noqa: F401
     from agent.skills import env_recipe_render as R
     from env_records import shipped_binary
 

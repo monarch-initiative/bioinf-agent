@@ -944,9 +944,8 @@ class ShippedBinary(BaseModel):
 
     Two design rules, both bought with a real defect:
 
-    1. `extra="forbid"`. Three producers wrote three key-dialects; `user_guide.py`
-       read `platform`/`sha256`, keys NO producer has ever written, and rendered
-       `shipped binary: None (None, sha256 …)` into a user-facing guide. Forbidding
+    1. `extra="forbid"`. Three producers wrote three key-dialects, and a renderer read
+       keys no producer had ever written, printing `None` as a value. Forbidding
        extras turns a producer's private dialect into a write-time error.
 
     2. NO FABRICATING DEFAULTS — every field is REQUIRED, and `None` is a legal value
@@ -2361,6 +2360,109 @@ def usage_output_type(spec: Any, output: Any) -> str:
                 if v.get("pattern") in patterns and v.get("expected_type")}
     observed.discard("any")
     return ", ".join(sorted(str(o) for o in observed))
+
+
+# ---------------------------------------------------------------------------
+# What the seal records about a run — THE one reading of each.
+# ---------------------------------------------------------------------------
+
+def installed_version_of(pkg: Mapping) -> str:
+    """Best-known INSTALLED version of a package record. `version` is what the package
+    manager recorded installing; a release binary records its version only in the
+    release tag of `binary_url` — the asset actually downloaded, an install fact.
+
+    It must NOT scrape the `conda_spec` / `pip_spec` string: that is the REQUESTED
+    constraint (`samtools=1.21`, or even `>=1.10`), not what resolved. Absence returns
+    '?' — never a borrowed request."""
+    v = pkg.get("version")
+    if v:
+        return str(v)
+    im = pkg.get("install_method") if isinstance(pkg.get("install_method"), dict) else {}
+    url = im.get("binary_url") or im.get("source") or ""
+    m = re.search(r"/releases/download/([^/]+)/", url)   # .../download/v2.13.0/asset
+    if m:
+        return m.group(1).lstrip("vV")
+    return "?"
+
+
+def key_packages(spec: Mapping) -> dict[str, str]:
+    """name → installed version for the tools in this env, from a draft OR a sealed
+    spec. Drafts carry install_steps[].installed_packages; sealed specs a derived
+    packages[] (authoritative)."""
+    out: dict[str, str] = {}
+    for st in spec.get("install_steps", []) or []:
+        for ip in (st.get("installed_packages") or []):
+            if isinstance(ip, dict) and ip.get("name") and ip["name"] not in out:
+                out[ip["name"]] = installed_version_of(ip)
+    for p in spec.get("packages", []) or []:
+        if isinstance(p, dict) and p.get("name"):
+            out[p["name"]] = installed_version_of(p)
+    return out
+
+
+def executed_commands(spec: Mapping) -> list[dict]:
+    """The commands a record may show as having run: each `{command, outputs, source}`,
+    drawn only from pipeline_steps that ran (returncode 0) AND passed validation, plus
+    the usage commands iff the self-test verified them — so every command surfaced is
+    provably executed and checked. Gated on `usage_status`, not the raw bool: a spec on
+    disk can carry `usage_verified: true` beside `status: not_attempted`."""
+    out: list[dict] = []
+    for s in spec.get("pipeline_steps", []) or []:
+        if not isinstance(s, dict):
+            continue
+        if s.get("returncode") not in (0, None):
+            continue
+        cmd = s.get("command")
+        if not cmd or not step_is_validated(s):
+            continue
+        outs = s.get("detected_outputs") or list((s.get("validation") or {}).keys())
+        out.append({"command": cmd, "outputs": outs, "source": f"pipeline_step {s.get('step')}"})
+    if usage_status(spec) == USAGE_VERIFIED:
+        cmds = usage_commands(spec.get("usage") or {})
+        for i, c in enumerate(cmds, 1):
+            src = ("usage.command_template (self-tested)" if len(cmds) == 1
+                   else f"usage.command_template step {i}/{len(cmds)} (self-tested)")
+            out.append({"command": c, "outputs": [], "source": src})
+    return out
+
+
+def validated_in_shipped_image(spec: Mapping, freeze_record: Optional[Mapping] = None,
+                               valid_digests: Optional[set] = None) -> bool:
+    """True iff EVERY validated step ran inside a SHIPPED frozen env image, matched by
+    digest — the bytes the user will run are the exact bytes we validated. The
+    strongest honesty claim the two-layer model can make.
+
+    A multi-env workflow chains several frozen envs; pass `valid_digests` = every frozen
+    env image digest (from the EnvCache). Single-env is the default: omit it and the one
+    freeze_record's digest is the set."""
+    if valid_digests is None:
+        dig = (freeze_record or {}).get("image_digest")
+        valid_digests = {dig} if dig else set()
+    valid_digests = {d for d in valid_digests if d}
+    if not valid_digests:
+        return False
+    steps = [s for s in (spec.get("pipeline_steps") or []) if isinstance(s, dict)]
+    validated = [s for s in steps if step_is_validated(s)]
+    if not validated:
+        return False
+    return all(_step_ran_in_shipped_image(s, valid_digests) for s in validated)
+
+
+def _step_ran_in_shipped_image(s: Mapping, valid_digests: set) -> bool:
+    """One validated step's shipped-image claim: it ran in a container whose digest is
+    one of the frozen envs'. A CLUSTER-locus step's recorded digest is the EnvCache's
+    NOMINAL one, copied from the freeze record and never observed on the cluster, so
+    matching it alone is circular: the step must also carry `cluster_image_verified`,
+    proof that run_step_on_cluster fingerprinted the .sif that ran. A local
+    run_step_in_container step captured its digest from the image that really ran."""
+    if not (s.get("ran_in_container")
+            and s.get("container_image_digest") in valid_digests):
+        return False
+    is_cluster = (s.get("validation_locus") == "cluster"
+                  or (s.get("resource_usage") or {}).get("locus") == "cluster")
+    if is_cluster:
+        return bool(s.get("cluster_image_verified"))
+    return True
 
 
 class WorkflowSpec(BaseModel):

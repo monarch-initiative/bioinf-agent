@@ -120,8 +120,7 @@ validated run.
 
 | Cheat | Guard |
 |---|---|
-| L9.a — guide shows a different command than what ran | renderer reads `pipeline_steps[*].command` directly — `test_invariants.test_executed_commands_only_validated_and_run` |
-| L9.b — guide references an unrunnable env | `freeze_request_key` is pinned and resolved against EnvCache at render — `test_invariants.test_render_user_guide_excludes_unrun_and_pins_env` |
+| L9.a — the seal counts a command that never ran | `core_data.executed_commands` reads `pipeline_steps[*].command` and keeps only validated rc=0 steps — `test_invariants.test_executed_commands_only_validated_and_run` |
 
 ## L10 — Synthesis tier grounding
 

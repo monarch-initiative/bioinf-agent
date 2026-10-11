@@ -31,7 +31,7 @@ from env_records import shipped_binary
 from agent.skills.attestation import build_attestation
 from agent.skills.env_report_html import render_env_report_html
 from agent.skills.resources import _semantic_versions
-from agent.skills.user_guide import _version_of, render_user_guide
+from agent.models.core_data import installed_version_of as _version_of
 
 
 # ── fixtures: a freeze_from_image ADOPT of the authors' own published image ──────
@@ -178,22 +178,6 @@ def test_attestation_no_mismatch_when_versions_match():
     assert att["predicate"]["buildDefinition"]["internalParameters"]["versionMismatch"] == []
 
 
-# ── W3: the user guide cites the OBSERVED version, not the requested spec ────────
-
-@pytest.mark.integration
-def test_guide_cites_observed_version_not_the_request():
-    spec = {
-        "pipeline_name": "talos", "workflow_name": "talos",
-        "packages": [{"name": "talos", "version": "7.0.2"}],   # request-derived
-        "pipeline_steps": [], "usage": {},
-    }
-    md = render_user_guide(spec, freeze_record=_authors_image_adopt_observed_differs())
-    assert "talos 7.0.1" in md, "the guide title/key-packages must cite the OBSERVED version"
-    assert "talos=7.0.1" in md
-    assert "talos 7.0.2" not in md and "talos=7.0.2" not in md, (
-        "the requested version was cited as installed (W3)")
-
-
 # ── W4: the build recipe carries + shows OBSERVED contents, flags divergence ────
 
 def _recipe_for(record: dict) -> dict:
@@ -269,42 +253,6 @@ def test_recipe_banner_only_version_is_record_evidence_not_the_recipe():
 
 
 # ── residual lies found by the 2026-07-20 adversarial hunt (ww2nplfug) ──────────
-
-@pytest.mark.integration
-def test_guide_key_packages_dependency_version_reads_observed_not_request():
-    """Hunt finding 1: install_steps[].installed_packages[].version is the parsed
-    REQUEST pin (install_conda_packages writes the spec, not conda's resolved output).
-    With a freeze_record present, the guide's key-packages line must cite the OBSERVED
-    SBOM version for dependencies too, not just the requested tools."""
-    from agent.skills.user_guide import render_user_guide
-    spec = {
-        "pipeline_name": "variant_calling",
-        "install_steps": [{"tool": "conda", "subcommand": "install", "returncode": 0,
-                           "installed_packages": [{"name": "bcftools", "version": "1.19",
-                                                   "channel": "bioconda"}]}],
-    }
-    fr = {"requested_tools": ["samtools"],
-          "resolved_packages": [{"name": "bcftools", "version": "1.21"}],
-          "verifications": [], "shipped_binaries": []}
-    md = render_user_guide(spec, freeze_record=fr)
-    assert "bcftools=1.21" in md, "dependency version must be the OBSERVED 1.21"
-    assert "bcftools=1.19" not in md, "the requested pin 1.19 leaked as installed"
-
-
-@pytest.mark.integration
-def test_guide_python_line_reads_observed_not_created_request():
-    """Hunt finding 2: spec['python_version'] is the env-creation request (or a config
-    default), never re-observed. With an image pinned, the Environment-details python
-    line must show the SBOM's python, not the request."""
-    from agent.skills.user_guide import render_user_guide
-    spec = {"pipeline_name": "vc", "python_version": "3.11"}
-    fr = {"requested_tools": [],
-          "resolved_packages": [{"name": "python", "version": "3.10.14"}],
-          "verifications": [], "shipped_binaries": []}
-    md = render_user_guide(spec, freeze_record=fr)
-    assert "- python: 3.10.14" in md, "must show the OBSERVED python"
-    assert "- python: 3.11" not in md, "the requested/created python 3.11 leaked as installed"
-
 
 @pytest.mark.integration
 def test_recipe_md_h1_title_carries_no_requested_version():

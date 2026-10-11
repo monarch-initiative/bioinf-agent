@@ -122,7 +122,6 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
     _t(tool="build_env_from_authors_recipe", position=PRIMITIVE),
     _t(tool="inspect_image", position=PRIMITIVE),
     _t(tool="seal_workflow", position=PRIMITIVE),
-    _t(tool="generate_user_guide", position=PRIMITIVE),
     _t(tool="download_reference_database", position=PRIMITIVE),
     _t(tool="run_pipeline_step", position=PRIMITIVE),
     _t(tool="run_step_in_container", position=PRIMITIVE),

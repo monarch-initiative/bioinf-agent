@@ -62,10 +62,10 @@ from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 # A `module avail` pattern token is a boring subset: alnum + `_+.-/`.
 # Refuses shell metacharacters that would break out of `module avail X`.
-_SAFE_PATTERN_CHARS_RE = re.compile(r"^[A-Za-z0-9_+./-]+$")
+SAFE_PATTERN_CHARS_RE = re.compile(r"^[A-Za-z0-9_+./-]+$")
 
 
-def _validate_pattern(pattern: Optional[str]) -> Optional[str]:
+def validate_pattern(pattern: Optional[str]) -> Optional[str]:
     """Pattern is optional. When given, it must be a safe token — refusing
     shell metacharacters so a smuggled `nextflow; rm -rf /` can't escape
     the `module avail` shell line."""
@@ -78,7 +78,7 @@ def _validate_pattern(pattern: Optional[str]) -> Optional[str]:
         return None  # treat empty as absent
     if len(pattern) > 128:
         raise ValueError(f"pattern length {len(pattern)} exceeds 128")
-    if not _SAFE_PATTERN_CHARS_RE.match(pattern):
+    if not SAFE_PATTERN_CHARS_RE.match(pattern):
         raise ValueError(
             f"pattern {pattern!r} contains forbidden characters — "
             f"only alnum + '_+.-/' allowed")
@@ -138,7 +138,7 @@ def _parse_module_avail_output(text: str) -> list[str]:
             # A valid module entry looks like `<name>` or `<name>/<version>`.
             # Skip anything containing characters that don't fit (paths,
             # comments, etc.).
-            if not _SAFE_PATTERN_CHARS_RE.match(tok):
+            if not SAFE_PATTERN_CHARS_RE.match(tok):
                 continue
             out.append(tok)
     return out
@@ -174,7 +174,7 @@ def cluster_module_avail(project_name: str,
     Returns {"error": "...", "hint": "..."} on any failure.
     """
     try:
-        norm_pattern = _validate_pattern(pattern)
+        norm_pattern = validate_pattern(pattern)
 
         access = compute_access.load_access(
             Path(access_path) if access_path else None)

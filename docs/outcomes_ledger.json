@@ -15,8 +15,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:536",
-    "end_line": 538,
+    "where": "agent/mcp_tools/freeze_tools.py:535",
+    "end_line": 537,
     "named_in_test": true
   },
   {
@@ -25,8 +25,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:698",
-    "end_line": 709,
+    "where": "agent/mcp_tools/freeze_tools.py:697",
+    "end_line": 708,
     "named_in_test": false
   },
   {
@@ -35,8 +35,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:935",
-    "end_line": 935,
+    "where": "agent/mcp_tools/freeze_tools.py:934",
+    "end_line": 934,
     "named_in_test": true
   },
   {
@@ -45,8 +45,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:994",
-    "end_line": 994,
+    "where": "agent/mcp_tools/freeze_tools.py:993",
+    "end_line": 993,
     "named_in_test": true
   },
   {
@@ -75,8 +75,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:1056",
-    "end_line": 1056,
+    "where": "agent/mcp_tools/workflow_tools.py:1058",
+    "end_line": 1058,
     "named_in_test": false
   },
   {
@@ -85,8 +85,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1341",
-    "end_line": 1341,
+    "where": "agent/mcp_tools/workflow_tools.py:1343",
+    "end_line": 1343,
     "named_in_test": false
   },
   {
@@ -95,8 +95,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1365",
-    "end_line": 1365,
+    "where": "agent/mcp_tools/workflow_tools.py:1367",
+    "end_line": 1367,
     "named_in_test": false
   },
   {
@@ -105,8 +105,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1370",
-    "end_line": 1370,
+    "where": "agent/mcp_tools/workflow_tools.py:1372",
+    "end_line": 1372,
     "named_in_test": false
   },
   {
@@ -115,8 +115,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:860",
-    "end_line": 860,
+    "where": "agent/mcp_tools/workflow_tools.py:862",
+    "end_line": 862,
     "named_in_test": false
   },
   {
@@ -295,8 +295,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_partitions",
-    "where": "agent/skills/cluster_partitions.py:390",
-    "end_line": 393,
+    "where": "agent/skills/cluster_partitions.py:369",
+    "end_line": 372,
     "named_in_test": false
   },
   {
@@ -305,8 +305,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_partitions",
-    "where": "agent/skills/cluster_partitions.py:438",
-    "end_line": 439,
+    "where": "agent/skills/cluster_partitions.py:417",
+    "end_line": 418,
     "named_in_test": false
   },
   {
@@ -2005,8 +2005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:838",
-    "end_line": 838,
+    "where": "agent/mcp_tools/freeze_tools.py:837",
+    "end_line": 837,
     "named_in_test": false
   },
   {
@@ -2015,8 +2015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:838",
-    "end_line": 845,
+    "where": "agent/mcp_tools/workflow_tools.py:840",
+    "end_line": 847,
     "named_in_test": true
   },
   {
@@ -2110,23 +2110,13 @@
     "named_in_test": false
   },
   {
-    "code": "freeze.guide_rendered",
-    "outcome": "proven",
-    "source": "helper",
-    "tagged": true,
-    "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:1037",
-    "end_line": 1043,
-    "named_in_test": false
-  },
-  {
     "code": "freeze.cache_hit",
     "outcome": "proven",
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:382",
-    "end_line": 383,
+    "where": "agent/mcp_tools/freeze_tools.py:381",
+    "end_line": 382,
     "named_in_test": true
   },
   {
@@ -2135,8 +2125,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:840",
-    "end_line": 840,
+    "where": "agent/mcp_tools/freeze_tools.py:839",
+    "end_line": 839,
     "named_in_test": true
   },
   {
@@ -2145,8 +2135,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:935",
-    "end_line": 935,
+    "where": "agent/mcp_tools/freeze_tools.py:934",
+    "end_line": 934,
     "named_in_test": true
   },
   {
@@ -2155,8 +2145,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:993",
-    "end_line": 993,
+    "where": "agent/mcp_tools/freeze_tools.py:992",
+    "end_line": 992,
     "named_in_test": true
   },
   {
@@ -2195,8 +2185,8 @@
     "source": "helper",
     "tagged": true,
     "func": "fetch_r_package_deps",
-    "where": "agent/mcp_tools/workflow_tools.py:1080",
-    "end_line": 1110,
+    "where": "agent/mcp_tools/workflow_tools.py:1082",
+    "end_line": 1112,
     "named_in_test": false
   },
   {
@@ -2205,8 +2195,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:1186",
-    "end_line": 1186,
+    "where": "agent/mcp_tools/workflow_tools.py:1188",
+    "end_line": 1188,
     "named_in_test": false
   },
   {
@@ -2215,8 +2205,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1344",
-    "end_line": 1357,
+    "where": "agent/mcp_tools/workflow_tools.py:1346",
+    "end_line": 1359,
     "named_in_test": false
   },
   {
@@ -2225,8 +2215,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1403",
-    "end_line": 1416,
+    "where": "agent/mcp_tools/workflow_tools.py:1405",
+    "end_line": 1418,
     "named_in_test": false
   },
   {
@@ -2235,8 +2225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1465",
-    "end_line": 1466,
+    "where": "agent/mcp_tools/workflow_tools.py:1467",
+    "end_line": 1468,
     "named_in_test": false
   },
   {
@@ -2245,8 +2235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:836",
-    "end_line": 836,
+    "where": "agent/mcp_tools/workflow_tools.py:838",
+    "end_line": 838,
     "named_in_test": true
   },
   {
@@ -3210,23 +3200,13 @@
     "named_in_test": false
   },
   {
-    "code": "freeze.guide_no_source",
-    "outcome": "refused",
-    "source": "helper",
-    "tagged": true,
-    "func": "generate_user_guide",
-    "where": "agent/mcp_tools/freeze_tools.py:1032",
-    "end_line": 1033,
-    "named_in_test": false
-  },
-  {
     "code": "freeze.gated_no_license",
     "outcome": "refused",
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:291",
-    "end_line": 297,
+    "where": "agent/mcp_tools/freeze_tools.py:290",
+    "end_line": 296,
     "named_in_test": true
   },
   {
@@ -3235,8 +3215,8 @@
     "source": "invariant",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:292",
-    "end_line": 296,
+    "where": "agent/mcp_tools/freeze_tools.py:291",
+    "end_line": 295,
     "named_in_test": true
   },
   {
@@ -3245,8 +3225,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:762",
-    "end_line": 766,
+    "where": "agent/mcp_tools/freeze_tools.py:761",
+    "end_line": 765,
     "named_in_test": true
   },
   {
@@ -3255,8 +3235,8 @@
     "source": "helper",
     "tagged": true,
     "func": "freeze",
-    "where": "agent/mcp_tools/freeze_tools.py:767",
-    "end_line": 771,
+    "where": "agent/mcp_tools/freeze_tools.py:766",
+    "end_line": 770,
     "named_in_test": false
   },
   {
@@ -3265,8 +3245,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:894",
-    "end_line": 895,
+    "where": "agent/mcp_tools/freeze_tools.py:893",
+    "end_line": 894,
     "named_in_test": true
   },
   {
@@ -3275,8 +3255,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:897",
-    "end_line": 898,
+    "where": "agent/mcp_tools/freeze_tools.py:896",
+    "end_line": 897,
     "named_in_test": true
   },
   {
@@ -3285,8 +3265,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:913",
-    "end_line": 921,
+    "where": "agent/mcp_tools/freeze_tools.py:912",
+    "end_line": 920,
     "named_in_test": true
   },
   {
@@ -3295,8 +3275,8 @@
     "source": "helper",
     "tagged": true,
     "func": "verify_env_recipe",
-    "where": "agent/mcp_tools/freeze_tools.py:952",
-    "end_line": 976,
+    "where": "agent/mcp_tools/freeze_tools.py:951",
+    "end_line": 975,
     "named_in_test": true
   },
   {
@@ -3455,8 +3435,8 @@
     "source": "helper",
     "tagged": true,
     "func": "show_pipeline_draft",
-    "where": "agent/mcp_tools/workflow_tools.py:1185",
-    "end_line": 1185,
+    "where": "agent/mcp_tools/workflow_tools.py:1187",
+    "end_line": 1187,
     "named_in_test": false
   },
   {
@@ -3465,8 +3445,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1310",
-    "end_line": 1314,
+    "where": "agent/mcp_tools/workflow_tools.py:1312",
+    "end_line": 1316,
     "named_in_test": false
   },
   {
@@ -3475,8 +3455,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1316",
-    "end_line": 1316,
+    "where": "agent/mcp_tools/workflow_tools.py:1318",
+    "end_line": 1318,
     "named_in_test": false
   },
   {
@@ -3485,8 +3465,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1325",
-    "end_line": 1328,
+    "where": "agent/mcp_tools/workflow_tools.py:1327",
+    "end_line": 1330,
     "named_in_test": false
   },
   {
@@ -3495,8 +3475,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1330",
-    "end_line": 1336,
+    "where": "agent/mcp_tools/workflow_tools.py:1332",
+    "end_line": 1338,
     "named_in_test": true
   },
   {
@@ -3505,8 +3485,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1343",
-    "end_line": 1343,
+    "where": "agent/mcp_tools/workflow_tools.py:1345",
+    "end_line": 1345,
     "named_in_test": false
   },
   {
@@ -3515,8 +3495,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1360",
-    "end_line": 1360,
+    "where": "agent/mcp_tools/workflow_tools.py:1362",
+    "end_line": 1362,
     "named_in_test": false
   },
   {
@@ -3525,8 +3505,8 @@
     "source": "helper",
     "tagged": true,
     "func": "stage_authored_artifact",
-    "where": "agent/mcp_tools/workflow_tools.py:1401",
-    "end_line": 1401,
+    "where": "agent/mcp_tools/workflow_tools.py:1403",
+    "end_line": 1403,
     "named_in_test": false
   },
   {
@@ -3535,8 +3515,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1434",
-    "end_line": 1436,
+    "where": "agent/mcp_tools/workflow_tools.py:1436",
+    "end_line": 1438,
     "named_in_test": false
   },
   {
@@ -3545,8 +3525,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1443",
-    "end_line": 1444,
+    "where": "agent/mcp_tools/workflow_tools.py:1445",
+    "end_line": 1446,
     "named_in_test": false
   },
   {
@@ -3555,8 +3535,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1456",
-    "end_line": 1462,
+    "where": "agent/mcp_tools/workflow_tools.py:1458",
+    "end_line": 1464,
     "named_in_test": false
   },
   {
@@ -3565,8 +3545,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1469",
-    "end_line": 1469,
+    "where": "agent/mcp_tools/workflow_tools.py:1471",
+    "end_line": 1471,
     "named_in_test": false
   },
   {
@@ -3575,8 +3555,8 @@
     "source": "helper",
     "tagged": true,
     "func": "mark_step_validated",
-    "where": "agent/mcp_tools/workflow_tools.py:1472",
-    "end_line": 1474,
+    "where": "agent/mcp_tools/workflow_tools.py:1474",
+    "end_line": 1476,
     "named_in_test": false
   },
   {
@@ -3585,8 +3565,8 @@
     "source": "helper",
     "tagged": true,
     "func": "_guard_spec_overwrite",
-    "where": "agent/mcp_tools/workflow_tools.py:497",
-    "end_line": 508,
+    "where": "agent/mcp_tools/workflow_tools.py:499",
+    "end_line": 510,
     "named_in_test": true
   },
   {
@@ -3595,8 +3575,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:555",
-    "end_line": 555,
+    "where": "agent/mcp_tools/workflow_tools.py:557",
+    "end_line": 557,
     "named_in_test": true
   },
   {
@@ -3605,8 +3585,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:562",
-    "end_line": 566,
+    "where": "agent/mcp_tools/workflow_tools.py:564",
+    "end_line": 568,
     "named_in_test": false
   },
   {
@@ -3615,8 +3595,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:568",
-    "end_line": 569,
+    "where": "agent/mcp_tools/workflow_tools.py:570",
+    "end_line": 571,
     "named_in_test": false
   },
   {
@@ -3625,8 +3605,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:582",
-    "end_line": 590,
+    "where": "agent/mcp_tools/workflow_tools.py:584",
+    "end_line": 592,
     "named_in_test": true
   },
   {
@@ -3635,8 +3615,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:594",
-    "end_line": 596,
+    "where": "agent/mcp_tools/workflow_tools.py:596",
+    "end_line": 598,
     "named_in_test": true
   },
   {
@@ -3645,8 +3625,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:609",
-    "end_line": 615,
+    "where": "agent/mcp_tools/workflow_tools.py:611",
+    "end_line": 617,
     "named_in_test": false
   },
   {
@@ -3655,8 +3635,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:659",
-    "end_line": 665,
+    "where": "agent/mcp_tools/workflow_tools.py:661",
+    "end_line": 667,
     "named_in_test": true
   },
   {
@@ -3665,8 +3645,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:719",
-    "end_line": 726,
+    "where": "agent/mcp_tools/workflow_tools.py:721",
+    "end_line": 728,
     "named_in_test": true
   },
   {
@@ -3675,8 +3655,8 @@
     "source": "helper",
     "tagged": true,
     "func": "seal_workflow",
-    "where": "agent/mcp_tools/workflow_tools.py:809",
-    "end_line": 813,
+    "where": "agent/mcp_tools/workflow_tools.py:811",
+    "end_line": 815,
     "named_in_test": false
   },
   {
@@ -4025,8 +4005,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_partitions",
-    "where": "agent/skills/cluster_partitions.py:374",
-    "end_line": 377,
+    "where": "agent/skills/cluster_partitions.py:353",
+    "end_line": 356,
     "named_in_test": false
   },
   {
@@ -4035,8 +4015,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_partitions",
-    "where": "agent/skills/cluster_partitions.py:381",
-    "end_line": 383,
+    "where": "agent/skills/cluster_partitions.py:360",
+    "end_line": 362,
     "named_in_test": false
   },
   {
@@ -4045,8 +4025,8 @@
     "source": "helper",
     "tagged": true,
     "func": "cluster_partitions",
-    "where": "agent/skills/cluster_partitions.py:436",
-    "end_line": 436,
+    "where": "agent/skills/cluster_partitions.py:415",
+    "end_line": 415,
     "named_in_test": false
   },
   {

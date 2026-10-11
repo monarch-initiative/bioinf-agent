@@ -24,6 +24,8 @@ from typing import Any, Optional
 # survives monkeypatching. `config` is included because tests can swap the
 # config too, and the cost of going through `_ms.` is one attribute lookup.
 from agent import mcp_server as _ms
+from agent.models.core_data import (executed_commands as _executed_commands, key_packages as _key_packages,
+                                    validated_in_shipped_image as _validated_in_shipped_image)
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import broke, degraded, proven, refused  # terminal outcome tags
@@ -581,7 +583,7 @@ def seal_workflow(
         _total = len([s for s in (draft.get("pipeline_steps") or []) if isinstance(s, dict)])
         return refused(
             "seal.no_validated_run", success=False, stage="validated_run",
-            error=(f"this draft records no validated run: {_total} pipeline_step(s), none of "
+            error=(f"this draft records no validated run: {_total} recorded pipeline_steps, none of "
                    f"which exited 0. A WorkflowSpec IS the record of a run — with no "
                    f"successful step every run-side invariant examines nothing "
                    f"and passes vacuously, so the seal would be green over an empty premise. "
@@ -731,7 +733,7 @@ def seal_workflow(
     # The how-to is rendered from the verified `usage` block into the Layer-2 run
     # dashboard (HTML) below. We still pull
     # key_packages for the spec's driver_env record.
-    key_packages = _ms._user_guide.key_packages(draft)
+    key_packages = _key_packages(draft)
 
     wname = workflow_name or f"{draft.get('pipeline_name', 'workflow')}_workflow"
     wf = {
@@ -776,7 +778,7 @@ def seal_workflow(
                                # question "proven against WHICH genome, WHICH reads"
                                # had no answer anywhere in the sealed artifact.
                                "trials": _proven_trial_records(usage_detail)},
-        "validated_in_shipped_image": _ms._user_guide.validated_in_shipped_image(
+        "validated_in_shipped_image": _validated_in_shipped_image(
             draft, fr, valid_digests=valid_digests),
         "usage":              draft.get("usage"),
         # Stamp each step's depends_on (input↔prior-output overlap) — the edge the
@@ -829,7 +831,7 @@ def seal_workflow(
     _seal_fields = dict(
         success=True, workflow_name=wname,
         env_pinned_digest=fr.get("content_digest"), env_image=fr.get("image"),
-        commands_shown=len(_ms._user_guide.executed_commands(draft)),
+        commands_shown=len(_executed_commands(draft)),
         usage_verification=wf["usage_verification"],
     )
     if usage_detail.get("status") == "verified":

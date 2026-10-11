@@ -2148,57 +2148,11 @@ def _guide_spec():
 
 
 def test_executed_commands_only_validated_and_run():
-    from agent.skills.user_guide import executed_commands
+    from agent.models.core_data import executed_commands
     cmds = [c["command"] for c in executed_commands(_guide_spec())]
     assert "bwa mem ref.fa r1.fq > out.sam" in cmds        # rc=0 + validated
     assert any("samtools sort" in c for c in cmds)          # self-tested usage
     assert not any("SHOULD_NOT_APPEAR" in c for c in cmds)  # failed step excluded
-
-
-def test_render_user_guide_excludes_unrun_and_pins_env():
-    from agent.skills.user_guide import render_user_guide
-    fr = {
-        "content_digest": "sha256:cd", "image": "quay.io/biocontainers/x@sha256:img",
-        "image_digest": "sha256:img",
-        "hpc_delivery": {
-            "source_note": "adopted public BioContainer",
-            "get_image": "apptainer pull bwa_samtools.sif docker://quay.io/biocontainers/x@sha256:img",
-            "run_example": "apptainer exec --bind /scratch/$USER/data:/data bwa_samtools.sif <command>",
-            "sbatch_template": "#!/bin/bash\nmodule load apptainer\n",
-        },
-    }
-    md = render_user_guide(_guide_spec(), freeze_record=fr)
-    assert "SHOULD_NOT_APPEAR" not in md                      # failed command never shown
-    assert "bwa mem ref.fa r1.fq" in md                       # validated command shown
-    assert "apptainer pull bwa_samtools.sif docker://quay.io/biocontainers/x@sha256:img" in md
-    assert "sha256:cd" in md and "module load apptainer" in md
-    assert "conda env: `bioinf_bwa_samtools`" in md           # driver env recorded
-
-
-def test_render_user_guide_without_freeze_falls_back_to_docker():
-    from agent.skills.user_guide import render_user_guide
-    s = _guide_spec()
-    s["docker"] = {"image_tag": "bwa_samtools:1.21"}
-    md = render_user_guide(s, freeze_record=None)
-    assert "apptainer pull" in md and "bwa_samtools:1.21" in md
-
-
-def test_user_guide_derives_packages_from_install_steps_on_draft():
-    """Regression for the end-to-end finding: spec.packages is finalize-derived,
-    so on a DRAFT the guide must reconstruct the env details from install_steps
-    rather than rendering an empty section."""
-    from agent.skills.user_guide import render_user_guide
-    draft = {
-        "pipeline_name": "x", "conda_env": "bioinf_x",
-        "packages": [],   # not materialized pre-finalize
-        "install_steps": [{"step": 1, "installed_packages": [
-            {"name": "samtools", "version": "1.21"},
-            {"name": "bwa", "version": "0.7.17"}]}],
-        "pipeline_steps": [],
-    }
-    md = render_user_guide(draft)
-    assert "conda env: `bioinf_x`" in md
-    assert "samtools=1.21" in md and "bwa=0.7.17" in md
 
 
 # ---------------------------------------------------------------------------
@@ -3023,7 +2977,7 @@ def test_workflow_spec_self_verifies_only_with_its_sources():
 def test_key_packages_version_fallback_for_binary_tier():
     """A release-binary tool has no plain `version`; the guide must recover it
     from the release tag in binary_url (not render 'seqkit=?')."""
-    from agent.skills.user_guide import key_packages
+    from agent.models.core_data import key_packages
     kp = key_packages(_draft_with_binary())
     assert kp.get("seqkit") == "2.13.0"
     assert kp.get("python") == "3.11"
@@ -3057,7 +3011,7 @@ def test_gnu_time_and_stat_parsers():
 def test_validated_in_shipped_image_requires_digest_match():
     """validated==shipped holds ONLY when every validated step ran in the env
     image AND its recorded image digest matches the frozen env's digest."""
-    from agent.skills.user_guide import validated_in_shipped_image
+    from agent.models.core_data import validated_in_shipped_image
     fr = {"image_digest": "sha256:abc"}
     step = lambda dig, ran=True: {"step": 1, "returncode": 0,
                                   "validation": {"o": {"passed": True}},
@@ -3077,7 +3031,7 @@ def test_validated_in_shipped_image_multi_env_chaining():
     """A multi-env workflow chains steps that ran in DIFFERENT frozen envs; it's
     still validated==shipped iff every validated step's digest is in the set of all
     frozen env digests."""
-    from agent.skills.user_guide import validated_in_shipped_image
+    from agent.models.core_data import validated_in_shipped_image
     step = lambda dig: {"step": 1, "returncode": 0, "validation": {"o": {"passed": True}},
                         "ran_in_container": True, "container_image_digest": dig}
     spec = {"pipeline_steps": [step("sha256:envA"), step("sha256:envB")]}

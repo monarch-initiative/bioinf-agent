@@ -200,7 +200,6 @@ def _battery():
         # inspect_image: an empty command is refused before any image is touched.
         ("inspect_image", F.inspect_image, dict(image="", command=""), True),
         ("verify_env_recipe", F.verify_env_recipe, dict(recipe_path=BAD_PATH), True),
-        ("generate_user_guide", F.generate_user_guide, dict(pipeline_id=BAD_PID), True),
         # -- jobs -----------------------------------------------------------
         ("run_in_background", J.run_in_background, dict(command="", env_name=BAD_ENV), True),
         # spawn path: a command that exits instantly (the realistic race) must not
