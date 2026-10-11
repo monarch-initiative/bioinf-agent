@@ -244,6 +244,33 @@ def _lineage_disclosure(pipeline_id: str, step_n) -> dict:
     }
 
 
+def _declared_dirs(inputs: list) -> list[Path]:
+    """The directories a container must see for the declared inputs: an input file's
+    parent, an input directory itself. Only what exists on the host — a missing input
+    is the command's own clear failure, not a mount to invent."""
+    out: list[Path] = []
+    for item in inputs or []:
+        raw = item.get("path") if isinstance(item, dict) else item
+        if not isinstance(raw, str) or not raw.startswith("/"):
+            continue
+        p = Path(raw)
+        d = p if p.is_dir() else p.parent
+        if d.is_dir():
+            d = d.resolve()
+            if d not in out:
+                out.append(d)
+    return out
+
+
+def _under(path: Path, root: Path) -> bool:
+    """Is `path` `root` or below it?"""
+    try:
+        path = path.resolve(); root = root.resolve()
+    except OSError:
+        return False
+    return path == root or root in path.parents
+
+
 def _ensure_watch_dir(watch_dir: str) -> bool:
     """Create the caller's watch_dir when it does not exist yet; True when created.
     The directory a step writes into is the step's business, not a shell errand the
@@ -287,7 +314,8 @@ def run_step_in_container(
     validated==shipped.
 
     output_types: {basename|ext: validator_type}. inputs: paths (or {path,…}).
-    extra_mounts: ["host:container", …] for data outside data_dir. `platform` defaults
+    Every declared input's directory and the watch_dir are mounted at their own host
+    paths; extra_mounts: ["host:container", …] is for anything else. `platform` defaults
     to the frozen record's own (an arm64 image runs as arm64); pass one only to override.
     A missing watch_dir is created. Long stdout/stderr is cut to head+tail in the
     response; the full text is on disk at `log_path`. `untraced_inputs`, when present,
@@ -355,6 +383,14 @@ def run_step_in_container(
 
     watch_dir_created = _ensure_watch_dir(watch_dir)
     wdir = (Path(watch_dir).resolve() if watch_dir else ddir)
+    # A declared input and the watch_dir are facts of the call, so they are mounted at
+    # their own host paths without being asked: a script the caller WROTE under the
+    # workspace is as visible in the container as the test data under data_dir, and
+    # the outputs land where the snapshot looks. A run once failed "cannot open file"
+    # on an input the caller had declared on the very same call.
+    for d in _declared_dirs(inputs) + [wdir]:
+        if not any(_under(d, Path(h)) for h, _ in mounts):
+            mounts.append((str(d), str(d)))
 
     def _snap() -> dict:
         snap = {}
