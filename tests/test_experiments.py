@@ -803,6 +803,8 @@ class TestRunner:
         assert cmd[cmd.index("--model") + 1] == "opus"
         assert cmd[cmd.index("--output-format") + 1] == "stream-json"
         assert cmd[cmd.index("--mcp-config") + 1] == ".mcp.json"
+        own = experiments.build_command(e, "opus", mcp_config="/runs/x/.mcp.json")
+        assert own[own.index("--mcp-config") + 1] == "/runs/x/.mcp.json"
         assert cmd[cmd.index("--max-budget-usd") + 1] == "10.0"
         assert cmd[cmd.index("--allowedTools") + 1] == "mcp__bioinf__*"
         assert cmd[cmd.index("--effort") + 1] == "high"
@@ -845,6 +847,27 @@ class TestRunner:
         assert out.count("claude -p") == 4                       # 2 models × 2 repeats
         assert "BIOINF_WORKSPACE=" in out and "--strict-mcp-config" in out
         assert "docker images and containers added by the run are removed after it" in out
+
+    def test_the_session_starts_in_the_run_directory_with_its_own_server_registration(self, tmp_path, capsys):
+        """The model gets the MCP face alone — the tool descriptions and the server's
+        instructions — never this checkout's CLAUDE.md: the session's cwd is the run
+        directory and the only MCP config it loads is the one written there."""
+        root = tmp_path / "root"
+        experiments.main(["run", str(_exp(tmp_path)), "--dry-run", "--root", str(root), "--repeats", "1",
+                          "--models", "sonnet"])
+        out = capsys.readouterr().out
+        run_dir_prefix = str(root / "c1_seqkit" / "sonnet__r1__")
+        assert f"(cd {run_dir_prefix}" in out, out
+        assert f"(cd {experiments.ROOT}" not in out
+        assert "--mcp-config " + run_dir_prefix in out and ".mcp.json --strict-mcp-config" in out
+        run = tmp_path / "run"
+        run.mkdir()
+        cfg = experiments.write_mcp_config(run)
+        assert cfg == run / ".mcp.json"
+        registered = json.loads(cfg.read_text())["mcpServers"]
+        assert list(registered) == ["bioinf"]
+        assert registered["bioinf"]["command"] == str(experiments.ROOT / "scripts" / "start_mcp_server.sh")
+        assert Path(registered["bioinf"]["command"]).is_file()
 
     def test_report_over_two_experiments_lands_in_a_shared_directory(self, tmp_path, capsys, monkeypatch):
         root = tmp_path / "exp"

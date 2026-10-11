@@ -139,6 +139,99 @@ def _run_in_image(image: str, platform: str, command: str, timeout: int = 300,
     return {"rc": r["rc"], "out": (r["out"] or r["err"] or "").strip()[:maxlen]}
 
 
+#: Evidence timeouts: the default, and the most a caller may ask for. A tool that starts a
+#: JVM under emulation can need minutes for `--help`; a caller says so with
+#: `evidence_timeout_s` and the record carries the value the evidence ran under.
+EVIDENCE_TIMEOUT_DEFAULT_S = 300
+EVIDENCE_TIMEOUT_MAX_S = 1800
+#: How long the where-is-it probe may take when evidence found no such command.
+_PROBE_TIMEOUT_S = 120
+_NOT_FOUND_RE = re.compile(r"command not found|not found|No such file or directory", re.I)
+
+
+def evidence_timeout(requested) -> int:
+    """The timeout evidence runs under: the request, held between 30 s and the cap."""
+    try:
+        v = int(requested or EVIDENCE_TIMEOUT_DEFAULT_S)
+    except (TypeError, ValueError):
+        v = EVIDENCE_TIMEOUT_DEFAULT_S
+    return max(30, min(v, EVIDENCE_TIMEOUT_MAX_S))
+
+
+def _image_probe(image: str, platform: str, tool: str) -> dict:
+    """Where `tool`'s name occurs in the image, read when its evidence found no such
+    command: the image's PATH, executables whose file name carries the token, and the
+    Python console scripts whose entry point mentions it (with the script's path). Bounded
+    and read-only; an empty answer is stated as empty, never as "not installed"."""
+    tok = tool.strip()
+    if not tok:
+        return {"path": "", "executables": [], "console_scripts": []}
+    glob = _shq(f"*{tok}*")
+    q = _shq(tok)
+    cmd = (f'echo "PATH=$PATH"; echo "---executables---"; '
+           f'find / -xdev \( -type f -o -type l \) -iname {glob} -perm -u+x -not -path "/proc/*" '
+           f'2>/dev/null | head -20; '
+           f'echo "---console_scripts---"; '
+           f'for f in $(find / -xdev -name entry_points.txt -not -path "/proc/*" 2>/dev/null | '
+           f'xargs -r grep -il {q} 2>/dev/null | head -5); do '
+           f'grep -i {q} "$f" | head -5 | while IFS= read -r line; do '
+           f'n=$(printf "%s" "$line" | cut -d= -f1 | tr -d " "); '
+           f'p=$(find / -xdev -name "$n" -path "*/bin/*" 2>/dev/null | head -1); '
+           f'echo "$line @ ${{p:-not on disk}}"; done; done')
+    r = _run_in_image(image, platform, cmd, timeout=_PROBE_TIMEOUT_S, maxlen=6000)
+    out = r.get("out") or ""
+    path = ""
+    execs: list[str] = []
+    scripts: list[str] = []
+    section = ""
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("PATH="):
+            path = line[len("PATH="):]
+        elif line == "---executables---":
+            section = "exe"
+        elif line == "---console_scripts---":
+            section = "cs"
+        elif line and section == "exe":
+            execs.append(line)
+        elif line and section == "cs":
+            scripts.append(line)
+    return {"path": path, "executables": execs, "console_scripts": scripts, "probe_rc": r.get("rc")}
+
+
+def _where_summary(tool: str, where: dict) -> str:
+    found = (where.get("executables") or []) + (where.get("console_scripts") or [])
+    if found:
+        return (f"{tool}: no such command on the image's PATH ({where.get('path') or '?'}); "
+                f"the name occurs at: {'; '.join(found[:8])}")
+    return (f"{tool}: no such command on the image's PATH ({where.get('path') or '?'}), and no "
+            f"executable or console script in the image carries the name")
+
+
+def inspect_image(*, image: str, command: str, platform: str = "linux/amd64",
+                  timeout_s: int = 120, pull_if_absent: bool = True) -> dict[str, Any]:
+    """Run ONE command in `image` and return what it printed — a look, not a record. The
+    command's own exit code comes back as `rc`; a non-zero rc is an answer. Pulls the
+    image when it is not local and `pull_if_absent`, which is the pull freeze_from_image
+    would make anyway."""
+    if not (command or "").strip():
+        return refused("inspect_image.no_command", error="give the command to run inside the image")
+    if not (image or "").strip():
+        return refused("inspect_image.no_image", error="give the image to look inside")
+    timeout = max(5, min(int(timeout_s or 120), 600))
+    if not _image_present(image):
+        if not pull_if_absent:
+            return broke("inspect_image.image_unavailable",
+                         error=f"image {image!r} is not in the local daemon and pull is disabled")
+        pl = _sh(["docker", "pull", "--platform", platform, image], timeout=1800)
+        if pl["rc"] != 0 or not _image_present(image):
+            return broke("inspect_image.image_unavailable",
+                         error=f"could not pull {image!r}: {(pl['err'] or '')[:300]}")
+    r = _run_in_image(image, platform, command, timeout=timeout, maxlen=8000)
+    return proven("inspect_image.ran", image=image, command=command, platform=platform,
+                  timeout_s=timeout, rc=r["rc"], out=r["out"])
+
+
 #: The CONTROL image for the discriminating-evidence check below: a stock Debian that
 #: carries none of the tools we freeze. Pinned by digest for the same reason the build
 #: base is — a control that drifts is not a control.
@@ -262,11 +355,17 @@ def freeze_from_image(
     gated: bool = False,
     licenses: Optional[list[str]] = None,
     pull_if_absent: bool = True,
+    evidence_timeout_s: int = EVIDENCE_TIMEOUT_DEFAULT_S,
 ) -> dict[str, Any]:
     """Register an EnvCache entry from an existing `image`, gated by the honesty contract.
 
     `tools`: [{name, evidence}] — each evidence command must RUN the tool in-image and
     exit 0 (this is VALIDATED_IN_IMAGE; the caller owns making it exercise, not import).
+    `evidence_timeout_s` is how long each evidence command may take (default 300, at most
+    1800); every verification records the value it ran under. Evidence that fails because
+    the command is not there comes back with `where` — the image's PATH and every
+    executable or console script carrying the tool's name — so the next call names the
+    right command instead of guessing.
     `build_method`: 'adopt-image' | 'authors-dockerfile'. `dockerfile_source`: the pinned
     source {repo, commit, tag, recipe_path, build_args, platform, dockerfile, patches}
     when built from the authors' Dockerfile — it is embedded in the recipe so the build is
@@ -303,13 +402,15 @@ def freeze_from_image(
     # -- VALIDATED_IN_IMAGE: run each tool's evidence IN the image --
     verifications: list[dict] = []
     vacuous: list[str] = []
+    not_found: list[str] = []
+    ev_timeout = evidence_timeout(evidence_timeout_s)
     for t in tools:
         tname = (t.get("name") or "").strip()
         ev = (t.get("evidence") or "").strip()
         if not tname or not ev:
             return refused("freeze_from_image.bad_tool",
                            error=f"each tool needs a name + evidence command (got {t!r})")
-        res = _run_in_image(image, platform, ev)
+        res = _run_in_image(image, platform, ev, timeout=ev_timeout)
         from agent.skills import env_honesty as _eh
         # THE DISCRIMINATING CHECK — only meaningful for evidence that PASSED. A failing
         # evidence already refuses via the contract, and paying for a control run to learn
@@ -327,7 +428,16 @@ def freeze_from_image(
                               # proof can't masquerade as a functional one.
                               "depth": _eh.evidence_depth(ev, tname),
                               # ...and whether it distinguishes this image from any image.
-                              "control": control, "control_note": control_note})
+                              "control": control, "control_note": control_note,
+                              "timeout_s": ev_timeout})
+        # WHERE IS IT. Evidence that failed because the command is not there is the
+        # commonest first failure on an adopted image (a binary off PATH, a console script
+        # named differently from the project); the answer is in the image, so read it
+        # here rather than leave the caller to shell into the image and guess.
+        if res["rc"] != 0 and (res["rc"] == 127 or _NOT_FOUND_RE.search(res["out"] or "")):
+            where = _image_probe(image, platform, tname)
+            verifications[-1]["where"] = where
+            not_found.append(_where_summary(tname, where))
     if vacuous:
         # REFUSE, do not degrade. `unchecked` (we could not run the control) is the state
         # that degrades; this is the state where we RAN the experiment and it came back
@@ -509,10 +619,13 @@ def freeze_from_image(
     contract = env_honesty.evaluate_build(record)
     violations = contract.violations
     if violations:
-        return refused("freeze_from_image.honesty_violation",
-                       error=f"the image failed the honesty contract ({len(violations)} violation(s)) — "
-                             "not registered",
-                       honesty_violations=violations, verifications=verifications)
+        out = refused("freeze_from_image.honesty_violation",
+                      error=f"the image failed the honesty contract ({len(violations)} violation(s)) — "
+                            "not registered" + ("; " + " | ".join(not_found) if not_found else ""),
+                      honesty_violations=violations, verifications=verifications)
+        if not_found:
+            out["not_found"] = not_found
+        return out
 
     # -- register + deliverables (rendered purely from the record) --
     # ADOPT MUST RECORD WHAT SOMEONE ELSE CAN PULL, NOT WHAT WE HAPPEN TO CALL IT.
@@ -690,6 +803,50 @@ def _apply_patches(checkout: Path, patches: list[dict]) -> dict:
     return {"applied": applied}
 
 
+#: The recipes a checkout is searched for, by root name first.
+_ROOT_RECIPES = ("Dockerfile", "Containerfile")
+
+
+def _recipe_candidates(checkout: Path) -> list[str]:
+    """Every container recipe in the checkout, repo-relative, the most likely first."""
+    from agent.skills.authors_sources import recipe_paths_in
+    paths = [p.relative_to(checkout).as_posix() for p in checkout.rglob("*")
+             if p.is_file() and ".git" not in p.relative_to(checkout).parts]
+    return recipe_paths_in(paths)
+
+
+def _resolve_recipe(checkout: Path, recipe: str) -> dict:
+    """The Dockerfile to build, as `{"path": repo-relative}`: `recipe` when given and
+    present; else the root `Dockerfile`/`Containerfile`; else the checkout's single recipe
+    anywhere below the root. Otherwise a refusal that lists what the checkout holds, so
+    the next call names one instead of guessing."""
+    cands = _recipe_candidates(checkout)
+    if recipe:
+        if (checkout / recipe).is_file():
+            return {"path": recipe}
+        return refused("authors_recipe.recipe_not_found",
+                       error=f"{recipe!r} is not a file in the repository at the pinned ref"
+                             + (f"; container recipes there: {', '.join(cands)}" if cands
+                                else "; it holds no Dockerfile, Containerfile or .def file"),
+                       recipe=recipe, candidates=cands,
+                       remedy=("pass recipe=<one of candidates>" if cands
+                               else "this repository ships no container recipe at this ref — route by another tier"))
+    root = [c for c in cands if c in _ROOT_RECIPES]
+    if root:
+        return {"path": root[0]}
+    if len(cands) == 1:
+        return {"path": cands[0]}
+    if not cands:
+        return refused("authors_recipe.recipe_not_found",
+                       error="the repository holds no Dockerfile, Containerfile or .def file at the pinned ref",
+                       recipe="", candidates=[],
+                       remedy="this repository ships no container recipe at this ref — route by another tier")
+    return refused("authors_recipe.recipe_ambiguous",
+                   error=f"the repository holds {len(cands)} container recipes and none at the root: "
+                         f"{', '.join(cands)}",
+                   recipe="", candidates=cands, remedy="pass recipe=<one of candidates> to name the one to build")
+
+
 def build_from_authors_recipe(
     *,
     repo: str,
@@ -697,7 +854,7 @@ def build_from_authors_recipe(
     name: str,
     env_cache,
     env_dir: str | Path,
-    recipe: str = "Dockerfile",
+    recipe: str = "",
     ref: str = "",
     version: str = "",
     platform: str = "linux/amd64",
@@ -705,10 +862,14 @@ def build_from_authors_recipe(
     patches: Optional[list[dict]] = None,
     gated: bool = False,
     licenses: Optional[list[str]] = None,
+    evidence_timeout_s: int = EVIDENCE_TIMEOUT_DEFAULT_S,
 ) -> dict[str, Any]:
     """Clone the tool's OWN repo at a pinned `ref`, apply any `patches`, `docker build` its
     `recipe` (their Dockerfile), then hand the built image to freeze_from_image (same
-    honesty contract + deliverables). The declarative executor for resolve_tool's
+    honesty contract + deliverables). `recipe` is a repo-relative path; left empty, it is
+    the checkout's one container recipe (a root `Dockerfile` or `Containerfile` first, else
+    the single one anywhere below), and a checkout with several or none refuses naming
+    what it holds (`_resolve_recipe`) rather than building a file that is not there. The declarative executor for resolve_tool's
     `authors_recipe` tier — the path taken when the authors' recipe installs pieces a
     conda/pip reconstruction would silently DROP. The pinned source (repo + resolved
     commit + tag + Dockerfile as built + every patch) is recorded so the build is
@@ -744,6 +905,10 @@ def build_from_authors_recipe(
                     return broke("authors_recipe.checkout_failed",
                                  error=f"could not checkout {ref!r}: {co['err'][:300]}")
         commit = _sh(["git", "-C", td, "rev-parse", "HEAD"], timeout=60)["out"].strip()
+        picked = _resolve_recipe(Path(td), recipe)
+        if "path" not in picked:
+            return picked
+        recipe = picked["path"]
         # PATCH AFTER THE PIN, BEFORE THE BUILD — and refuse before anything is built if a
         # patch does not apply as written. The commit above is the authors' source; what
         # docker consumes is that source plus exactly these recorded edits.
@@ -757,9 +922,10 @@ def build_from_authors_recipe(
         buildx.append(td)
         bd = _sh(buildx, timeout=3600)
         if bd["rc"] != 0:
+            from agent.skills.container_build import build_failure_fields
             return broke("authors_recipe.build_failed",
                          error=f"docker build of {recipe} failed: {(bd['err'] or '')[-800:]}",
-                         dockerfile=recipe)
+                         dockerfile=recipe, **build_failure_fields(bd["err"] or ""))
         # The Dockerfile AS BUILT — after the patches, because that is the text docker
         # consumed; the patches list beside it says how it differs from the pinned commit.
         try:
@@ -779,4 +945,5 @@ def build_from_authors_recipe(
                            "platform": platform, "dockerfile": dockerfile_text,
                            "patches": patched["applied"]},
         gated=gated, licenses=list(licenses or []), pull_if_absent=False,
+        evidence_timeout_s=evidence_timeout_s,
         env_cache=env_cache, env_dir=env_dir)

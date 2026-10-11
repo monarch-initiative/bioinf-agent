@@ -135,7 +135,15 @@ def _reap_orphan_service_pids() -> None:
         print(f"[bioinf] reaped {len(r['removed'])} orphan service PID file(s): "
               f"{r['removed']}", file=sys.stderr)
 
-mcp = FastMCP("bioinf-agent")
+def operator_instructions() -> str:
+    """The server's MCP instructions: the operating protocol every client is handed with the
+    tool list (agent/operator_instructions.md). A headless session elsewhere has this and
+    the tool descriptions, and nothing else, to work from."""
+    import pathlib
+    return pathlib.Path(__file__).with_name("operator_instructions.md").read_text(encoding="utf-8")
+
+
+mcp = FastMCP("bioinf-agent", instructions=operator_instructions())
 
 # A platform is spelled two ways: conda subdir (linux-64) on a freeze request, docker
 # (linux/amd64) on a build and on the frozen record. `docker_platform` reads either.
@@ -669,6 +677,7 @@ from agent.mcp_tools.freeze_tools import (  # noqa: E402,F401
     freeze,
     freeze_from_image,
     build_env_from_authors_recipe,
+    inspect_image,
     verify_env_recipe,
     generate_user_guide,
 )

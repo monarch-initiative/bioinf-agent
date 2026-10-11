@@ -50,6 +50,9 @@ from agent.skills import tool_surface as ts
 
 ROOT = Path(__file__).resolve().parents[1]
 CLAUDE_MD = ROOT / "CLAUDE.md"
+#: What the agent reads: the server's own instructions (every client gets them) and, for a
+#: session in this checkout, CLAUDE.md's routing table.
+INSTRUCTIONS_MD = ROOT / "agent" / "operator_instructions.md"
 
 
 # --------------------------------------------------------------------------------------
@@ -130,8 +133,8 @@ def test_every_primitive_has_a_routing_table_row():
     missing = sorted(set(ts.positioned(ts.PRIMITIVE)) - _routing_table_tools())
     assert not missing, (
         f"{missing} are positioned PRIMITIVE but named in no row of CLAUDE.md's routing "
-        "table. CLAUDE.md is the agent's prompt: a primitive that is not in the table is "
-        "one the agent will not pick."
+        "table. The table is where a primitive is positioned for the reader; one that is "
+        "not in it is unplaced."
     )
 
 
@@ -153,15 +156,17 @@ def test_every_routing_table_row_names_a_registered_primitive():
     )
 
 
-def test_every_protocol_tool_is_actually_named_in_claude_md():
-    """PROTOCOL means 'documented where it is used'. If it is not there, it is LOW_LEVEL."""
-    text = CLAUDE_MD.read_text()
+def test_every_protocol_tool_is_named_where_the_agent_reads():
+    """PROTOCOL means 'documented where it is used': in the operator instructions the server
+    hands every client, or in CLAUDE.md. If it is in neither, it is LOW_LEVEL."""
+    text = INSTRUCTIONS_MD.read_text() + CLAUDE_MD.read_text()
     absent = [n for n in ts.positioned(ts.PROTOCOL)
               if not re.search(rf"\b{re.escape(n)}\b", text)]
     assert not absent, (
-        f"{absent} are positioned PROTOCOL — meaning CLAUDE.md documents them where they "
-        "are used — but CLAUDE.md does not mention them at all. Either document them or "
-        "reposition them as LOW_LEVEL so they carry a guardrail instead."
+        f"{absent} are positioned PROTOCOL — meaning the operator instructions document them "
+        "where they are used — but neither agent/operator_instructions.md nor CLAUDE.md "
+        "mentions them. Either document them or reposition them as LOW_LEVEL so they carry "
+        "a guardrail instead."
     )
 
 

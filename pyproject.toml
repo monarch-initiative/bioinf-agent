@@ -74,6 +74,9 @@ bioinf-mcp = "agent.__main__:main"
 [tool.setuptools.packages.find]
 include = ["agent*"]
 
+[tool.setuptools.package-data]
+agent = ["operator_instructions.md"]
+
 # NOTE: this is a WORKSPACE-ROOTED service, not a site-packages library. It reads and
 # writes config/, data/, env_reports/, envs/, docker_images/, drafts/ relative to the
 # repo root (agent/mcp_server.py resolves PROJECT_ROOT from the source tree). Install

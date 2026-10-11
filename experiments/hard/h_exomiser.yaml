@@ -14,7 +14,7 @@ prompt: |
   its authors ship, with the hg38 and phenotype data it needs fetched as reference databases
   the record verifies. Prove it by prioritising the variants of the phenopacket in the core
   test data: derive the VCF from the phenopacket, run Exomiser on that VCF with the
-  phenopacket's HPO terms against the chr22 reference, and write its results. Freeze the
+  phenopacket's HPO terms on hg38, and write its results. Freeze the
   environment as a shippable image that carries the jar and the runtime but not the data,
   and seal the workflow with a how-to whose slots are the VCF, the phenopacket and the data
   directory.

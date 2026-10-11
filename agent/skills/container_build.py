@@ -329,6 +329,36 @@ def registry_manifest_digest(ref: str) -> str:
 # EnvEngine strategies — the swappable conda/pip solve+lock+invoke layer.
 # ---------------------------------------------------------------------------
 
+#: What a `docker build` that died of memory says, in the words BuildKit and the kernel use.
+_OOM_SIGNS = ("cannot allocate memory", "ResourceExhausted", "out of memory", "exit code: 137", "Killed")
+
+
+def docker_memory_gib() -> Optional[float]:
+    """The memory the Docker daemon's VM has, in GiB, or None when docker does not answer."""
+    try:
+        r = subprocess.run(["docker", "info", "--format", "{{.MemTotal}}"],
+                           capture_output=True, text=True, timeout=20)
+        return int(r.stdout.strip()) / (1024 ** 3) if r.returncode == 0 and r.stdout.strip().isdigit() else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def build_failure_fields(stderr: str) -> dict:
+    """What a failed build's stderr says about WHY, when the cause is one a reader would
+    otherwise have to know to look for. Today: an out-of-memory kill, named with the
+    memory the Docker VM actually has, so the remedy (a larger VM, or another host) is
+    read off the record instead of guessed. Empty when the stderr names nothing of the kind."""
+    text = stderr or ""
+    if not any(sign in text for sign in _OOM_SIGNS):
+        return {}
+    mem = docker_memory_gib()
+    have = f"{mem:.1f} GiB" if mem else "an unknown amount of memory"
+    return {"cause": "out_of_memory",
+            "hint": (f"the build ran out of memory inside Docker's VM, which has {have}; raise the "
+                     "VM's memory limit (Docker Desktop: Settings → Resources) or build where more "
+                     "memory is available, then retry")}
+
+
 class EnvEngine:
     """Strategy for the conda/pip layer. Subclasses implement: how to install the
     engine (in the build container AND the ship Dockerfile), how to declare+co-
@@ -648,10 +678,18 @@ class ContainerBuild:
         # for the seven-runner consolidation this came from.
         return _proc.run_argv(args, timeout)
 
-    def exec(self, command: str, timeout: int = 1800) -> dict[str, Any]:
-        """Run a shell command in the build container (engine on PATH)."""
+    def exec(self, command: str, timeout: int = 1800, workdir: str = "") -> dict[str, Any]:
+        """Run a shell command in the build container (engine on PATH). `workdir` is the
+        directory the command must run from when the cwd is part of its meaning (a
+        run-by-path repo's verify); it must exist, and a missing one is its own error
+        rather than a run from somewhere else that fails for a different reason."""
         assert self.cid, "call start() first"
-        full = f'{self.engine.exec_env()}; cd {self.workdir} 2>/dev/null || true; {command}'
+        if workdir:
+            q = shlex.quote(workdir)
+            cd = f'cd {q} || {{ echo "evidence workdir {q} does not exist in the build container" >&2; exit 97; }}'
+        else:
+            cd = f"cd {self.workdir} 2>/dev/null || true"
+        full = f'{self.engine.exec_env()}; {cd}; {command}'
         return self._sh(["docker", "exec", self.cid, "bash", "-c", full], timeout=timeout)
 
     def start(self) -> dict[str, Any]:
@@ -770,10 +808,13 @@ class ContainerBuild:
     def run(self, command: str, evidence: str, purpose: str = "", tool: str = "",
             engine_coupled: bool = False, provenance: dict | None = None,
             runtime_packages: list[str] | None = None,
-            version_probe: str = "", timeout: int = 1800) -> dict[str, Any]:
+            version_probe: str = "", timeout: int = 1800, workdir: str = "") -> dict[str, Any]:
         """Run a long-tail install command, then PROVE it with `evidence` (exit 0),
         both in the build container. On success the command is recorded for verbatim
-        baking; `evidence` is re-run in the built image at freeze.
+        baking; `evidence` is re-run in the built image at freeze. `workdir` is where the
+        evidence runs when its generator says the cwd is part of the invocation
+        (`evidence_workdir` on a script-repo spec) — the same directory the shipped-image
+        re-run uses, so the two runs resolve the same relative paths.
 
         `tool` is the command this step puts on PATH (`seqtk`) — DISTINCT from
         `purpose`, which is prose for humans (`seqtk (source @ 94e7070)`). Every
@@ -805,7 +846,7 @@ class ContainerBuild:
         # emulated builds a far larger cap; the _sh timeout handler keeps a genuine
         # hang from crashing the freeze either way.
         ev_timeout = 900 if self._emulated() else 120
-        ev = self.exec(ev_cmd, timeout=ev_timeout)
+        ev = self.exec(ev_cmd, timeout=ev_timeout, **({"workdir": workdir} if workdir else {}))
         if ev["returncode"] != 0:
             return broke("container_build.run_evidence_failed", success=False, stage="evidence", evidence=ev_cmd,
                     stderr=(ev["stderr"] or "")[-800:])
@@ -881,7 +922,8 @@ class ContainerBuild:
                         engine_coupled=spec.get("engine_coupled", False),
                         provenance=spec.get("provenance"),
                         runtime_packages=spec.get("runtime_packages"),
-                        version_probe=spec.get("version_probe", ""), timeout=timeout)
+                        version_probe=spec.get("version_probe", ""), timeout=timeout,
+                        workdir=spec.get("evidence_workdir", ""))
 
     def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
         """Invoke a conda-env tool via the engine's run wrapper (`pixi run`)."""
@@ -929,7 +971,7 @@ class ContainerBuild:
                       "--load", "-t", tag, str(build_dir)], timeout=2400)
         if b["returncode"] != 0:
             return broke("container_build.freeze_build_failed", success=False, stage="build", dockerfile=str(build_dir / "Dockerfile"),
-                    stderr=(b["stderr"] or "")[-1200:])
+                    stderr=(b["stderr"] or "")[-1200:], **build_failure_fields(b["stderr"] or ""))
         return proven("container_build.frozen", success=True, image=tag, engine=self.engine.name,
                 dockerfile=str(build_dir / "Dockerfile"),
                 build_method="container-native", platform=self.platform)

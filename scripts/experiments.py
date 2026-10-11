@@ -3,11 +3,14 @@
 
 An EXPERIMENT is a YAML file (see experiments/ for the ones this repo keeps): one prompt,
 the models to put it to, how many repeats. Each run is a fresh headless Claude Code
-session started in this checkout with the bioinf server attached — so the model works
-through the MCP face exactly as a user's session would — and pointed at an EMPTY
-workspace of its own, so nothing it finds was left by an earlier run:
+session started IN ITS OWN RUN DIRECTORY with the bioinf server attached through a
+per-run `.mcp.json` — so the model works through the MCP face alone (the tool descriptions
+and the server's own instructions, `agent/operator_instructions.md`), exactly as a user's
+session elsewhere would; this checkout's CLAUDE.md is the developer's and is not in reach —
+and pointed at an EMPTY workspace of its own, so nothing it finds was left by an earlier run:
 
     <experiments zone>/<experiment>/<model>__r<repeat>__<stamp>/
+        .mcp.json           the server registration for this run (this checkout's launcher)
         experiment.json     what ran: the resolved definition, the command, the env, timing
         transcript.jsonl    the stream-json transcript, as Claude Code wrote it
         stderr.log          the client's stderr
@@ -152,12 +155,14 @@ def load_experiment(path: Path) -> dict:
 # One run
 # ---------------------------------------------------------------------------
 
-def build_command(exp: dict, model: str, add_dirs: tuple[str, ...] = ()) -> list[str]:
+def build_command(exp: dict, model: str, add_dirs: tuple[str, ...] = (),
+                  mcp_config: str = ".mcp.json") -> list[str]:
     """The headless session. `add_dirs` are granted to the harness's own file tools (the
-    run directory, so Bash/Read reach the run's workspace without a permission denial)."""
+    run directory, so Bash/Read reach the run's workspace without a permission denial);
+    `mcp_config` is the server registration the session loads, and the only one."""
     cmd = ["claude", "-p", exp["prompt"], "--model", model,
            "--output-format", "stream-json", "--verbose", "--no-session-persistence",
-           "--mcp-config", ".mcp.json", "--strict-mcp-config",
+           "--mcp-config", mcp_config, "--strict-mcp-config",
            "--max-budget-usd", str(exp["budget_usd"])]
     for d in add_dirs:
         cmd += ["--add-dir", d]
@@ -168,6 +173,15 @@ def build_command(exp: dict, model: str, add_dirs: tuple[str, ...] = ()) -> list
     if exp["effort"]:
         cmd += ["--effort", str(exp["effort"])]
     return cmd
+
+
+def write_mcp_config(run_dir: Path) -> Path:
+    """The run's own server registration: this checkout's launcher, by absolute path, so
+    the session can start anywhere and still run the code under test."""
+    path = run_dir / ".mcp.json"
+    path.write_text(json.dumps({"mcpServers": {"bioinf": {
+        "command": str(ROOT / "scripts" / "start_mcp_server.sh")}}}, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def build_env(exp: dict, run_dir: Path, host_zones: dict, base: dict | None = None) -> dict:
@@ -364,7 +378,7 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = root / exp["name"] / f"{model}__r{repeat}__{stamp}"
     host = workspace.zones()
-    cmd = build_command(exp, model, add_dirs=(str(run_dir),))
+    cmd = build_command(exp, model, add_dirs=(str(run_dir),), mcp_config=str(run_dir / ".mcp.json"))
     env = build_env(exp, run_dir, host)
     overrides = {k: env[k] for k in ("BIOINF_WORKSPACE", "BIOINF_ENVS", "BIOINF_RESOURCES",
                                       "BIOINF_PROJECTS_ACCESS", "BIOINF_MCP_AUTO_RELOAD",
@@ -376,11 +390,12 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
         if "images" in exp["cleanup"]:
             print("  docker images and containers added by the run are removed after it")
         print("  " + " ".join(f"{k}={shlex.quote(v)}" for k, v in overrides.items()))
-        print("  (cd " + shlex.quote(str(ROOT)) + " && " + " ".join(shlex.quote(c) for c in cmd) + ")")
+        print("  (cd " + shlex.quote(str(run_dir)) + " && " + " ".join(shlex.quote(c) for c in cmd) + ")")
         return None
 
     run_dir.mkdir(parents=True, exist_ok=False)
     (run_dir / "workspace").mkdir()
+    write_mcp_config(run_dir)
     access = prepare_projects_access(Path(exp["projects_access"]), run_dir) if exp["projects_access"] else None
     before = docker_snapshot() if "images" in exp["cleanup"] else None
     meta = {
@@ -392,7 +407,7 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
         "allowed_tools": exp["allowed_tools"], "disallowed_tools": exp["disallowed_tools"],
         "notes": exp["notes"], "source": exp["source"], "corpus": exp["corpus"],
         "prompt": exp["prompt"], "command": cmd, "env_overrides": overrides,
-        "workspace": str(run_dir / "workspace"), "cwd": str(ROOT),
+        "workspace": str(run_dir / "workspace"), "cwd": str(run_dir),
         "code_rev": _git(["rev-parse", "HEAD"]), "code_dirty": bool(_git(["status", "--porcelain"])),
         "started_at": datetime.now(timezone.utc).isoformat(), "timed_out": False,
     }
@@ -401,7 +416,7 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
 
     t0 = time.monotonic()
     with open(run_dir / "transcript.jsonl", "wb") as out, open(run_dir / "stderr.log", "wb") as err:
-        proc = subprocess.Popen(cmd, cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+        proc = subprocess.Popen(cmd, cwd=run_dir, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                 start_new_session=True)
         try:
             rc = proc.wait(timeout=exp["timeout_s"])

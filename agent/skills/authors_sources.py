@@ -229,72 +229,226 @@ _MANIFEST_ACCEPT = ",".join([
     "application/vnd.docker.distribution.manifest.v2+json",
 ])
 
+#: Where the authors' own image is looked for under the repository's `owner/repo` name
+#: (lower-cased, as registries require). Each is asked anonymously through its own token
+#: flow, so a public image is found without credentials and a private one — which could
+#: never be adopted — reads as absent. Bioinformatics publishes on all three.
+_AUTHOR_IMAGE_REGISTRIES = ("ghcr", "dockerhub", "quay")
+_REGISTRY_HOST = {"ghcr": "ghcr.io", "dockerhub": "registry-1.docker.io", "quay": "quay.io"}
+_REGISTRY_LABEL = {"ghcr": "ghcr.io", "dockerhub": "Docker Hub", "quay": "quay.io"}
+#: How many of an image's tags a found image carries back, so a caller can pin a release
+#: without guessing at names.
+_TAGS_LISTED = 40
 
-def _default_probe_ghcr_image(owner: str, repo: str, *, tag: str = "latest",
-                              timeout: int = 12) -> Optional[dict]:
-    """Does `ghcr.io/{owner}/{repo}:{tag}` exist and can WE pull it, anonymously?
 
-    Returns {ref, source} | None, or {"error": ...} when the probe itself failed.
+def _registry_token_url(registry: str, ref: str) -> str:
+    """The anonymous pull-scope token endpoint of each registry."""
+    if registry == "ghcr":
+        return f"https://ghcr.io/token?scope=repository:{ref}:pull&service=ghcr.io"
+    if registry == "dockerhub":
+        return f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{ref}:pull"
+    return f"https://quay.io/v2/auth?service=quay.io&scope=repository:{ref}:pull"
 
-    ASK THE REGISTRY, NOT GITHUB'S INDEX. `api.github.com/orgs/{owner}/packages`
-    returns **401 for every org on earth** — public ones included — because that
-    REST API requires authentication, period; a probe built on it (with the 401
-    swallowed by a fetch helper) reports "the authors ship no image" when the truth
-    is "we were denied".
 
-    It is also the wrong QUESTION. "Is a package listed under this org?" needs auth,
-    excludes user-owned repos (`/orgs/` only), and doesn't answer what we need. "Can I
-    pull this image?" is answered by the registry's own anonymous token flow, needs no
-    credentials for public images — and a private image is one we could never adopt
+def image_ref(registry: str, ref: str) -> str:
+    """The pullable spelling: a Docker Hub image is bare `owner/name`; the others carry
+    their host."""
+    return ref if registry == "dockerhub" else f"{_REGISTRY_HOST[registry]}/{ref}"
+
+
+def _registry_fetch(url: str, headers: dict, timeout: int, method: str = "GET") -> tuple[Optional[str], Optional[str]]:
+    """(body, error). A 401/403/404 is a real ANSWER (no public image), not an error —
+    distinguishing those two is the whole point of the probe, so it does not go through
+    _default_get_text, which collapses every failure to None. A HEAD that succeeds returns
+    an empty body, never None."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "bioinf-agent-authors", **headers},
+                                     method=method)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            if r.status != 200:
+                return None, None
+            return (r.read().decode("utf-8", "replace") if method == "GET" else ""), None
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403, 404):
+            return None, None          # denied/absent → true negative
+        return None, f"HTTP {e.code}"
+    except (urllib.error.URLError, OSError) as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _probe_registry_image(registry: str, ref: str, *, tag: str = "latest",
+                          timeout: int = 12) -> Optional[dict]:
+    """Does `{registry}/{ref}` exist and can WE pull it, anonymously?
+
+    Returns {ref, source, tag, tags, tags_total} | None, or {"error": ...} when the probe
+    itself failed. `tag` is "" when the asked-for tag is absent but the image exists: the
+    tags list is the existence proof then (quay images often carry no `latest`).
+
+    ASK THE REGISTRY, NOT GITHUB'S INDEX. `api.github.com/orgs/{owner}/packages` returns
+    401 for every org on earth — public ones included — because that REST API requires
+    authentication, and it is the wrong question besides: "is a package listed?" needs
+    auth and excludes user-owned repos, while "can I pull this?" is answered by the
+    registry's own anonymous token flow, and a private image is one we could never adopt
     anyway, so a negative there is a true negative.
     """
     import json
+    if not ref or "/" not in ref or registry not in _REGISTRY_HOST:
+        return None
+    host, label = _REGISTRY_HOST[registry], _REGISTRY_LABEL[registry]
+    txt, err = _registry_fetch(_registry_token_url(registry, ref), {}, timeout)
+    if err:
+        return {"error": f"{label} token endpoint: {err}"}
+    if txt is None:
+        return None
+    try:
+        token = (json.loads(txt) or {}).get("token") if txt.strip().startswith("{") else None
+    except ValueError:
+        token = None
+    if not token:
+        return None
+    auth = {"Authorization": f"Bearer {token}", "Accept": _MANIFEST_ACCEPT}
+    body, err = _registry_fetch(f"https://{host}/v2/{ref}/manifests/{tag}", auth, timeout, method="HEAD")
+    if err:
+        return {"error": f"{label} manifest: {err}"}
+    has_tag = body is not None
+    tags_txt, terr = _registry_fetch(f"https://{host}/v2/{ref}/tags/list?n=1000", auth, timeout)
+    tags: list[str] = []
+    if tags_txt:
+        try:
+            tags = [t for t in ((json.loads(tags_txt) or {}).get("tags") or []) if isinstance(t, str)]
+        except ValueError:
+            tags = []
+    if not has_tag and not tags:
+        return {"error": f"{label} tags: {terr}"} if terr else None
+    return {"ref": image_ref(registry, ref), "source": registry, "tag": tag if has_tag else "",
+            "tags": tags[-_TAGS_LISTED:], "tags_total": len(tags)}
+
+
+def _default_probe_ghcr_image(owner: str, repo: str, *, tag: str = "latest",
+                              timeout: int = 12) -> Optional[dict]:
+    """ghcr.io alone, by the owner/repo convention — one of the three registries
+    `_default_probe_author_image` asks."""
     if not owner or not repo:
         return None
-    ref = f"{owner}/{repo}".lower()
+    return _probe_registry_image("ghcr", f"{owner}/{repo}".lower(), tag=tag, timeout=timeout)
 
-    def _fetch(url: str, headers: dict) -> tuple[Optional[str], Optional[str]]:
-        """(body, error). A 403/404 is a real ANSWER (no public image), not an error —
-        distinguishing those two is the whole point of this probe, so it cannot go
-        through _default_get_text, which collapses every failure to None."""
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.read().decode("utf-8", "replace"), None
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403, 404):
-                return None, None          # denied/absent → true negative
-            return None, f"HTTP {e.code}"
-        except (urllib.error.URLError, OSError) as e:
-            return None, f"{type(e).__name__}: {e}"
 
-    try:
-        tok_url = (f"https://ghcr.io/token?scope=repository:{ref}:pull"
-                   f"&service=ghcr.io")
-        txt, err = _fetch(tok_url, {"User-Agent": "bioinf-agent-authors"})
-        if err:
-            return {"error": f"ghcr token endpoint: {err}"}
-        if txt is None:
-            # ghcr DENIED an anonymous pull scope → the package is private or absent.
-            # A true negative: we could not adopt it even if it exists.
-            return None
-        token = (json.loads(txt) or {}).get("token") if txt.strip().startswith("{") else None
-        if not token:
-            return None
-        req = urllib.request.Request(
-            f"https://ghcr.io/v2/{ref}/manifests/{tag}",
-            headers={"Authorization": f"Bearer {token}", "Accept": _MANIFEST_ACCEPT,
-                     "User-Agent": "bioinf-agent-authors"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            if r.status != 200:
-                return None
-            return {"ref": f"ghcr.io/{ref}", "source": "ghcr", "tag": tag}
-    except urllib.error.HTTPError as e:
-        # 404/403 = the image genuinely isn't publicly pullable → a real answer, not an
-        # error. Anything else means our probe failed and must NOT read as "no image".
-        return None if e.code in (403, 404) else {"error": f"HTTP {e.code}"}
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+#: An image reference as a README, a CI file or a compose file spells it. Only spellings
+#: that can ONLY be an image are matched — a `docker pull`, a `docker://` URI, a
+#: registry-prefixed path, a Docker Hub page URL, an `image:` key — so a repository URL
+#: or a docs path is never taken for one.
+_REF = r"(?P<ref>[A-Za-z0-9][\w.-]*(?:/[A-Za-z0-9][\w.-]*){1,3}(?::[\w][\w.-]{0,127})?(?:@sha256:[0-9a-f]{64})?)"
+_DECLARED_IMAGE_PATTERNS = (
+    re.compile(r"\bdocker\s+(?:pull|run|create)\s+(?:-{1,2}[\w-]+(?:[= ]\S+)?\s+)*" + _REF),
+    re.compile(r"docker://" + _REF),
+    re.compile(r"(?<![\w/.-])(?P<ref>(?:ghcr\.io|quay\.io|docker\.io)/[\w.-]+(?:/[\w.-]+){1,3}(?::[\w][\w.-]{0,127})?)"),
+    re.compile(r"hub\.docker\.com/(?:r|repository/docker)/(?P<ref>[\w.-]+/[\w.-]+)"),
+    re.compile(r"^\s*(?:image|container)\s*[:=]\s*['\"]?" + _REF, re.M),
+)
+
+
+def _split_image_ref(ref: str) -> tuple[str, str, str]:
+    """`(registry, path, tag)` for an image reference; registry "" when the host is one
+    this probe does not speak to. A bare `owner/name` is Docker Hub."""
+    ref = ref.strip().strip("`'\"").split("@", 1)[0]
+    registry = "dockerhub"
+    for key, host in _REGISTRY_HOST.items():
+        if ref.lower().startswith(host + "/"):
+            registry, ref = key, ref[len(host) + 1:]
+            break
+    else:
+        if ref.lower().startswith("docker.io/"):
+            ref = ref[len("docker.io/"):]
+        elif ref.count("/") >= 1 and "." in ref.split("/", 1)[0]:
+            return "", "", ""           # some other registry host
+    path, _, tag = ref.partition(":")
+    if "/" in tag:                      # a port, not a tag — not a shape this probe handles
+        return "", "", ""
+    return registry, path, tag
+
+
+def declared_images(text: str, owner: str = "") -> list[str]:
+    """Image references `text` declares, de-duplicated in order. With `owner`, only images
+    under that owner — the authors' own — are kept, so a base image a README mentions
+    (`continuumio/miniconda3`) is never taken for theirs."""
+    seen: list[str] = []
+    for pat in _DECLARED_IMAGE_PATTERNS:
+        for m in pat.finditer(text or ""):
+            ref = m.group("ref").rstrip(".,;:)")
+            registry, path, _ = _split_image_ref(ref)
+            if not registry or not path:
+                continue
+            if owner and path.split("/", 1)[0].lower() != owner.lower():
+                continue
+            if ref not in seen:
+                seen.append(ref)
+    return seen
+
+
+def _default_probe_author_image(owner: str, repo: str, *, tag: str = "latest", timeout: int = 12,
+                                declared: tuple[str, ...] | list[str] = ()) -> Optional[dict]:
+    """The authors' own published image, wherever they publish it: the references the
+    repository itself declares (`declared`, from its README) are asked first, then
+    `owner/repo` on each of `_AUTHOR_IMAGE_REGISTRIES`. The first image that answers wins
+    and carries `declared_as` when the README named it. Returns {ref, source, tag, tags,
+    tags_total, declared_as?} | None, or {"error": ...} when nothing was found AND at
+    least one probe failed — so "no image" is never said about a registry that was not
+    heard from."""
+    attempts: list[tuple[str, str, str, str]] = []
+    for d in declared or ():
+        registry, path, dtag = _split_image_ref(d)
+        if registry and path:
+            attempts.append((registry, path.lower(), dtag or tag, d))
+    if owner and repo:
+        conv = f"{owner}/{repo}".lower()
+        attempts.extend((r, conv, tag, "") for r in _AUTHOR_IMAGE_REGISTRIES)
+    errors: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for registry, path, t, declared_as in attempts:
+        if (registry, path) in seen:
+            continue
+        seen.add((registry, path))
+        found = _probe_registry_image(registry, path, tag=t, timeout=timeout)
+        if found and found.get("error"):
+            errors.append(found["error"])
+            continue
+        if found:
+            if declared_as:
+                found["declared_as"] = declared_as
+            return found
+    return {"error": "; ".join(errors)} if errors else None
+
+
+#: A container recipe by its file name, anywhere in a repository tree.
+_RECIPE_BASENAME_RE = re.compile(r"(?:^|[._-])dockerfile(?:$|[._-])|\.dockerfile$|^containerfile$|\.def$", re.I)
+#: Directories whose recipes are CI or documentation fixtures before they are the tool's.
+_RECIPE_LOW_PRIORITY_DIRS = {".github", ".gitlab", "ci", "test", "tests", "testing", "docs", "doc", "examples", "example"}
+#: How many below-root recipes are fetched for the completeness analysis.
+_TREE_RECIPES_FETCHED = 3
+#: Files a README is looked for under.
+_READMES = ("README.md", "README.rst", "README", "readme.md")
+
+
+def recipe_paths_in(paths: list[str]) -> list[str]:
+    """Container recipes in a path listing, the most likely first: shallowest, with a
+    plain `Dockerfile` ahead of a variant and CI/docs directories last."""
+    def _is_recipe(p: str) -> bool:
+        base = p.rsplit("/", 1)[-1]
+        return base in _CONTAINER_RECIPES or bool(_RECIPE_BASENAME_RE.search(base))
+    hits = [p for p in paths if _is_recipe(p)]
+    return sorted(hits, key=lambda p: (p.split("/", 1)[0].lower() in _RECIPE_LOW_PRIORITY_DIRS and "/" in p,
+                                       p.count("/"), p.rsplit("/", 1)[-1] not in _CONTAINER_RECIPES, p))
+
+
+def _tree_paths(owner: str, repo: str, ref: str, get_json) -> tuple[Optional[list[str]], str]:
+    """Every file path in the repository at `ref`, from ONE GitHub tree request;
+    (None, why) when the listing is unavailable — a rate limit, a network failure, a
+    host that is not GitHub — so a caller can say "not listed" rather than "nothing there"."""
+    d = get_json(f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}?recursive=1")
+    if not isinstance(d, dict) or not isinstance(d.get("tree"), list):
+        return None, "the repository tree could not be listed"
+    paths = [t.get("path", "") for t in d["tree"] if isinstance(t, dict) and t.get("type") == "blob"]
+    return paths, ("GitHub truncated the tree listing" if d.get("truncated") else "")
 
 
 def discover_authors_sources(
@@ -304,18 +458,27 @@ def discover_authors_sources(
     probe_image: Optional[Callable[..., Optional[dict]]] = None,
 ) -> dict[str, Any]:
     """Discover the authoring resources in a GitHub repo (best-effort, network-injected).
-    Returns {container_recipes: [{path, text}], env_specs: [{path, text}],
-    build_scripts: [{path}], author_image: {ref, source} | None,
-    author_image_error?: str}. Fetches recipe TEXT (so the completeness parser can run)
+    Returns {container_recipes: [{path, text}], env_specs: [{path}], build_scripts: [{path}],
+    workflow_files: [...], author_image: {ref, source, tag, tags, ...} | None,
+    author_image_error?: str, readme?: str, declared_images: [...],
+    recipe_search: "root" | "tree" | "root_only", recipe_search_note?: str,
+    recipe_candidates?: [...]}. Fetches recipe TEXT (so the completeness parser can run)
     but only lists env-specs/scripts by presence.
+
+    Recipes are looked for at the repository root first; when none is there, ONE tree
+    listing finds them anywhere below it (`docker/Dockerfile`), and the first few are
+    fetched. A tree that could not be listed is reported as `root_only`, never as "no
+    recipe". The README is read for the image references the authors declare, which the
+    image probe asks before the owner/repo convention.
 
     `probe_image` is a separate seam from get_text/get_json because the registry probe
     needs auth headers those two can't carry. It defaults to None and resolves from
-    module globals at CALL time, so `_default_probe_ghcr_image` stays monkeypatchable —
+    module globals at CALL time, so `_default_probe_author_image` stays monkeypatchable —
     the same discipline that keeps the real resolve→assess path under test."""
-    probe_image = probe_image or _default_probe_ghcr_image
+    probe_image = probe_image or _default_probe_author_image
     out: dict[str, Any] = {"container_recipes": [], "env_specs": [],
-                           "build_scripts": [], "workflow_files": [], "author_image": None}
+                           "build_scripts": [], "workflow_files": [], "author_image": None,
+                           "declared_images": [], "recipe_search": "root"}
     if not owner or not repo:
         return out
 
@@ -344,13 +507,43 @@ def discover_authors_sources(
             entry["declares"] = parse_nextflow_manifest(txt)
         out["workflow_files"].append(entry)
 
-    # author-published image: ask the REGISTRY whether we can pull it, anonymously.
-    # A publicly pullable ghcr image under the repo's own owner, named for the repo, is a
-    # strong "the authors ship an image" signal — and, unlike a package *listing*, it is
-    # the exact fact we need (see _default_probe_ghcr_image for why GitHub's package
-    # index is both unauthorized and the wrong question). Docker Hub / quay are
-    # checked by the caller when a ref is declared; we don't brute-force registries here.
-    img = probe_image(owner, repo)
+    # Below the root: one tree listing, only when the root carried no recipe. The root
+    # stays authoritative when it has one; a `docker/Dockerfile` is found when it has not.
+    if not out["container_recipes"]:
+        paths, note = _tree_paths(owner, repo, ref, get_json)
+        if paths is None:
+            out["recipe_search"] = "root_only"
+            out["recipe_search_note"] = note
+        else:
+            out["recipe_search"] = "tree"
+            if note:
+                out["recipe_search_note"] = note
+            cands = recipe_paths_in(paths)
+            out["recipe_candidates"] = cands
+            for p in cands[:_TREE_RECIPES_FETCHED]:
+                txt = raw(p)
+                if txt:
+                    out["container_recipes"].append({"path": p, "text": txt})
+            known = {e["path"] for e in out["env_specs"]} | {e["path"] for e in out["build_scripts"]}
+            for p in paths:
+                base = p.rsplit("/", 1)[-1]
+                if "/" in p and p not in known and p.split("/", 1)[0].lower() not in _RECIPE_LOW_PRIORITY_DIRS:
+                    if base in _ENV_SPECS:
+                        out["env_specs"].append({"path": p})
+                    elif base in _BUILD_SCRIPTS:
+                        out["build_scripts"].append({"path": p})
+
+    # The README: the image references the authors themselves declare.
+    for fn in _READMES:
+        txt = raw(fn)
+        if txt:
+            out["readme"] = fn
+            out["declared_images"] = declared_images(txt, owner)
+            break
+
+    # author-published image: ask the REGISTRIES whether we can pull it, anonymously —
+    # what the README declares first, then owner/repo on each registry the probe knows.
+    img = probe_image(owner, repo, declared=tuple(out["declared_images"]))
     if isinstance(img, dict) and img.get("error"):
         # R2: a failed probe must NOT read as "the authors ship no image". That silent
         # degradation is exactly what kept this tier dead and invisible.
@@ -407,7 +600,7 @@ def assess_tool_sources(
     to work with and the honest answer names the engine instead."""
     get_text = get_text or functools.partial(_default_get_text, timeout=timeout)
     get_json = get_json or functools.partial(_default_get_json, timeout=timeout)
-    probe_image = probe_image or functools.partial(_default_probe_ghcr_image, timeout=timeout)
+    probe_image = probe_image or functools.partial(_default_probe_author_image, timeout=timeout)
     src = sources if sources is not None else discover_authors_sources(
         owner, repo, ref=ref, get_text=get_text, get_json=get_json,
         probe_image=probe_image)
@@ -426,6 +619,9 @@ def assess_tool_sources(
         if worst is None or (not cand["reconstruction_safe"] and worst["reconstruction_safe"]):
             worst = cand
     authors_recipe = worst
+    if authors_recipe:
+        authors_recipe["alternatives"] = [r.get("path", "") for r in src.get("container_recipes", [])
+                                          if r.get("path", "") != authors_recipe["path"]]
 
     author_image = src.get("author_image")
     image_error = src.get("author_image_error")
@@ -470,8 +666,13 @@ def assess_tool_sources(
                      f"env-spec or build script). It is RUN by an engine against a pinned "
                      f"revision; there is nothing here to install")
     elif author_image:
-        rec_txt = (f"the authors publish an image ({author_image['ref']}) — adopt it by "
-                   "digest (highest fidelity, lowest cost)")
+        tags = author_image.get("tags") or []
+        where = (f"named in {src.get('readme') or 'the README'}" if author_image.get("declared_as")
+                 else "under the authors' own name")
+        rec_txt = (f"the authors publish an image ({author_image['ref']}, {where}"
+                   + (f"; {author_image.get('tags_total', len(tags))} tags, among them "
+                      f"{', '.join(tags[-5:])}" if tags else "")
+                   + ") — adopt it by digest (highest fidelity, lowest cost); pin a release tag, not latest")
     elif incomplete:
         rec_txt = (f"build from the authors' {authors_recipe['path']}: "
                    + authors_recipe["summary"])
@@ -479,20 +680,21 @@ def assess_tool_sources(
         rec_txt = ("the authors ship a recipe but it installs nothing a registry route "
                    "would miss — a clean conda/pip install is the reliable least-resistance path")
     else:
-        rec_txt = ("no recipe in the repo, and no image on ghcr.io — route by the registry "
-                   "tiers (conda/pip/...) as usual")
+        searched = {"tree": "root and tree", "root_only": "root only; the tree could not be listed",
+                    "root": "root"}.get(src.get("recipe_search", "root"), "root")
+        rec_txt = (f"no container recipe in the repository ({searched}), and no image under "
+                   "the authors' name on ghcr.io, Docker Hub or quay.io — route by the "
+                   "registry tiers (conda/pip/...) as usual")
     if not author_image and not image_error:
-        # SCOPE THE NEGATIVE TO WHAT WAS PROBED — on the clean-negative path as much
-        # as the error path. The probe checks ghcr.io and nothing else
-        # (_default_probe_ghcr_image), so this verdict must never read "no authoring
-        # image found": that is a claim about every registry on earth, drawn from one.
-        # The blind spot is not incidental: bioinformatics publishes on Docker Hub and
-        # quay (biocontainers), so the registries we skip are precisely the ones our
-        # tools live on.
-        rec_txt += (" [NB: the author-image probe covers ghcr.io ONLY — Docker Hub and "
-                    "quay.io were NOT checked, and bio tools commonly publish there. 'The "
-                    "authors ship no image' is UNCHECKED for those registries, not a "
-                    "negative finding]")
+        # SCOPE THE NEGATIVE TO WHAT WAS ASKED. Three registries were asked for
+        # `owner/repo`, plus whatever the README declares; an image published under some
+        # other name was not asked for, and this verdict must not claim it does not exist.
+        readme = src.get("readme")
+        rec_txt += (" [NB: ghcr.io, Docker Hub and quay.io were asked for "
+                    + (f"{owner}/{repo}" if owner and repo else "the repository's own name")
+                    + (f" and for the image references in {readme}" if readme
+                       else "; no README was read")
+                    + " — an image published under another name is UNCHECKED, not ruled out]")
     if image_error:
         # The same rule at the verdict layer: "we couldn't check" must never be
         # delivered as "there is nothing there". Every sentence above assumes
@@ -509,8 +711,13 @@ def assess_tool_sources(
         "reconstruction_incomplete": incomplete,
         "workflow_manifest": workflow_manifest,
         "workflow_only": workflow_only,
+        "recipe_search": src.get("recipe_search", "root"),
+        "recipe_candidates": list(src.get("recipe_candidates") or []),
+        "declared_images": list(src.get("declared_images") or []),
         "recommendation": rec_txt,
     }
+    if src.get("recipe_search_note"):
+        out["recipe_search_note"] = src["recipe_search_note"]
     if image_error:
         out["author_image_error"] = image_error
     return out

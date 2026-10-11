@@ -52,7 +52,8 @@ from dataclasses import dataclass
 
 #: In CLAUDE.md's routing table. The agent's first-class menu — what it picks from.
 PRIMITIVE = "primitive"
-#: Named in CLAUDE.md outside the table: the numbered protocol, the async pattern, the
+#: Named in the operator instructions (agent/operator_instructions.md) where it is used:
+#: the numbered protocol, the async pattern, the
 #: schema cheatsheet. Documented where it is used, so it needs no routing note.
 PROTOCOL = "protocol"
 #: Below the table. Reachable, sometimes correct, and easy to reach for WRONGLY — so it
@@ -119,6 +120,7 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
     _t(tool="freeze", position=PRIMITIVE),
     _t(tool="freeze_from_image", position=PRIMITIVE),
     _t(tool="build_env_from_authors_recipe", position=PRIMITIVE),
+    _t(tool="inspect_image", position=PRIMITIVE),
     _t(tool="seal_workflow", position=PRIMITIVE),
     _t(tool="generate_user_guide", position=PRIMITIVE),
     _t(tool="download_reference_database", position=PRIMITIVE),
@@ -192,7 +194,7 @@ REGISTRY: dict[str, ToolPosition] = {t.tool: t for t in [
             "produced file and patches reference_databases with a cluster-locus entry — "
             "the use-the-authors'-own-machinery path for reference data."),
 
-    # ---- PROTOCOL — named in CLAUDE.md outside the table ----------------------------
+    # ---- PROTOCOL — named in the operator instructions where it is used --------------
     _t(tool="start_pipeline", position=PROTOCOL, note="protocol step 1."),
     _t(tool="select_test_data", position=PROTOCOL, note="protocol step 3; the only "
        "producer of test_data.content_anchors, which I8 re-verifies at seal."),

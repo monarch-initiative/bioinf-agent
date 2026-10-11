@@ -1038,6 +1038,7 @@ def freeze_from_image(
     platform: str = "linux/amd64",
     gated: bool = False,
     licenses: OptStrList = None,
+    evidence_timeout_s: int = 300,
 ) -> dict:
     """Freeze an env from an EXISTING image — the authors' OWN published image — instead
     of reconstructing it from conda/pip. This is the executor for the authors-recipe-first
@@ -1061,8 +1062,13 @@ def freeze_from_image(
     build_env_from_authors_recipe(patches=…), which records the build and the fix together.
 
     `tools`: [{name, evidence}] — evidence is a command that exercises the tool in-image
-    and exits 0. Writes the four Layer-1 deliverables (ENV.html, attestation.json,
-    recipe.yaml, recipe.md) rendered PURELY from the verified record. Docker required."""
+    and exits 0; `evidence_timeout_s` (default 300, at most 1800) is how long it may take,
+    for a tool that is slow to start, and is recorded with each verification. Evidence
+    that fails because the command is not there comes back with `where`: the image's PATH
+    and every executable or console script carrying the tool's name — name that command
+    next, or `inspect_image` to look further. Writes the four Layer-1 deliverables
+    (ENV.html, attestation.json, recipe.yaml, recipe.md) rendered PURELY from the verified
+    record. Docker required."""
     _stop = _image_build_preflight()
     if _stop:
         return _stop
@@ -1071,8 +1077,34 @@ def freeze_from_image(
         image=image, tools=[dict(t) for t in tools], name=name, version=version,
         platform=platform,
         gated=gated, licenses=list(licenses or []),
+        evidence_timeout_s=evidence_timeout_s,
         env_cache=_ms._env_cache,
         env_dir=_workspace.env_dir(name)))
+
+
+@mcp.tool()
+def inspect_image(
+    image: str,
+    command: str,
+    platform: str = "linux/amd64",
+    timeout_s: int = 120,
+) -> dict:
+    """Look inside a container image before writing evidence for it: run ONE read-only
+    command in `image` (the authors' published image, or one a build here produced) and
+    return what it printed. Where the binary lives, which console scripts the package
+    installed, what `--help` prints and how long it takes — read off the image rather than
+    guessed. Query-only: registers nothing, records nothing, and is not a step of any
+    workflow; the image is pulled if it is not local (the pull freeze_from_image would
+    make anyway). `timeout_s` at most 600.
+
+    Returns proven `inspect_image.ran` with `rc` (the command's own exit code; non-zero is
+    an answer, not a failure) and `out`; broke `inspect_image.image_unavailable` when the
+    image cannot be pulled. Docker required."""
+    _stop = _image_build_preflight()
+    if _stop:
+        return _stop
+    from agent.skills import freeze_from_image as _ffi
+    return _ffi.inspect_image(image=image, command=command, platform=platform, timeout_s=timeout_s)
 
 
 @mcp.tool()
@@ -1081,7 +1113,7 @@ def build_env_from_authors_recipe(
     repo: str,
     tools: list,
     name: str,
-    recipe: str = "Dockerfile",
+    recipe: str = "",
     ref: str = "",
     version: str = "",
     platform: str = "linux/amd64",
@@ -1089,6 +1121,7 @@ def build_env_from_authors_recipe(
     patches: list = [],
     gated: bool = False,
     licenses: OptStrList = None,
+    evidence_timeout_s: int = 300,
 ) -> dict:
     """Build an env image from the tool's OWN container recipe (their Dockerfile), then
     freeze it. The declarative executor for resolve_tool's `authors_recipe` tier — the
@@ -1099,8 +1132,14 @@ def build_env_from_authors_recipe(
 
     Clones `repo` (a GitHub 'owner/repo', a full git URL, or a `file://` local mirror) at
     `ref` (PIN a tag/commit — a bare default branch drifts), `docker build`s its `recipe`
-    (default 'Dockerfile') for `platform`, then hands the built image to freeze_from_image
-    (honesty contract + deliverables). `tools`: [{name, evidence}] — evidence must RUN each
+    for `platform`, then hands the built image to freeze_from_image (honesty contract +
+    deliverables). `recipe` is repo-relative (`docker/Dockerfile`); left empty it is the
+    checkout's one recipe — a root Dockerfile/Containerfile, else the single one below the
+    root — and a checkout with several refuses (`authors_recipe.recipe_ambiguous`) listing
+    them, as does a `recipe` that is not there (`authors_recipe.recipe_not_found`), so no
+    build runs against a file the repository lacks. resolve_tool's `authors_recipe`
+    assessment names the path it found. A build that dies of memory comes back with
+    `cause: out_of_memory` and the Docker VM's size. `tools`: [{name, evidence}] — evidence must RUN each
     tool in-image. The recipe records the pinned source — repo, resolved commit, Dockerfile
     path, build args, and every patch — so the build is reproducible.
 
@@ -1114,8 +1153,10 @@ def build_env_from_authors_recipe(
     attestation and the ENV report, so the record never claims an unmodified Dockerfile
     and a rebuild knows what to re-apply. Patch only what the build needs and say why in
     `reason`; building a patched copy by hand and freezing the result would instead adopt
-    an image whose build nothing observed. Docker + git (+ network for a remote repo)
-    required."""
+    an image whose build nothing observed. `evidence_timeout_s` (default 300, at most 1800)
+    is how long each evidence command may take; evidence that finds no such command comes
+    back with `where` the tool's name occurs in the built image. Docker + git (+ network
+    for a remote repo) required."""
     # Guard BEFORE the git clone (which happens inside build_from_authors_recipe),
     # so a docker-down machine is told "docker unavailable", never "clone failed".
     _stop = _image_build_preflight()
@@ -1127,5 +1168,6 @@ def build_env_from_authors_recipe(
         version=version, platform=platform, build_args=dict(build_args or {}),
         patches=list(patches or []),
         gated=gated, licenses=list(licenses or []),
+        evidence_timeout_s=evidence_timeout_s,
         env_cache=_ms._env_cache,
         env_dir=_workspace.env_dir(name)))
