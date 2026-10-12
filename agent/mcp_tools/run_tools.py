@@ -109,14 +109,14 @@ def run_pipeline_step(
                   response as `output_types_unmatched` so a typo doesn't go
                   silent.
 
-    watch_dir: the directory whose new and modified files are the step's outputs.
-                  Default: a fresh directory for this step under the workspace's
-                  scratch zone, which is also the command's working directory — a
-                  step never writes beside its inputs, and a relative output path
-                  lands where it is detected. Pass watch_dir when the command writes
-                  somewhere else (`-o <path>`, `> <path>`); a missing one is created,
-                  so no shell is needed to prepare an output directory. The response
-                  names the directory used as `watch_dir`.
+    watch_dir: the directory whose new and modified files are the step's outputs,
+                  and the command's working directory. Default: a fresh directory
+                  for this step under the workspace's scratch zone — a step never
+                  writes beside its inputs, and a relative output path lands where
+                  it is detected. Pass watch_dir when the command writes somewhere
+                  else (`-o <path>`, `> <path>`); a missing one is created, so no
+                  shell is needed to prepare an output directory. The response names
+                  the directory used as `watch_dir`.
     Long stdout/stderr is cut to head+tail in the response; the full text is on
     disk at `log_path`. `untraced_inputs`, when present, lists the inputs that trace to
     nothing the draft knows (no prior step's output, no declared external source) with
@@ -129,14 +129,16 @@ def run_pipeline_step(
                        error="pipeline_id is required for run_pipeline_step")
     if (_bad := _inputs_refusal(inputs, "run_pipeline_step.invalid_inputs")):
         return _bad
-    step_dir = ""
+    created = False
     if not watch_dir:
-        step_dir = watch_dir = _fresh_step_dir()
-    watch_dir_created = bool(step_dir) or _ensure_watch_dir(watch_dir)
+        watch_dir, created = _fresh_step_dir(), True
+    watch_dir_created = created or _ensure_watch_dir(watch_dir)
 
+    # The command runs IN its watched directory, named or fresh: a relative output
+    # lands where it is detected, never beside the inputs or in the checkout.
     result = _ms._env_mgr.run_in_env(
-        env_name, command, timeout=timeout_seconds, inputs=inputs, watch_dir=watch_dir,
-        **({"working_dir": step_dir} if step_dir else {}),
+        env_name, command, working_dir=watch_dir, timeout=timeout_seconds, inputs=inputs,
+        watch_dir=watch_dir,
     )
     # L11 (universal lineage): hash each detected_output at production time
     # so seal can verify the same path holds the same bytes through to its
@@ -325,8 +327,11 @@ def run_step_in_container(
     Resolves the image from the EnvCache by `freeze_request_key` (call freeze()
     first), pulling an adopted-by-digest image local if needed. The data dir is
     bind-mounted at its OWN host path inside the container, so the same absolute
-    paths in `command`/`inputs` work unchanged and outputs land back on the host
-    for validation. Resource usage (I7) is captured IN the container (GNU time →
+    paths in `command`/`inputs` work unchanged. The command runs in its watched
+    directory — a fresh one under the scratch zone by default, or the `watch_dir`
+    you name, created if missing, and returned as `watch_dir` — so a relative
+    output lands where it is detected and nothing is written beside the inputs
+    under data_dir. Resource usage (I7) is captured IN the container (GNU time →
     exact peak RSS, falling back to host docker-stats sampling). The step is
     stamped ran_in_container + container_image[_digest] so seal can assert
     validated==shipped.
@@ -335,7 +340,7 @@ def run_step_in_container(
     Every declared input's directory and the watch_dir are mounted at their own host
     paths; extra_mounts: ["host:container", …] is for anything else. `platform` defaults
     to the frozen record's own (an arm64 image runs as arm64); pass one only to override.
-    A missing watch_dir is created. Long stdout/stderr is cut to head+tail in the
+    Long stdout/stderr is cut to head+tail in the
     response; the full text is on disk at `log_path`. `untraced_inputs`, when present,
     lists the inputs that trace to nothing the draft knows, with the remedy for each —
     the seal refuses those as I8, so declare them now."""
@@ -399,8 +404,14 @@ def run_step_in_container(
             h, c = m.split(":", 1)
             mounts.append((h, c))
 
-    watch_dir_created = _ensure_watch_dir(watch_dir)
-    wdir = (Path(watch_dir).resolve() if watch_dir else ddir)
+    # The step's working directory IS its watched directory: a fresh one under the
+    # scratch zone unless the caller named one. A relative output lands where it is
+    # detected, and nothing is written beside the inputs under data_dir.
+    created = False
+    if not watch_dir:
+        watch_dir, created = _fresh_step_dir(), True
+    watch_dir_created = created or _ensure_watch_dir(watch_dir)
+    wdir = Path(watch_dir).resolve()
     # A declared input and the watch_dir are facts of the call, so they are mounted at
     # their own host paths without being asked: a script the caller WROTE under the
     # workspace is as visible in the container as the test data under data_dir, and
@@ -431,7 +442,7 @@ def run_step_in_container(
     observed_digest = _ms._docker.image_digest(image)
     nominal_digest = rec.get("image_digest") or ""
     before = _snap()
-    res = _ms._docker.run_in_container(image, command, mounts=mounts, workdir=str(ddir),
+    res = _ms._docker.run_in_container(image, command, mounts=mounts, workdir=str(wdir),
                                        platform=platform, timeout=timeout_seconds)
     # I7 numbers measured under emulation are emulator artefacts, not real — stamp
     # whether they're authoritative (native locus) so the spec/guide never presents
@@ -492,8 +503,9 @@ def run_step_in_container(
         "validations":       validations,
         "validation_count":  len(validations),
     }
+    payload["watch_dir"] = str(wdir)
     if watch_dir_created:
-        payload["watch_dir_created"] = watch_dir
+        payload["watch_dir_created"] = str(wdir)
     payload.update(_lineage_disclosure(pipeline_id, idx))
     if res.get("returncode") != 0 and not payload.get("error"):
         payload["error"] = (last_informative_line(res.get("stderr")) or last_informative_line(res.get("stdout"))
@@ -565,10 +577,11 @@ def run_in_env(
               sublist under that input in the HTML report and are kept in the
               spec so the lineage is programmatic (not memory-bound).
     watch_dir: directory to snapshot before/after execution. New and modified files
-               are returned as detected_outputs. Defaults to working_dir; when neither
-               is given the command gets a fresh directory under the scratch zone as
-               both, so nothing is written beside its inputs. The directory used is
-               returned as `watch_dir`.
+               are returned as detected_outputs. Defaults to working_dir, and a
+               watch_dir named without a working_dir is the working directory too;
+               when neither is given the command gets a fresh directory under the
+               scratch zone as both, so nothing is written beside its inputs. The
+               directory used is returned as `watch_dir`.
 
     If pipeline_id is supplied, a PipelineStep entry is appended to
     draft.pipeline_steps with the command, returncode, runtime, inputs, and
@@ -585,7 +598,7 @@ def run_in_env(
     step_dir = "" if (watch_dir or working_dir) else _fresh_step_dir()
     result = _ms._env_mgr.run_in_env(
         env_name, command,
-        working_dir=working_dir or step_dir or None,
+        working_dir=working_dir or watch_dir or step_dir,
         timeout=timeout_seconds,
         inputs=inputs,
         watch_dir=watch_dir or working_dir or step_dir,
