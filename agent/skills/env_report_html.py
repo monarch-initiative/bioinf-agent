@@ -867,6 +867,9 @@ def render_env_report_html(record: dict) -> str:
     else:
         _contract_error = ""
 
+    # Evidence depth, read ONCE for the pill, the tools line and the per-tool badges.
+    _shallow_tools = _shallow_evidence_tools(r)
+
     P: list[str] = []
     P.append(_open_page(f"Environment report — {name}"))
 
@@ -884,7 +887,15 @@ def render_env_report_html(record: dict) -> str:
     elif is_adopt:
         pill = '<span class="pill adopt">Adopted by digest</span>'
     elif total and passed == total:
-        pill = '<span class="pill ok">✓ Validated in shipped image</span>'
+        # THE HEADLINE CLAIMS WHAT THE EVIDENCE SHOWED. A presence / version / help /
+        # import check proves the tool is IN the image and nothing about whether it
+        # runs; only a check that ran the tool earns "validated". Both are green —
+        # the contract passed either way, and freeze gates on neither depth — but the
+        # strongest sentence on the page must not outrun the Tools table under it.
+        if len(_shallow_tools) >= passed:
+            pill = '<span class="pill ok">✓ Present in shipped image · not exercised</span>'
+        else:
+            pill = '<span class="pill ok">✓ Validated in shipped image</span>'
     elif total:
         pill = '<span class="pill bad">✗ Validation incomplete</span>'
     else:
@@ -912,7 +923,6 @@ def render_env_report_html(record: dict) -> str:
     # says what the check confirmed, not what the tool is: `evidence_depth` is a
     # structural reading of command TEXT and under-reports a command that loads a
     # library and then uses it. Under-claiming costs a reader nothing.
-    _shallow_tools = _shallow_evidence_tools(r)
     tools_line = _tools_line(len(requested), passed, total, is_adopt, len(_shallow_tools))
     also = []
     if ride:
@@ -1263,7 +1273,10 @@ def render_env_report_html(record: dict) -> str:
                      '<span class="note"> — which image was built from which inputs, in the '
                      'in-toto/SLSA format third-party signing tools verify. Unsigned as written.</span>'))
     if r.get("tarball"):
-        tb = r["tarball"]
+        # The archive's directory comes from the environments zone at render time; the
+        # record carries the archive's name, not a path that a moved workspace outlives.
+        from agent.skills.freeze import tarball_path
+        tb = str(tarball_path(r))
         art_rows.append(("Image archive (.tar)",
                          f'<a href="file://{_e(tb)}"><code>{_e(tb)}</code></a>'
                          '<span class="note"> — the exported image the HPC image is built from</span>'))

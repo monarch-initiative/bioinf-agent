@@ -1385,14 +1385,28 @@ def test_data_paths(test_data: Any) -> dict[str, str]:
     invariant, and loosening is the direction that fails silently."""
     if not isinstance(test_data, Mapping):
         return {}
+
+    def _path_entry(key: Any, val: Any) -> bool:
+        if not isinstance(key, str) or not isinstance(val, str) or not val:
+            return False
+        if val.startswith(("http://", "https://", "ftp://", "s3://", "{", "$", "<")):
+            return False
+        return key in TEST_DATA_PATH_KEYS or key.endswith(_TEST_DATA_PATH_SUFFIXES)
+
     out: dict[str, str] = {}
     for key, val in test_data.items():
-        if not isinstance(key, str) or not isinstance(val, str) or not val:
-            continue
-        if val.startswith(("http://", "https://", "ftp://", "s3://", "{", "$", "<")):
-            continue
-        if key in TEST_DATA_PATH_KEYS or key.endswith(_TEST_DATA_PATH_SUFFIXES):
+        if _path_entry(key, val):
             out[key] = val
+    # Every further sample's paths, keyed `samples.<i>.<field>`. The first sample is
+    # the flat block above (TestDataRef keeps them mirrored), so it is not repeated.
+    samples = test_data.get("samples")
+    if isinstance(samples, list):
+        for i, smp in enumerate(samples):
+            if i == 0 or not isinstance(smp, Mapping):
+                continue
+            for key, val in smp.items():
+                if _path_entry(key, val):
+                    out[f"samples.{i}.{key}"] = val
     return out
 
 
@@ -1409,8 +1423,37 @@ def test_data_anchors(test_data: Any) -> dict[str, dict]:
     return {str(k): dict(v) for k, v in raw.items() if isinstance(v, Mapping)}
 
 
+class TestSample(BaseModel):
+    """One selected sample of a test dataset. `TestDataRef.samples` holds every
+    sample `select_test_data` recorded for the workflow; the block's flat per-sample
+    fields mirror the first one, so a reader of the single-sample shape reads the
+    first sample and a reader of `samples` reads them all."""
+    model_config = ConfigDict(extra="forbid")
+
+    sample:          Optional[str] = None
+    accession:       Optional[str] = None
+    subset:          Optional[str] = None
+    num_reads:       Optional[int] = None
+    r1:              Optional[str] = None
+    r2:              Optional[str] = None
+    file_format:     Optional[str] = None
+    chemistry:       Optional[str] = None
+    suggested_model: Optional[str] = None
+
+
+#: The per-sample fields of a test_data block — the ones `TestSample` carries and the
+#: flat block mirrors from its first sample.
+TEST_SAMPLE_FIELDS = tuple(TestSample.model_fields)
+
+
 class TestDataRef(BaseModel):
-    """Reference to the test dataset used during pipeline validation."""
+    """Reference to the test dataset used during pipeline validation.
+
+    One block per workflow, any number of samples: `samples` lists each selected
+    sample and the flat per-sample fields (`sample`, `accession`, `r1`, …) mirror
+    `samples[0]`, enforced on construction. `test_data_paths` walks the flat fields
+    and every further sample (`samples.<i>.r1`), so the seal traces and re-anchors
+    all of them."""
     model_config = ConfigDict(extra="allow")
 
     genome_build:       str
@@ -1425,8 +1468,13 @@ class TestDataRef(BaseModel):
     num_reads:          Optional[int] = None
     r1:                 Optional[str] = None
     r2:                 Optional[str] = None
+    file_format:        Optional[str] = None
+    chemistry:          Optional[str] = None
+    suggested_model:    Optional[str] = None
     reference_fasta:    Optional[str] = None
+    fai:                Optional[str] = None
     core_data_dir:      Optional[str] = None
+    samples:            list[TestSample] = []
     upstream_pipelines: list[str] = []
     #: {field_key: ContentAnchor} for every path in `test_data_paths(self)`, written by
     #: the runtime (`select_test_data`) at SELECTION time and re-verified at seal. This
@@ -1438,6 +1486,35 @@ class TestDataRef(BaseModel):
     #: sealed green, because the only thing ever checked was whether the path appeared in
     #: I8's universe of strings.
     content_anchors:    dict[str, ContentAnchor] = {}
+
+    @model_validator(mode="after")
+    def _flat_fields_mirror_the_first_sample(self):
+        """The flat per-sample fields ARE `samples[0]`: a missing one is filled from
+        it, a contradicting one is refused, so the block never holds two answers to
+        "which reads"."""
+        if not self.samples:
+            return self
+        first = self.samples[0]
+        for f in TEST_SAMPLE_FIELDS:
+            mine, theirs = getattr(self, f), getattr(first, f)
+            if mine is None:
+                setattr(self, f, theirs)
+            elif theirs is not None and mine != theirs:
+                raise ValueError(
+                    f"test_data.{f}={mine!r} contradicts samples[0].{f}={theirs!r}; the "
+                    f"flat fields mirror the first sample")
+        return self
+
+
+def test_data_block(ref: "TestDataRef") -> dict:
+    """The dict form of a TestDataRef as the draft stores it: unset fields and empty
+    lists absent, every anchor complete (an anchor's `sha256: None` is a statement,
+    not an absence, so anchors are never thinned)."""
+    out = {k: v for k, v in ref.model_dump().items() if v not in (None, [], {})}
+    if "samples" in out:
+        out["samples"] = [{k: v for k, v in smp.items() if v is not None}
+                          for smp in out["samples"]]
+    return out
 
 
 class InstallStep(BaseModel):

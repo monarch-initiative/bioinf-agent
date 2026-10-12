@@ -823,6 +823,24 @@ def _render_env_panel(spec: dict, env_record: Optional[dict]) -> str:
 # External inputs — reproducibility sources the run consumed.
 # ---------------------------------------------------------------------------
 
+def _test_data_slot_label(td: dict, key: str) -> str:
+    """The Slot cell of the Test data table. A multi-sample block names the sample a
+    reads path belongs to: `samples.2.r1` reads as `r1 · sample <accession>`, and the
+    flat `r1`/`r2` of such a block as the first sample's."""
+    samples = [smp for smp in (td.get("samples") or []) if isinstance(smp, dict)]
+    if not samples:
+        return key
+    parts = key.split(".")
+    if len(parts) == 3 and parts[0] == "samples" and parts[1].isdigit():
+        i, slot = int(parts[1]), parts[2]
+    elif key in _core_data.TEST_SAMPLE_FIELDS:
+        i, slot = 0, key
+    else:
+        return key
+    who = (samples[i].get("accession") or samples[i].get("sample")) if i < len(samples) else None
+    return f"{slot} · sample {who}" if who else f"{slot} · sample {i + 1}"
+
+
 def _render_inputs(spec: dict) -> str:
     rdbs = [d for d in (spec.get("reference_databases") or []) if isinstance(d, dict)]
     arts = [a for a in (spec.get("authored_artifacts") or []) if isinstance(a, dict)]
@@ -865,8 +883,8 @@ def _render_inputs(spec: dict) -> str:
                 pin = (f'<code>{_e(sha[:19])}…</code>' if sha
                        else ("directory (no single hash)" if kind == "directory"
                              else "<em>not anchored</em>"))
-                rows.append(f'<tr><td>{_e(k)}</td><td><code>{_e(raw)}</code></td>'
-                            f'<td>{pin}</td></tr>')
+                rows.append(f'<tr><td>{_e(_test_data_slot_label(td, k))}</td>'
+                            f'<td><code>{_e(raw)}</code></td><td>{pin}</td></tr>')
             P.append('<div class="tbl-wrap"><table>'
                      '<tr><th>Slot</th><th>Path</th><th>Checksum</th></tr>'
                      + "".join(rows) + "</table></div>")

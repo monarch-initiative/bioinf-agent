@@ -510,8 +510,8 @@ class TestConfig:
                 "        docker.enabled = true\n"
                 "        process {\n"
                 "            executor = 'local'\n"
-                f"            // the frozen image {DIGEST}, as docker names it here\n"
-                "            container = 'bioinf_rnaseq_cli:latest'\n"
+                "            // the frozen image by its immutable id; docker knows it here as bioinf_rnaseq_cli:latest\n"
+                f"            container = '{DIGEST}'\n"
                 "        }\n"
                 "    }\n"
                 "    slurm {\n"
@@ -535,6 +535,25 @@ class TestConfig:
                 "            queue = 'cpu'\n"
                 "            clusterOptions = '--account=acct'\n") in cfg
 
+    def test_the_local_profile_never_runs_a_mutable_tag(self):
+        """`:latest` moves: a rebuild re-tags it and a cleanup of the host's tags loses
+        it, while the sealed record names the exact image that ran. Locally the
+        container is that image's id; a ref already pinned by digest is kept as it
+        is; the tag survives only as a comment for the reader."""
+        for rec in (_record(), _two_images(_record())):
+            local = _profile(render_nextflow(rec)["nextflow.config"], "local")
+            runs = re.findall(r"container = '([^']*)'", local)
+            assert runs and all(r.startswith("sha256:") for r in runs), runs
+            assert not any(":latest'" in ln for ln in local.splitlines() if "container =" in ln
+                           and "//" not in ln), local
+            assert "bioinf_rnaseq_cli:latest" in local        # the tag, in the comment
+        pinned = _record()
+        pinned.stages[0].image = f"quay.io/biocontainers/hisat2@{DIGEST}"
+        for st in pinned.stages[1:]:
+            st.image = f"quay.io/biocontainers/hisat2@{DIGEST}"
+        local = _profile(render_nextflow(pinned)["nextflow.config"], "local")
+        assert f"container = 'quay.io/biocontainers/hisat2@{DIGEST}'" in local
+
     def test_without_a_sif_the_slurm_container_is_empty_and_says_set_me(self):
         """An empty container is stated, with the digest the .sif must be built from and
         the two ways to fill it; nothing else in the directory carries a sif slot."""
@@ -552,9 +571,9 @@ class TestConfig:
                 + _sif_set(DIGEST, SIF, 12, " on cluster") +
                 "            cache = 'lenient'\n") in _profile(cfg, "slurm")
         assert "SET ME" not in cfg and "container = ''" not in cfg
-        # the local profile still runs the docker tag; the .sif reaches no other file
+        # the local profile still runs the image by its id; the .sif reaches no other file
         local = _profile(cfg, "local")
-        assert "container = 'bioinf_rnaseq_cli:latest'" in local and SIF not in local
+        assert f"container = '{DIGEST}'" in local and SIF not in local
         assert SIF not in files["params.yaml"] and SIF not in files["main.nf"]
 
     def test_the_sif_comment_stops_at_where_it_was_put_when_no_compute_env_is_named(self):
@@ -655,16 +674,16 @@ class TestConfig:
 
     def test_several_images_name_a_container_per_stage_in_both_profiles(self):
         """Two frozen envs in one chain: neither profile has a profile-wide container to
-        fall back on — every stage names its own, the docker tag locally and the .sif
-        slot (empty, with its digest) on the cluster."""
+        fall back on — every stage names its own, the image id locally (its tag in the
+        comment) and the .sif slot (empty, with its digest) on the cluster."""
         files = render_nextflow(_two_images(_record()))
         cfg = files["nextflow.config"]
         local, slurm = _profile(cfg, "local"), _profile(cfg, "slurm")
         assert ("        process {\n"
                 "            executor = 'local'\n"
-                "            withName: 'HISAT2' { container = 'bioinf_rnaseq_cli:latest' }\n"
-                "            withName: 'SAMTOOLS' { container = 'bioinf_rnaseq_cli:latest' }\n"
-                "            withName: 'HTSEQ_COUNT' { container = 'bioinf_counts:latest' }\n"
+                f"            withName: 'HISAT2' {{ container = '{DIGEST}' }}   // bioinf_rnaseq_cli:latest\n"
+                f"            withName: 'SAMTOOLS' {{ container = '{DIGEST}' }}   // bioinf_rnaseq_cli:latest\n"
+                f"            withName: 'HTSEQ_COUNT' {{ container = '{OTHER}' }}   // bioinf_counts:latest\n"
                 "        }\n") in local
         assert "\n            container =" not in local
         assert ("            executor = 'slurm'\n"
@@ -1052,7 +1071,7 @@ class TestRealNextflow:
         local = _nextflow(d, "config", "-flat", "-profile", "local")
         assert local.returncode == 0, local.stdout + local.stderr
         assert "process.executor = 'local'\n" in local.stdout
-        assert "process.container = 'bioinf_rnaseq_cli:latest'\n" in local.stdout
+        assert f"process.container = '{DIGEST}'\n" in local.stdout
         assert "docker.enabled = true\n" in local.stdout
         slurm = _nextflow(d, "config", "-flat", "-profile", "slurm")
         assert slurm.returncode == 0, slurm.stdout + slurm.stderr

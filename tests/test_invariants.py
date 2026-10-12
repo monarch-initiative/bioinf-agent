@@ -4709,11 +4709,13 @@ def test_mcp_freeze_repoint_drives_container_native_builder(monkeypatch, tmp_pat
                                     "command": "set -eux; curl ..."}]}
     monkeypatch.setattr(m._env_freeze, "build_env_image", fake_build)
 
-    res = m.freeze("bioinf_x", ["samtools=1.21", "seqkit"], platform="linux-64", pipeline_id="p1")
+    res = m.freeze("bioinf_x", ["samtools=1.21", "seqkit"], platform="linux-64", pipeline_id="p1",
+                   evidence={"seqkit": "seqkit stats /x.fq"})
 
     assert res["success"] and res["mode"] == "build" and res["build_method"] == "container-native"
     assert res["image"] == "samtools-seqkit:latest" and res["image_digest"] == "sha256:deadbeef"
     # the re-point derived the right args for the container-native builder
+    assert captured["kw"]["evidence"] == {"seqkit": "seqkit stats /x.fq"}   # one evidence contract, adopt and build
     assert captured["kw"]["conda_deps"] == ["samtools=1.21"]      # requested_conda_specs (no bootstrap python)
     assert captured["kw"]["platform"] == "linux/amd64"            # converted from the conda subdir linux-64
     assert set(captured["kw"]["primary_tools"]) == {"samtools", "seqkit"}
@@ -7320,7 +7322,8 @@ def test_run_pipeline_step_output_types_accepts_full_path_keys(monkeypatch, tmp_
     out_path = str(tmp_path / "step.custom_ext")
     _Path(out_path).write_text("data")
 
-    def fake_run(env_name, command, *, timeout=0, inputs=None, watch_dir=None):
+    def fake_run(env_name, command, *, timeout=0, inputs=None, watch_dir=None,
+                 working_dir=None):
         return {
             "returncode": 0, "stdout": "", "stderr": "", "success": True,
             "command": command, "runtime_seconds": 0.1,
@@ -7360,7 +7363,8 @@ def test_run_pipeline_step_output_types_reports_unmatched_keys(monkeypatch, tmp_
     out_path = str(tmp_path / "produced.bam")
     _Path(out_path).write_text("x")
 
-    def fake_run(env_name, command, *, timeout=0, inputs=None, watch_dir=None):
+    def fake_run(env_name, command, *, timeout=0, inputs=None, watch_dir=None,
+                 working_dir=None):
         return {"returncode": 0, "stdout": "", "stderr": "", "success": True,
                 "command": command, "runtime_seconds": 0.1,
                 "resource_usage": {"wall_seconds": 0.1, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0},

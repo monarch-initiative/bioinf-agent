@@ -137,8 +137,10 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
             request_key=freeze_request_key, skipped=True,
             staged_at=datetime.now(timezone.utc).isoformat())
 
-    # 2. Resolve the LOCAL docker source (tarball or image tag).
-    tarball = record.get("tarball")
+    # 2. Resolve the LOCAL docker source (tarball or image tag). The archive's
+    #    directory is the env's directory in the environments zone, read at call time.
+    from agent.skills.freeze import tarball_path
+    tarball = tarball_path(record)
     image_tag = None
     if mode == "adopt":
         image_tag = record.get("image")                 # public biocontainer ref

@@ -268,8 +268,7 @@ class TestNextflow:
 
     def test_the_config_names_each_stages_image_and_the_guard_names_every_stage(self):
         files = render_nextflow(_composed())
-        for st, img in (("HISAT2", "bioinf_rnaseq_cli:latest"), ("MERGE_COUNTS", "bioinf_rnaseq_de:latest"),
-                        ("DESEQ2", "bioinf_rnaseq_de:latest")):
+        for st, img in (("HISAT2", DIGEST), ("MERGE_COUNTS", DIGEST_DE), ("DESEQ2", DIGEST_DE)):
             assert f"withName: '{st}' {{ container = '{img}' }}" in files["nextflow.config"]
         assert "['HISAT2', 'SAMTOOLS', 'HTSEQ_COUNT', 'MERGE_COUNTS', 'DESEQ2'].every" in files["main.nf"]
 

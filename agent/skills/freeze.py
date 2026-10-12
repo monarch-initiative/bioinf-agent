@@ -86,7 +86,13 @@ def request_key(tools: list[tuple[str, str]], platform: str, accel: str = "none"
     Default (no policy supplied) keeps the bare 3-part form (back-compat with
     every existing caller that never used policy gates).
     """
-    spec = ",".join(f"{n}={v}" if v else n for n, v in sorted(tools))
+    def _tok(n: str, v: str) -> str:
+        if not v:
+            return n
+        # a constraint (`<7`, `>=1.2`, `!=3`) is a different ask from a pin and reads
+        # as the spec it came from; a pin reads `name=version`
+        return f"{n}{v}" if v[0] in "<>!~" else f"{n}={v}"
+    spec = ",".join(_tok(n, v) for n, v in sorted(tools))
     canon_p = canon_platform(platform)
     parts = [spec, canon_p, accel or "none"]
     if gated:
@@ -328,7 +334,10 @@ def non_conda_installs(spec: dict) -> list[dict]:
 
 def requested_conda_specs(spec: dict) -> list[str]:
     """The conda specs the agent EXPLICITLY asked for — install_conda_packages
-    steps (tool==conda, subcommand==install) as 'name=version' / 'name'. EXCLUDES
+    steps (tool==conda, subcommand==install) as the spec that was asked:
+    `name=version`, `name<version` (a recorded `version_constraint` operator is kept,
+    never rewritten to a pin — `notebook<7` must not become `notebook=7`), or a bare
+    `name`. EXCLUDES
     the bootstrap python from create_conda_env (a 'create' step: scaffolding, not a
     requested tool). This is the TOP-LEVEL
     request the container-native build re-solves from via the engine — not the full
@@ -369,8 +378,23 @@ def requested_conda_specs(spec: dict) -> list[str]:
                 # installed_packages.
                 if ip["name"] in out:
                     del out[ip["name"]]
-                out[ip["name"]] = f"{ip['name']}={v}" if v else ip["name"]
+                op = ip.get("version_constraint") or "="
+                out[ip["name"]] = f"{ip['name']}{op}{v}" if v else ip["name"]
     return list(out.values())
+
+
+def tarball_path(record: dict) -> Optional[Path]:
+    """Where a record's docker-save archive lives NOW: the env's directory in the
+    environments zone, under the archive's recorded file name. The record keeps the
+    NAME of the archive it produced and the zone supplies the directory at read time,
+    so a record outlives a move of the workspace. None when the record names no
+    archive (an adopted image)."""
+    tb = (record or {}).get("tarball")
+    if not tb:
+        return None
+    from agent.skills import workspace
+    name = (record or {}).get("name") or Path(str(tb)).stem
+    return workspace.environments_dir() / str(name) / Path(str(tb)).name
 
 
 def parse_tools(specs: list[str]) -> list[tuple[str, Optional[str]]]:

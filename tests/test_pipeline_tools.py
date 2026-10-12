@@ -20,7 +20,7 @@ from agent.skills import compute_access
 from agent.skills import workspace
 from agent.skills.pipeline_record import load_pipeline_record
 from agent.skills.spec_writer import write_workflow_spec
-from pipeline_fixtures import sealed_rnaseq_spec
+from pipeline_fixtures import DIGEST, sealed_rnaseq_spec
 
 ENV = {"name": "cluster", "type": "ssh", "host": "h", "user": "u",
        "apptainer_module": "apptainer/1.4.1", "nextflow_module": "nextflow/25.04.7",
@@ -113,7 +113,7 @@ class TestProven:
         assert "#SBATCH --account=acct_demo" in launcher
         assert "module load apptainer/1.4.1 nextflow/25.04.7" in launcher
         config = (d / "nextflow.config").read_text()
-        assert f"container = '{sif}'" in config and "container = 'bioinf_rnaseq_cli:latest'" in config
+        assert f"container = '{sif}'" in config and f"container = '{DIGEST}'" in config
         assert "sif" not in (d / "params.yaml").read_text()
         assert sif in (d / "pipeline.html").read_text()
 

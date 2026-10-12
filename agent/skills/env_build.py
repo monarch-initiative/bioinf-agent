@@ -280,9 +280,9 @@ class EnvBuild:
         hash) so a policy-distinct artifact doesn't share a slot with one that
         was built under different policy — the dorado-stress D5 finding."""
         tools: list[tuple[str, str]] = []
+        from agent.skills.env_report_helpers import split_spec
         for s in self.conda_specs + self.pip_specs:
-            name, _, ver = s.replace("==", "=").partition("=")
-            tools.append((name.strip(), ver.strip()))
+            tools.append(split_spec(s))
         for spec in self.tools:
             tools.append((spec.get("tool", "") or spec.get("purpose", ""), ""))
         accel = (self.accelerator or {}).get("type", "none") if self.accelerator else "none"
