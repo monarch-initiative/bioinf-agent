@@ -24,6 +24,7 @@ import json
 
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp
+from agent.skills.outcomes import refused
 
 
 @mcp.tool()
@@ -65,19 +66,22 @@ def plan_request(plan_json: str) -> dict:
     "pending_investigation": [{node_id, unknowns}], "goal_reached": bool, "plan": {the
     validated plan}}`. A malformed plan (bad JSON, both or neither of intent/seam, a consume
     with neither leg, a DECLINE or CLARIFY rail node, a faked `produces`) returns
-    `{"ok": false, "error": …}`.
+    a `refused` terminal, `{"ok": false, "error": …}`.
     """
     try:
         raw = json.loads(plan_json)
     except json.JSONDecodeError as e:
-        return {"ok": False, "error": f"plan_json is not valid JSON: {e}"}
+        return refused("plan.invalid_json", ok=False,
+                       error=f"plan_json is not valid JSON: {e}")
     if not isinstance(raw, dict):
-        return {"ok": False, "error": "plan_json must be a JSON object (the ExecutionPlan)"}
+        return refused("plan.not_an_object", ok=False,
+                       error="plan_json must be a JSON object (the ExecutionPlan)")
 
     try:
         plan = _ms._plan.parse_plan(raw)
     except Exception as e:  # pydantic.ValidationError or a post-init shape check
-        return {"ok": False, "error": f"ExecutionPlan validation failed: {e}"}
+        return refused("plan.validation_failed", ok=False,
+                       error=f"ExecutionPlan validation failed: {e}")
 
     result = _ms._plan.gate_plan(plan)
     return {

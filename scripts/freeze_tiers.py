@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 freeze_tiers — the canonical DECLARATION of the freeze tiers: one row per tier,
-naming the tier, a probe tool, and a build recipe. Data plus one lint. It is the
-sibling of seaworthy_scope.py for the outcomes dashboard.
+naming the tier, a probe tool, and a build recipe. Data plus one lint.
 
 THIS MODULE MAKES NO COVERAGE CLAIM, and that is deliberate. A meter over these
 rows would hand-build its own `{"install_steps": [{"installed_packages": [...]}]}`

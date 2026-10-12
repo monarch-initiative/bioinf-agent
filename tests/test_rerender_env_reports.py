@@ -141,9 +141,8 @@ def test_an_empty_corpus_is_not_an_error(tmp_path):
 
 @pytest.mark.parametrize("flag", ["--check", "-h"])
 def test_the_flags_do_not_write(tmp_path, flag):
-    """`rekey_terminal_coverage.py --help` PERFORMS ITS WRITE because an unrecognised flag
-    falls through to the default action. That wart is not repeated here: argparse owns the
-    flags, so `-h` prints usage and exits without touching a byte."""
+    """argparse owns the flags, so `--check` and `-h` exit without touching a byte: an
+    unrecognised flag must never fall through to the default (writing) action."""
     d = _corpus(tmp_path, [env_record(name="alpha")])
     before = (d / "alpha" / "alpha.ENV.html").read_text()
     _run(d, flag)

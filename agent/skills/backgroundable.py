@@ -41,7 +41,7 @@ import sys
 import uuid
 from typing import Any, Callable
 
-from agent.skills.outcomes import broke, refused
+from agent.skills.outcomes import broke, loop, refused
 
 #: tool name -> the parameter names tried, in order, to build a readable job_id.
 #: Populated by @backgroundable at import time, so it is DERIVED from the
@@ -175,7 +175,7 @@ def spawn_detached(tool: str, kwargs: dict, name_from: tuple[str, ...] = ()) -> 
         return broke("background.spawn_failed",
                      **{"success": False, "stage": "background_spawn",
                         "tool": tool, "job_id": job_id, **job})
-    return {
+    return loop("background.spawned", **{
         # The SPAWN succeeded. Whether the tool succeeds is unknown and lives on
         # check_job's `result`; the note says so in as many words.
         "success":     True,
@@ -192,7 +192,7 @@ def spawn_detached(tool: str, kwargs: dict, name_from: tuple[str, ...] = ()) -> 
                  f"state=='running'); the response with state=='exited' carries "
                  f"{tool}'s real return value inline under `result`. Do not end your "
                  f"turn to wait: a headless session ends with the turn."),
-    }
+    })
 
 
 def _unserializable(kwargs: dict) -> str:

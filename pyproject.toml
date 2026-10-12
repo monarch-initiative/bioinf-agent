@@ -52,10 +52,7 @@ dependencies = [
 # pytest.ini hardcodes `-n auto --dist loadgroup`, so xdist is not optional for
 # running the suite — a [dev] without it made the README's own `pytest` line
 # fail on a fresh install (cold-start follow-on to CS1).
-# coverage: scripts/measure_terminal_coverage.py runs the suite under it to build
-# the outcomes dashboard's `exercised` overlay. Without it that documented command
-# aborts on the env setup.sh builds.
-dev = ["pytest>=8.0", "pytest-xdist>=3.5", "coverage>=7.0"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 # The Globus wire (transfer_providers shells out to `globus`). Installed by
 # setup.sh so the CLI is present before the first transfer needs it; the one
 # thing it cannot prepackage is `globus login` — an interactive OAuth consent.

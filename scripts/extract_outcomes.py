@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 extract_outcomes — harvest the system's terminal decision surface straight from
-the code, so the model is DERIVED from reality and can't silently drift (see
-agent/skills/outcomes.py).
+the code, so the outcome model is DERIVED from reality (see agent/skills/outcomes.py).
 
 It sweeps every primitive module and finds three kinds of terminal:
 
@@ -11,24 +10,17 @@ It sweeps every primitive module and finds three kinds of terminal:
   2. TAGGED invariant records — dict literals carrying an "invariant" key (these
      are refusal reasons; outcome = refused).
   3. UNTAGGED terminals — a raw `return {...}` whose dict has an "error" or
-     "success" key. These are terminals the model doesn't know how to classify
-     yet: model blind spots. The rollout burns this count down to zero, and
-     tests/test_outcome_tags.py keeps already-tagged functions from regressing.
+     "success" key. These are terminals the model cannot classify;
+     tests/test_outcome_tags.py makes every one of them a build failure.
 
-For each TAGGED code it grep-checks the test suite for a reference
-(`named_in_test`) — a WEAK proxy (mentions != triggers). Real execution
-coverage is measured by scripts/measure_terminal_coverage.py (runs the suite
-under coverage.py); the dashboard fuses the two into verified / exercised / dark.
+Prints the per-outcome tally and the untagged terminals, if any. Writes nothing.
 
-Writes docs/outcomes_ledger.json and prints:
-  - the per-outcome tally,
-  - the UNTAGGED terminals (the rollout worklist),
-  - the tagged-but-not-NAMED terminals (the weak grep proxy).
+    python scripts/extract_outcomes.py
 """
 from __future__ import annotations
 
+import argparse
 import ast
-import json
 import sys
 from pathlib import Path
 
@@ -123,22 +115,6 @@ def harvest(path: Path) -> list[dict]:
     return found
 
 
-def test_corpus() -> str:
-    # `tested` = a BEHAVIORAL test references the code. Exclude the meta-tests
-    # that enumerate codes by design (test_outcome_tags.py) — otherwise every
-    # code counts as "tested" just for being listed there. NOTE: grep is a coarse
-    # proxy (mentions != triggers); real coverage would need instrumentation.
-    parts = []
-    for p in (ROOT / "tests").rglob("*.py"):
-        if p.name == "test_outcome_tags.py":
-            continue
-        try:
-            parts.append(p.read_text())
-        except Exception:
-            pass
-    return "\n".join(parts)
-
-
 def sweep() -> list[dict]:
     files = []
     for d in SWEEP_DIRS:
@@ -149,25 +125,15 @@ def sweep() -> list[dict]:
     return entries
 
 
-def main() -> int:
-    corpus = test_corpus()
+def main(argv: list[str] | None = None) -> int:
+    argparse.ArgumentParser(
+        prog="extract_outcomes.py",
+        description="Print the terminal decision surface swept from the source. Writes nothing.",
+    ).parse_args(argv)
+
     entries = sweep()
-    for e in entries:
-        # `named_in_test` = a test file mentions the code STRING. This is a weak
-        # proxy (mentions != triggers) — it tends to mark terminals a test
-        # ASSERTS on by code. REAL execution coverage is measured separately by
-        # scripts/measure_terminal_coverage.py (runs the suite under coverage and
-        # checks whether each terminal's line actually ran). The dashboard fuses
-        # the two into verified / exercised / dark. Do NOT read this field as
-        # "tested" — it undercounts real coverage ~6x on its own.
-        e["named_in_test"] = (e["code"] in corpus) if e["code"] else None
-
-    ledger = sorted(entries, key=lambda e: (not e["tagged"], e["outcome"], e["where"]))
-    (ROOT / "docs" / "outcomes_ledger.json").write_text(json.dumps(ledger, indent=2))
-
     tagged = [e for e in entries if e["tagged"]]
     untagged = [e for e in entries if not e["tagged"]]
-    unnamed = [e for e in tagged if e["named_in_test"] is False]
 
     by_outcome: dict[str, int] = {}
     for e in tagged:
@@ -178,36 +144,13 @@ def main() -> int:
     print(f"  tagged={len(tagged)}  untagged={len(untagged)}  "
           + " ".join(f"{k}={v}" for k, v in sorted(by_outcome.items())))
 
-    # --- the rollout worklist: untagged terminals grouped by file --------------
-    print(f"\n  UNTAGGED terminals (the rollout worklist) — {len(untagged)}:")
+    print(f"\n  UNTAGGED terminals (each one fails tests/test_outcome_tags.py) — {len(untagged)}:")
     by_file: dict[str, list[str]] = {}
     for e in untagged:
         f, ln = e["where"].rsplit(":", 1)
         by_file.setdefault(f, []).append(ln)
     for f in sorted(by_file):
-        lines = ", ".join(by_file[f])
-        print(f"      {f}  (lines {lines})")
-
-    # --- weak coverage proxy: tagged terminals no test NAMES -------------------
-    # (this is only the code-string grep; run measure_terminal_coverage.py for
-    #  the real executed/dark picture the dashboard shows.)
-    print(f"\n  TAGGED but NOT NAMED in any test (weak grep proxy) — {len(unnamed)}:")
-    for e in sorted(unnamed, key=lambda e: e["code"]):
-        print(f"      ✗ {e['code']:<34} {e['where']}")
-
-    print(f"\n  wrote docs/outcomes_ledger.json")
-
-    # Re-render the health panel from the fresh ledger so the picture never
-    # lags the model. Best-effort: a render failure must not fail the harvest.
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "render_outcomes_dashboard", ROOT / "scripts" / "render_outcomes_dashboard.py")
-        rd = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(rd)
-        rd.main()
-    except Exception as e:   # pragma: no cover - convenience wiring only
-        print(f"  ! dashboard render skipped: {type(e).__name__}: {e}")
+        print(f"      {f}  (lines {', '.join(by_file[f])})")
     return 0
 
 

@@ -76,7 +76,7 @@ what actually happened.
 | L5.a — run on host, claim ran in shipped image | `validated_in_shipped_image` requires `ran_in_container=True` AND `container_image_digest` matches an EnvCache image_digest — `test_invariants.test_validated_in_shipped_image_*`, `tests/integration/honesty/L5_run_honesty/test_end_to_end_seal.py` |
 | L5.b — watch_dir on /tmp picks up foreign files (harness transcripts etc.) as step outputs | N7: snapshot diff filters to `project_root` when watch is shared — `tests/integration/honesty/L5_run_honesty/test_watchdir_snapshot_filter.py` |
 | L5.c — step produces no outputs but rc=0, claim success | I3: rc=0 needs detected_outputs OR explicit `mark_step_validated` — `tests/integration/honesty/L5_run_honesty/test_layer2_seal_refusals.py` |
-| L5.d — `expected_type="any"` to bypass type-aware validation | I3: `expected_type=="any"` rejected at seal — `tests/integration/honesty/L5_run_honesty/test_layer2_seal_refusals.py` |
+| L5.d — `expected_type="any"` to bypass type-aware validation | Not a cheat: exists + non-empty IS the primary validation (I3's note in `agent/skills/invariants.py`), so the seal accepts it — `tests/integration/honesty/L5_run_honesty/test_layer2_seal_refusals.py::test_i3_expected_type_any_seals`. The silent fall-through to `any` from a typo is L5.e |
 | L5.e — `output_types` typo silently falls through to `expected_type="any"` | N8: 5-tier lookup + unmatched keys surfaced in the response — `tests/integration/honesty/L5_run_honesty/test_n8_output_types_lookup.py` |
 | L5.f — end-to-end: a step missing run-side fields slips through seal | G2 end-to-end seal wiring test — `tests/integration/honesty/L5_run_honesty/test_end_to_end_seal.py` |
 
@@ -147,7 +147,7 @@ optional, opt-in per `OutputValidator`.
 
 | Cheat | Guard |
 |---|---|
-| L12.a — docker-run-pass / apptainer-exec-fail drift (the shipped `.sif` differs in behavior from the source docker image) | `tests/integration/honesty/L12_apptainer_runtime/test_apptainer_runtime_smoke.py` — converts an existing `docker_images/<name>/<name>.tar` via `apptainer build docker-archive` and execs the smoke chain. `skipif-no-apptainer` so dev hosts without it just skip; HPC consumers and CI runners with apptainer execute |
+| L12.a — docker-run-pass / apptainer-exec-fail drift (the shipped `.sif` differs in behavior from the source docker image) | OPEN — nothing in the suite runs `apptainer exec` on a shipped image. A real one belongs in a scheduled real-bytes job on a runner that has apptainer, not in the hermetic tier |
 
 ## L13 — Recipe-replay determinism
 
@@ -161,15 +161,15 @@ optional, opt-in per `OutputValidator`.
 
 The agent's interaction with a user's compute env (cluster / laptop) is
 mediated by a fixed, small set of primitives. Each primitive is gated by a
-per-directory permission declared in `~/.bioinf/projects_access.yaml`. Tests
+per-directory permission declared in `~/.bioinf_agent/projects_access.yaml`. Tests
 pin the LITERAL shape of every shell invocation; permission denials fire
 BEFORE any subprocess runs (fail-closed); no operation is reachable that
 isn't declared in the manifest.
 
-The v0 primitive surface is exactly one tool — `snapshot_project` — which
-requires `file_name_only` permission. The `upload` permission is declared
-in the schema but its primitive isn't wired yet; when it ships, it MUST
-fail-closed on overwriting existing files.
+The primitive surface is the set of operations named in
+`compute_access.OPERATION_REQUIRES`, each requiring its declared permission
+token on the target directory. `upload` writes NEW files only: it fail-closes
+on an existing destination (L14.i).
 
 **One-level visibility (the surface-minimization contract):**
 `file_name_only` grants visibility into a directory's IMMEDIATE contents
@@ -195,7 +195,7 @@ remote `find -maxdepth 1` flag.
 
 | ID | Cheat | Note |
 |---|---|---|
-| L14.i — `upload` primitive overwrites an existing file | CLOSED: shipped exactly as prescribed — `transfer.py` pre-flights `provider.remote_exists` (ssh `test -e` on the scp wire) and refuses `transfer.remote_exists`. Guard: `test_transfer_surface.py` |
+| L14.i — `upload` primitive overwrites an existing file | CLOSED: `transfer.py` pre-flights `provider.remote_exists` (ssh `test -e` on the scp wire, `globus ls` on Globus) and refuses `transfer.remote_exists` before the parent dir is prepared or a byte moves. Guard: `test_transfer_surface.py::TestOverwriteRefusal` (a local env, and the ssh provider seam) |
 | L14.j — agent executes a new operation | CLOSED for upload/download (`compute_access.OPERATION_REQUIRES` + gates + `test_transfer_surface.py`); the RULE stands for any future operation — entry in OPERATION_REQUIRES, a gate before its subprocess, and a cheat-guard test under L14_compute_env_safety/ |
 
 ---

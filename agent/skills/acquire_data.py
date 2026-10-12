@@ -626,14 +626,15 @@ def _probe_cluster_path(env: dict, path: str, *,
     try:
         res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
-        return {"error": f"cluster probe timed out after {e.timeout}s"}
+        return broke("acquire.cluster_probe_timeout",
+                     error=f"cluster probe timed out after {e.timeout}s")
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
         out = {"error": f"cluster probe ssh failed (rc={res.returncode}): "
                         f"{(res.stderr or '').strip()[:300]}"}
         if hint:
             out["hint"] = hint
-        return out
+        return broke("acquire.cluster_probe_failed", **out)
     exists = False
     size_bytes: Optional[int] = None
     sha256: Optional[str] = None

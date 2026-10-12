@@ -37,9 +37,15 @@ from agent.skills.env_report_html import render_env_report_html
 from env_records import env_record, env_evidence
 
 
+def _headline(html: str) -> tuple[str, str]:
+    """(css class, text) of the status pill. The class is the colour the reader sees;
+    a test that reads only the words would pass a red sentence in a green pill."""
+    m = re.search(r'<span class="pill ([a-z]+)">([^<]*)</span>', html)
+    return (m.group(1), m.group(2)) if m else ("", "")
+
+
 def _pill(html: str) -> str:
-    m = re.search(r'<span class="pill [a-z]+">([^<]*)</span>', html)
-    return m.group(1) if m else ""
+    return _headline(html)[1]
 
 
 def _piped_evidence() -> list[dict]:
@@ -57,6 +63,7 @@ def test_a_record_with_violations_never_renders_a_green_pill():
     pill = _pill(html)
     assert "FAILS the honesty contract" in pill, f"pill was {pill!r}"
     assert "✓" not in pill
+    assert _headline(html)[0] == "bad", _headline(html)
 
 
 def test_an_ADOPTED_env_that_fails_the_contract_still_says_so():
@@ -70,6 +77,7 @@ def test_an_ADOPTED_env_that_fails_the_contract_still_says_so():
     html = render_env_report_html(rec)
     assert "FAILS the honesty contract" in _pill(html)
     assert "Adopted by digest" not in _pill(html)
+    assert _headline(html)[0] == "bad", _headline(html)
 
 
 def test_the_violation_text_reaches_the_page():
@@ -102,7 +110,9 @@ def test_a_clean_record_is_unaffected():
     """16 of the 18 real envs pass, and their pages must not change meaning."""
     rec = env_record(name="fine")
     assert not H.check_build(rec)
-    assert "✓ Validated in shipped image" in _pill(render_env_report_html(rec))
+    html = render_env_report_html(rec)
+    assert "✓ Validated in shipped image" in _pill(html)
+    assert _headline(html)[0] == "ok", _headline(html)
 
 
 def test_a_clean_adopted_record_still_reads_adopted():

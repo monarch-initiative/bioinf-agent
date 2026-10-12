@@ -1,9 +1,9 @@
 """
 The intent corpus — does a user's INPUT reach the outcome they MEANT?
 
-WHY THIS EXISTS. The outcomes dashboard (`docs/outcomes_ledger.json`) maps the OUTPUT
-side: every place the code can end, swept from the AST, drift-linted. It answers "what can
-the system emit, and has it ever run?" — and it is 509 terminals of genuinely useful truth.
+WHY THIS EXISTS. The outcome vocabulary (`agent/skills/outcomes.py`, swept from the source
+by `scripts/extract_outcomes.py` and drift-linted) maps the OUTPUT side: every place the
+code can end. It answers "what can the system emit?".
 
 It cannot answer this question. A map of ANSWERS cannot show you a QUESTION with no answer:
 an intent that reaches no terminal isn't a dark cell, it isn't a cell at all. Worse, a cell
@@ -17,7 +17,7 @@ the real resolver, with the outcome that intent SHOULD reach.
 
 THE HISTORY THAT SHAPED IT (read before changing the design). This project already built an
 intent map once: `docs/scenario_decision_tree.{md,html,json}`, hand-authored. It rotted, and
-tier 7 deleted 2,653 lines of it. What survived from that effort was the outcomes ledger —
+tier 7 deleted 2,653 lines of it. What survived from that effort was the outcome sweep —
 and it survived precisely BECAUSE it is derived from code and drift-linted, not authored.
 The lesson is not "don't map intent". It is: **a map that isn't executable is prose, and
 prose rots.** So this is a test, not a document. The grid renders from it; it does not
