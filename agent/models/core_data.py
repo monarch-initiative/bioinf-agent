@@ -151,15 +151,15 @@ class InstallMethod(BaseModel):
     pip_spec:   Optional[str] = None   # e.g. "multiqc==1.21"
     # source — git repo vendored as the tool (install_git_repo)
     source:     Optional[str] = None   # repo URL (also reused as a generic source field)
-    commit_sha: Optional[str] = None   # resolved HEAD at clone time — immutable content anchor (I11)
+    commit_sha: Optional[str] = None   # resolved HEAD at clone time — the immutable anchor the build checks out
     ref:        Optional[str] = None   # branch / tag / commit requested
     local_path: Optional[str] = None   # absolute path to the clone / binary on disk
     # binary — precompiled release binary (mosdepth/dorado/sylph/cellranger pattern)
     binary_url:   Optional[str] = None  # download URL of the release asset
-    sha256:       Optional[str] = None  # sha256 of the EXTRACTED binary at local_path — I14 re-hashes this
+    sha256:       Optional[str] = None  # sha256 of the EXTRACTED binary at local_path — the runnable file's anchor
     asset_sha256: Optional[str] = None  # sha256 of the downloaded asset (the .tar.gz/.zip); == sha256 for
                                         # single-binary downloads. Provenance anchor checked vs the publisher
-                                        # checksum at download. I14 anchors the runnable binary, not the archive.
+                                        # checksum at download. `sha256` anchors the runnable binary, not the archive.
 
 
 # ---------------------------------------------------------------------------
@@ -315,11 +315,10 @@ class RuntimeConfig(BaseModel):
 # spec makes the entire pipeline reproducible: every artifact consumed by a
 # step traces to a real source.
 #
-# Honesty invariants (I8 + I9):
-#   - I8 universe includes `authored_artifacts[*].path` — orphan inputs that
-#     reference these files now compose correctly.
-#   - I9 re-computes sha256 at finalize and refuses to write a spec whose
-#     on-disk artifact has drifted from the recorded content.
+# Honesty invariant (I8): the universe of external sources includes
+# `authored_artifacts[*].path`, so a step may name one of these files as an input,
+# and the seal re-hashes each file against its recorded sha256
+# (`I8.authored_artifact_mutated`) before a spec is written.
 # ---------------------------------------------------------------------------
 
 class AuthoredArtifact(BaseModel):

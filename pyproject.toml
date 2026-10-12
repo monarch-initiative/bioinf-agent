@@ -7,11 +7,10 @@ name = "bioinf-agent"
 version = "0.1.0"
 description = "Installs bioinformatics tools into isolated conda envs, validates them INSIDE the image they ship, packages them as HPC-shippable containers, and emits a machine-verified spec."
 readme = "README.md"
-# The agent RUNTIME floor — the oldest interpreter the server may start on. It normally
-# runs on ./.conda_runtime, which scripts/setup.sh creates at 3.11 (matching CI); the
-# floor stays at 3.10 for start_mcp_server.sh's legacy fallback to a base-conda python.
-# Distinct from config/agent_config.yaml's python_version, which is the python of the
-# tool-environments the agent BUILDS.
+# The agent RUNTIME floor: the oldest interpreter the code is written for. The server
+# runs on ./.conda_runtime, which scripts/setup.sh creates at 3.11 (matching CI) and
+# start_mcp_server.sh insists on. Distinct from config/agent_config.yaml's
+# python_version, which is the python of the tool environments the agent BUILDS.
 requires-python = ">=3.10"
 license = { text = "BSD-3-Clause" }
 authors = [{ name = "Aaron", email = "aaron@tislab.org" }]
@@ -27,14 +26,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
-# The single dependency truth — setup.sh and CI both install `-e ".[dev]"`. Do not add
-# a requirements.txt mirror; the one that used to sit here stayed in sync by discipline
-# only, and drifted.
+# The single dependency truth: setup.sh and CI both install `-e ".[dev]"`. There is no
+# requirements.txt mirror to keep in sync.
 dependencies = [
-    # <4: the server + background detachment are proven against fastmcp 3.x
-    # (3.2.4); 4.x is a major nobody here has validated. A fresh `pip install`
-    # was resolving 4.0.3 and shipping new users an untested runtime. Raise the
-    # cap only WITH a validation pass (cold-start finding, 2026-09-15).
+    # <4: the server and background detachment are validated against fastmcp 3.x
+    # (3.2.4). Raise the cap only with a validation pass against the next major.
     "fastmcp>=2.0,<4",
     "pyyaml>=6.0",
     "requests>=2.31.0",
@@ -50,8 +46,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # pytest.ini hardcodes `-n auto --dist loadgroup`, so xdist is not optional for
-# running the suite — a [dev] without it made the README's own `pytest` line
-# fail on a fresh install (cold-start follow-on to CS1).
+# running the suite.
 dev = ["pytest>=8.0", "pytest-xdist>=3.5"]
 # The Globus wire (transfer_providers shells out to `globus`). Installed by
 # setup.sh so the CLI is present before the first transfer needs it; the one
@@ -74,9 +69,9 @@ include = ["agent*"]
 [tool.setuptools.package-data]
 agent = ["operator_instructions.md"]
 
-# NOTE: this is a WORKSPACE-ROOTED service, not a site-packages library. It reads and
-# writes config/, data/, env_reports/, envs/, docker_images/, drafts/ relative to the
-# repo root (agent/mcp_server.py resolves PROJECT_ROOT from the source tree). Install
-# EDITABLE from the checkout — `pip install -e .` — and launch from the repo root. A
-# plain `pip install .` into site-packages would relocate the code away from those
-# runtime directories and config loading would fail. See README.md.
+# NOTE: this is a CHECKOUT-ROOTED service, not a site-packages library. It reads config/
+# and the untracked envs/ and resources/ relative to the checkout (agent/skills/workspace.py
+# resolves every path; what the agent produces lives in ~/bioinf_workspace) and runs on
+# ./.conda_runtime. Install EDITABLE from the checkout, `pip install -e .`, which is what
+# scripts/setup.sh does; a plain `pip install .` into site-packages would separate the code
+# from config/ and the checkout zones. See README.md.

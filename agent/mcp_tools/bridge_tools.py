@@ -26,8 +26,8 @@ absolute remote path falls on the env:
   project_path     — Phase-1 explicit grant via directories[] (workspace)
 
 Authorization shape (env-implicit grant, Phase 2):
-  - `project_name` + `compute_env_name` resolve to a project's
-    compute_env_access entry (the project must have ACCESS to the env)
+  - `project_name` + `compute_env_name` resolve through the project's
+    `compute_envs` list (the project must have ACCESS to the env)
   - The env declares `agent_scratch_target` / `agent_common_data_target`
     / `container_upload_target` blocks at the env level; their
     `permissions:` lists the supported capabilities — these are the
@@ -100,7 +100,9 @@ def upload(project_name: str,
     '..' traversal, no shell metacharacters, no whitespace.
 
     `local_path`: must exist, be a regular file (symlinks refused), and
-    be under the 5 GiB head-node cap (no cap when data_transfer=globus).
+    be under the 5 GiB cap, which applies on every wire. Larger data is
+    pulled by a compute node instead (`download_reference_database` with
+    `compute_env`, or `acquire_reference_via_recipe`).
 
     Returns {success, project, compute_env, zone, direction:"upload",
     local_path, remote_abs_path, provider, task_id?, bytes, duration_s,
@@ -158,7 +160,7 @@ def cluster_module_avail(project_name: str,
     strings. Does not load any module; does not submit any job; never
     writes anything.
 
-    Authorization: project must have a `compute_env_access` entry for
+    Authorization: the project's `compute_envs` must list
     `compute_env_name`. No per-directory permission needed — we're not
     touching the filesystem.
 
@@ -189,7 +191,7 @@ def cluster_partitions(project_name: str,
     the output, returns one record per partition. Submits nothing, loads
     nothing, writes nothing.
 
-    Authorization: project must have a `compute_env_access` entry for
+    Authorization: the project's `compute_envs` must list
     `compute_env_name`. No per-directory permission needed — the filesystem
     is not touched, and SLURM's own ACLs scope what sinfo reports.
 
@@ -254,8 +256,8 @@ def globus_task_status(project_name: str,
     outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
     ACTIVE/INACTIVE -> loop (poll again).
 
-    Authorization: project must have a `compute_env_access` entry for
-    the env, AND the env must declare `data_transfer.type: globus`.
+    Authorization: the project's `compute_envs` must list the env, AND
+    the env must declare `data_transfer.type: globus`.
     Task IDs are scoped to the user's Globus tokens — the agent never
     sees a task belonging to anyone else.
 
@@ -304,7 +306,7 @@ def cluster_job_status(project_name: str,
     the pipe-delimited output, returns a list of row-dicts. Does not
     submit, cancel, or modify anything.
 
-    Authorization: project must have a `compute_env_access` entry for
+    Authorization: the project's `compute_envs` must list
     `compute_env_name`. No per-directory permission needed. SLURM's
     own ACL keeps the visibility scoped to the user's own jobs.
 
@@ -351,8 +353,8 @@ def run_production_pipeline(project_name: str,
     that diverged launches as `degraded`, never a bare success.
 
     Inputs:
-      pipeline     a name under <workspace>/pipelines/ (see list_installed_pipelines) or a
-                   rendered directory's absolute path.
+      pipeline     the name of a directory `render_pipeline` wrote under <workspace>/pipelines/,
+                   or a rendered directory's absolute path.
       run_dir      absolute path on the env: the launch directory, created if it does not
                    exist yet. It may be under the env's pipelines zone, the agent's scratch,
                    or a project `directories[]` grant with `upload` and `exec`. A run_dir that already
@@ -409,8 +411,8 @@ def stage_apptainer_image(project_name: str,
       Override the subpath via `sif_subpath` (relative, no `..`); it still
       resolves against `container_upload_target`.
 
-    Authorization: project must have a `compute_env_access` entry for
-    the env, AND the env must declare a `container_upload_target` with
+    Authorization: the project's `compute_envs` must list the env, AND
+    the env must declare a `container_upload_target` with
     `upload` perm. NO FALLBACK to agent_common_data_target — that zone
     is for reference data; an undeclared container target is a clean
     refusal, not a silent reroute (per
@@ -468,9 +470,9 @@ def run_step_on_cluster(pipeline_id: str,
     `discard_pipeline_draft`.
 
     `command`: ONE line with `${name}` placeholders bound to inputs/outputs; every `$` must
-    open a declared placeholder, and single quotes, backslashes and triple double quotes
-    are refused before any ssh (main.nf would rewrite them). Put awk/sed programs in a
-    script baked into the image.
+    open a declared placeholder, and a backslash or a `\"\"\"` is refused before any ssh
+    (main.nf's Groovy script block would rewrite them; a single quote is carried
+    faithfully). Put awk/sed programs in a script baked into the image.
 
     `inputs` are REMOTE absolute paths that must already exist on the cluster (they become
     `${params.x}` verbatim). This primitive uploads no input data: `upload(...)` it into

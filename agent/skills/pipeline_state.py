@@ -538,8 +538,8 @@ class PipelineState:
         Records of agent-authored files — driver scripts, synthetic test
         inputs, staged transformations — so the pipeline composes honestly:
         every step input traces to either a prior step's output OR a recorded
-        external source. The path is added to the I8 universe at finalize,
-        and I9 re-verifies sha256(file_on_disk) matches the recorded value.
+        external source. The path joins the I8 universe, and the seal re-hashes
+        the file against the recorded sha256.
 
         Replace-by-path semantics means the agent can iterate on a script
         without leaving stale entries.

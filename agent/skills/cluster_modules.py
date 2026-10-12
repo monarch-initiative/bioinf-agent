@@ -157,8 +157,8 @@ def cluster_module_avail(project_name: str,
     parses the output, returns a flat list. Does not load any module;
     does not submit any job; never writes anything.
 
-    Authorization: requires that `project` has a `compute_env_access`
-    entry for `compute_env_name`. No per-directory permission needed
+    Authorization: `project.compute_envs` must list `compute_env_name`.
+    No per-directory permission needed
     (we're not touching the filesystem). The check is: project knows
     this env — the same shape as `check_env_target_capability`'s
     "project on env" leg, but without the target-capability requirement.

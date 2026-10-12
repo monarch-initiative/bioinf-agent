@@ -258,8 +258,9 @@ def _summarize_sbom_in_response(out: dict) -> dict:
 
 def _merge_simple_install(pipeline_id, step, result, name, channel, tool, command, purpose):
     """Shared draft-merge for the single-package install tiers (perl/cargo/go):
-    record one install_step carrying the install_method, and cache the verify so
-    the derived PackageRecord satisfies I2. Returns the pipeline_merge dict."""
+    record one install_step carrying the install_method (whose verify command freeze
+    re-runs inside the shipped image as the tool's evidence) and cache the host verify
+    on the draft. Returns the pipeline_merge dict."""
     install_method = result.get("install_method") or {}
     ip_record = {
         "name": name, "channel": channel,

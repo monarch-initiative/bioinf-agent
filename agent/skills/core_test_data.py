@@ -496,7 +496,7 @@ def add_core_pod5_data(
             tmp.unlink(missing_ok=True)
             return broke("core_test_data.pod5_download_failed", success=False, error=f"download failed: {e}")
 
-        # Whole-file integrity check (asset sha256 — analogous to install_release_binary's I14)
+        # Whole-file integrity check (asset sha256, as install_release_binary checks its download)
         actual_sha = _sha256_file(tmp)
         if expected_sha256 and actual_sha != expected_sha256:
             tmp.unlink(missing_ok=True)

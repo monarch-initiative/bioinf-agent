@@ -12,8 +12,8 @@ chronologically in `draft.install_steps[]`. See CLAUDE.md for the order +
 when to reach for which primitive.
 
 `_merge_simple_install` is shared across the single-package install tiers
-(perl / cargo / go) — it records the install_step and caches the verify so
-the derived PackageRecord satisfies I2. Helpers that live in mcp_server.py
+(perl / cargo / go) — it records the install_step and caches the host verify
+on the draft. Helpers that live in mcp_server.py
 (_shrink_stdio_for_response / _merge_simple_install / config) are reached
 through `_ms.X` so test monkeypatches survive — same convention as
 workflow_tools.py.
@@ -44,7 +44,7 @@ def _record_engine_smoke(result: dict, env_name: str, verify_command: str) -> No
     operator feedback and DISCLOSED under `smoke_*` — NON-GATING, because freeze is the
     authoritative locus (it refuses if the evidence fails in the shipped image). We do NOT
     touch the top-level `verify_command`/`verify_output` (env_manager set those to the
-    `which {bin}` cli_which anchor that `_merge_simple_install` caches for I2)."""
+    `which {bin}` presence anchor that `_merge_simple_install` caches)."""
     if not verify_command or not result.get("success"):
         return
     vr = _ms._env_mgr.run_in_env(env_name, verify_command, timeout=300)
@@ -332,9 +332,10 @@ def install_git_repo(
     If pipeline_id is supplied, records an install_step (tool=git,
     subcommand=clone) whose installed_packages entry carries
     install_method.type="source" with repo_url + commit_sha + local_path, and
-    caches a verification (verify_command/verify_output) so the derived
-    PackageRecord satisfies I2. The clone path + commit_sha are re-checked at
-    finalize by I11 (source_install_present).
+    caches a verification (verify_command/verify_output). freeze re-runs the
+    verify inside the shipped image as the tool's evidence, and the
+    `git checkout <commit_sha>` runs inside the build that becomes the image,
+    so a bad ref fails the build.
 
     `bin_path` (relative path to the built executable in the clone, e.g.
     "seqtk") makes a PATH wrapper at {env}/bin/{tool_name} and is recorded with
@@ -705,21 +706,23 @@ def install_release_binary(
     sha256: pass the published checksum of the ASSET (the .tar.gz/.zip the
     publisher ships) to guarantee you got the exact download — verified before
     extraction and recorded as install_method.asset_sha256. The EXTRACTED binary
-    is separately hashed into install_method.sha256 — that's the anchor I14
-    re-hashes on disk at finalize (for an archive, the runnable binary differs
-    from the tarball; for a single-binary download they coincide).
+    is separately hashed into install_method.sha256, the anchor of the runnable
+    file (for an archive, the runnable binary differs from the tarball; for a
+    single-binary download they coincide). Inside the build that becomes the
+    image the download is checked with `sha256sum -c`, so a mismatch fails the
+    build.
 
     binary_in_archive: for archive assets, the executable's path inside it
     (basename accepted); omit for single-binary downloads.
 
     A smoke verify runs after install ({tool} --version/--help by default, or
     your verify_command) — this is what catches a wrong-ARCHITECTURE binary that
-    is present on disk (and so passes I14) but cannot execute. A binary this host
+    is present on disk with the right hash but cannot execute. A binary this host
     cannot run AT ALL (a Linux ELF on a macOS host, read off its header) is not a
     failure: the install is `degraded env_manager.binary_host_unverifiable`, the
     sha256 pins the bytes, and freeze proves it inside the shipped image. With pipeline_id,
     records an install_step (install_method.type="binary" + binary_url + sha256 +
-    local_path) and caches the verify so the derived PackageRecord satisfies I2.
+    local_path) and caches the verify; freeze re-runs it inside the shipped image.
 
     Returns: {success, binary_path, wrapper_path, url, sha256, verify_command,
     verify_output, install_method, log}.
@@ -866,7 +869,7 @@ def install_perl_package(
     PREFER conda when the module is packaged on bioconda (perl-* installs far more
     reliably) — this tier is for the cpanm-only residue. With pipeline_id, records
     the install_step (install_method.type="perl", recorded for replay) + caches the
-    verify (I2). freeze rebuilds the module from CPAN on the ship platform with a C
+    verify. freeze rebuilds the module from CPAN on the ship platform with a C
     toolchain + the conda layer's libs.
 
     Returns: {success, module, verify_command, verify_output, install_method, log}.
@@ -874,7 +877,7 @@ def install_perl_package(
     result = _ms._env_mgr.install_perl_package(env_name, module, distribution, cpanm_flags, build_env)
     # Best-effort in-env functional smoke (non-gating: freeze is authoritative). Recorded
     # into install_method["evidence"] (NOT the top-level verify, which env_manager sets to
-    # `perl -M{module} -e1` for I2) so freeze's _map_install threads it → validated==ran.
+    # the `perl -M{module} -e1` presence probe) so freeze's _map_install threads it → validated==ran.
     _record_engine_smoke(result, env_name, verify_command)
     if pipeline_id:
         result["pipeline_merge"] = _ms._merge_simple_install(
@@ -917,14 +920,14 @@ def install_cargo_tool(
 
     NOTE many Rust genomics tools (sylph, skani, sourmash) are ALSO on bioconda —
     prefer install_conda_packages when available; this is the fallback. With
-    pipeline_id, records the install_step + caches the verify (I2).
+    pipeline_id, records the install_step + caches the verify.
 
     Returns: {success, crate, binary_name, verify_command, verify_output, install_method, log}.
     """
     result = _ms._env_mgr.install_cargo_tool(env_name, crate, version, binary_name, git_url)
     # Best-effort in-env functional smoke (non-gating: freeze is authoritative). Recorded
     # into install_method["evidence"] (NOT the top-level `verify_command`, which env_manager
-    # sets to `which {bin}` for I2) so freeze's _map_install threads it → validated==ran.
+    # sets to the `which {bin}` presence probe) so freeze's _map_install threads it → validated==ran.
     _record_engine_smoke(result, env_name, verify_command)
     if pipeline_id:
         name = binary_name or crate
@@ -951,7 +954,7 @@ def install_go_tool(
     the binary lands on the env PATH; `binary_name` (defaults to the last path
     segment of `package`) is the cli_which anchor. Pin `version` (not "latest")
     for reproducibility. With pipeline_id, records the install_step + caches the
-    verify (I2).
+    verify.
 
     The env must already exist — an install never creates the env it targets, because the
     runtime it runs under is your choice and is recorded. Create it with create_conda_env, or
@@ -1323,10 +1326,8 @@ def install_r_package(
         if result.get("verify_command"):
             step_data["verify_command"] = result["verify_command"]
         idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
-        # Cache the load-or-die verify so the finalize package derivation
-        # attaches it (mirrors verify_installation / install_git_repo). Without
-        # this the derived PackageRecord has no verify_output and fails I2,
-        # forcing a redundant verify_installation call for every R package.
+        # Cache the load-or-die verify on the draft (mirrors verify_installation /
+        # install_git_repo), so the install journey records what was checked.
         if result.get("success") and result.get("verify_output"):
             _ms._pipeline_state.cache_verification(pipeline_id, check_name, {
                 "verify_command": result.get("verify_command"),
@@ -1498,9 +1499,8 @@ def install_pip_package(
         if result.get("verify_command"):
             step_data["verify_command"] = result["verify_command"]
         idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
-        # Cache the import-check verify so the finalize package derivation
-        # attaches it — without this the derived PackageRecord has no
-        # verify_output and fails I2 (R packages cache theirs the same way).
+        # Cache the import-check verify on the draft (R packages cache theirs the
+        # same way), so the install journey records what was checked.
         if result.get("success") and result.get("verify_output"):
             _ms._pipeline_state.cache_verification(pipeline_id, name, {
                 "verify_command": result.get("verify_command"),

@@ -1395,9 +1395,9 @@ class EnvManager:
         it — a mismatch is a HARD FAIL, so a tampered or wrong-arch asset never
         gets installed. It is recorded as install_method.asset_sha256 (provenance).
         Separately, the EXTRACTED binary is always hashed and recorded as
-        install_method.sha256 — that's the anchor I14 re-hashes at finalize
-        (the archive is unpacked, so the runnable binary, not the tarball, is the
-        artifact that must stay unmodified). For a single-binary download the two
+        install_method.sha256 — the anchor of the runnable file (the archive is
+        unpacked, so the runnable binary, not the tarball, is the artifact that
+        must stay unmodified). For a single-binary download the two
         hashes coincide.
 
         binary_in_archive: for .tar.gz/.zip assets, the executable's path inside
@@ -1490,11 +1490,11 @@ class EnvManager:
         if not staged.get("success"):
             return {**staged, "log": log}
 
-        # I14 re-hashes the EXECUTABLE THAT ACTUALLY RUNS, not the archive it
+        # The anchor is the EXECUTABLE THAT ACTUALLY RUNS, not the archive it
         # shipped in. For an archive asset these differ (tarball ≠ inner binary);
-        # for a single-binary download they're identical. Anchor install_method
-        # .sha256 to the extracted binary so I14's finalize re-hash matches, and
-        # keep the asset hash separately as provenance.
+        # for a single-binary download they're identical. install_method.sha256
+        # is the extracted binary's hash; the asset hash is kept separately as
+        # provenance.
         binary_digest = self._sha256_file(staged["binary_path"])
         log.append(f"binary sha256={binary_digest}")
 

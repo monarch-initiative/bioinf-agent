@@ -522,8 +522,10 @@ def verify_installation(
     next to that package.
 
     If pipeline_id is supplied, the result is cached in
-    draft.verifications[package_name] and stitched onto the derived package
-    record at finalize-time."""
+    draft.verifications[package_name], the draft's record of what was checked on
+    the host. It does not become the frozen image's evidence: the command freeze
+    re-runs inside the shipped image is the install record's own verify, or the
+    `evidence=` you hand to freeze."""
     result = _ms._env_mgr.verify(env_name, package_name, check_command)
     if pipeline_id:
         ok = _ms._pipeline_state.cache_verification(pipeline_id, package_name, {
