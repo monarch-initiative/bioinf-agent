@@ -29,8 +29,8 @@ def _container_run(monkeypatch, tmp_path):
     monkeypatch.setattr(m._locus, "daemon_is_remote", lambda: False)
     monkeypatch.setattr(m._docker, "_run", lambda *a, **k: {"returncode": 0, "stdout": "", "stderr": ""})
     monkeypatch.setattr(m._docker, "image_digest", lambda image: rec["image_digest"])
-    monkeypatch.setattr(type(m._validator), "validate",
-                        lambda self, path, etype, env_name="": {"passed": True, "expected_type": etype, "path": path})
+    monkeypatch.setattr(m._validator, "validate",
+                        lambda path, etype, env_name="": {"passed": True, "expected_type": etype, "path": path})
     monkeypatch.setattr(m._env_mgr, "hash_outputs", lambda paths: {})
     seen: dict = {}
 

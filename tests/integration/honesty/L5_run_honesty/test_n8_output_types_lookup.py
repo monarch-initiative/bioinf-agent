@@ -44,20 +44,21 @@ def _mock_step(monkeypatch, tmp_path):
 
     consumed_etypes: list[tuple[str, str]] = []   # (basename, etype)
 
-    def _fake_validate(self, path, etype, env_name=""):
+    def _fake_validate(path, etype, env_name=""):
         consumed_etypes.append((Path(path).name, etype))
         return {"passed": True, "expected_type": etype, "path": path}
 
-    # Use a patched validator that records the etype the lookup chain
-    # picked (the thing we actually want to assert on).
-    monkeypatch.setattr(type(m._validator), "validate", _fake_validate)
+    # The SINGLETON is stubbed, never its class: another test's instance-level patch
+    # leaves the original bound method on the instance when it is undone, and that
+    # attribute shadows any later patch of the class.
+    monkeypatch.setattr(m._validator, "validate", _fake_validate)
 
     def _run(output_types: dict, out_relpath: str = "out.bam"):
         outp = tmp_path / out_relpath
         outp.parent.mkdir(parents=True, exist_ok=True)
         outp.write_text("BAM")
 
-        def _fake_run_in_env(self, env_name, command, working_dir=None,
+        def _fake_run_in_env(env_name, command, working_dir=None,
                              timeout=1800, inputs=None, watch_dir=None):
             return {
                 "returncode": 0, "stdout": "", "stderr": "",
@@ -68,7 +69,7 @@ def _mock_step(monkeypatch, tmp_path):
                                    "max_cpu_percent": 1.0},
                 "inputs": inputs or [],
             }
-        monkeypatch.setattr(type(m._env_mgr), "run_in_env", _fake_run_in_env)
+        monkeypatch.setattr(m._env_mgr, "run_in_env", _fake_run_in_env)
 
         consumed_etypes.clear()
         return m.run_pipeline_step(
