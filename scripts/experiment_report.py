@@ -5,13 +5,15 @@ Reads what experiment_metrics produces and writes `report.html` (plus `metrics.c
 `metrics.json`) with, in order: the experiment setup (every knob a run was given, the prompt
 verbatim, the isolation record the runner wrote, the code and client it ran on — the record a
 reader needs to tell a change in the numbers from a change in the conditions); the scoreboard
-per experiment × model; the same experiment across code revisions (the view that says whether
-a change to the system helped); the cost-vs-success chart (one point per group — the
-cost-accuracy view leaderboards publish, where a model that is a little better for a lot more
-money is visible as such); bars per model for the four efficiency numbers (cost, output
-tokens, tool calls, wall time) with the spread across repeats; the MCP outcome mix per group;
-every run as a row; what tripped the agent (every non-proven outcome code, by group); and the
-metric glossary. Inline SVG, no plotting dependency, the same theme tokens as the other pages.
+per experiment × model × code revision (a group never pools revisions), with the verdict mix
+(pass · fail · invalid) and, for an S or R scenario, the two gate readings; the same
+experiment across code revisions (the view that says whether a change to the system helped);
+the cost-vs-success chart (one point per group — the cost-accuracy view leaderboards publish,
+where a model that is a little better for a lot more money is visible as such); bars per
+model for the four efficiency numbers (cost, output tokens, tool calls, wall time) with the
+spread across repeats; the MCP outcome mix per group; every run as a row; what tripped the
+agent (every non-proven outcome code, by group); and the metric glossary. Inline SVG, no
+plotting dependency, the same theme tokens as the other pages.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from experiment_metrics import (METRIC_COLUMNS, METRIC_NAMES, OUTCOME_CLASSES, aggregate,
+from experiment_metrics import (JUDGE_HASH, METRIC_COLUMNS, METRIC_NAMES, OUTCOME_CLASSES, aggregate,
                                 rows_to_csv)
 
 _CSS = """
@@ -153,14 +155,23 @@ def _nice_max(v: float) -> float:
     return 10 * mag
 
 
-def _group_label(g: dict, exps: set, models: set) -> str:
+def _rev_tag(g: dict) -> str:
+    return (g.get("code_rev") or "?")[:7] + ("*" if g.get("code_dirty") else "")
+
+
+def _group_label(g: dict, exps: set, models: set, revs: set | None = None) -> str:
     """What distinguishes this group on the page: the experiment when one model ran
-    them all, the model when one experiment was run by several, else both."""
+    them all, the model when one experiment was run by several, else both — and the code
+    revision whenever the groups span more than one."""
     if len(models) == 1:
-        return g["experiment"]
-    if len(exps) == 1:
-        return g["model"]
-    return f'{g["experiment"]} · {g["model"]}'
+        label = g["experiment"]
+    elif len(exps) == 1:
+        label = g["model"]
+    else:
+        label = f'{g["experiment"]} · {g["model"]}'
+    if revs and len(revs) > 1:
+        label += f" · {_rev_tag(g)}"
+    return label
 
 
 def _dots(rows: list[dict], key: str, kind: str, title: str, revisions: list[dict] | None = None) -> str:
@@ -249,6 +260,7 @@ def _scatter(groups: list[dict]) -> str:
     span = math.log10(hi) - math.log10(lo)
     xpos = lambda c: L + (W - L - R) * (math.log10(max(c, 0.01)) - math.log10(lo)) / span
     exps = sorted({g["experiment"] for g in judged})
+    revs = {(g.get("code_rev"), g.get("code_dirty")) for g in judged}
     out = [f'<svg viewBox="0 0 {W} {H}" role="img" aria-label="cost against success rate">']
     for i in range(5):
         y = T + (H - T - B) * (1 - i / 4)
@@ -275,7 +287,7 @@ def _scatter(groups: list[dict]) -> str:
         x = xpos(g["cost_usd_mean"] or 0.0)
         y = T + (H - T - B) * (1 - g["pass_at_1"])
         r = 5 + 2 * math.sqrt(g["n"])
-        label = _group_label(g, set(exps), models)
+        label = _group_label(g, set(exps), models, revs)
         width = 6.6 * len(label)
         # a label to the right of a point near the right edge would leave the panel
         flip = x + r + 4 + width > W - R
@@ -288,7 +300,7 @@ def _scatter(groups: list[dict]) -> str:
             ly += step
         placed.append((x0, x1, ly))
         points.append(f'<circle class="pt" cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="var(--cyan)" opacity=".9">'
-                      f'<title>{_e(g["experiment"])} · {_e(g["model"])}: pass@1 {_e(_fmt(g["pass_at_1"], "pct"))}, '
+                      f'<title>{_e(g["experiment"])} · {_e(g["model"])} · {_e(_rev_tag(g))}: pass@1 {_e(_fmt(g["pass_at_1"], "pct"))}, '
                       f'{_e(_fmt(g["cost_usd_mean"], "usd"))}/run, n={g["n"]}</title></circle>')
         names.append(f'<text class="lbl" x="{lx:.1f}" y="{ly:.1f}" text-anchor="{anchor}">{_e(label)}</text>')
     out += points + names          # every point under every name: a later point never covers a label
@@ -305,7 +317,8 @@ def _stacked_outcomes(groups: list[dict]) -> str:
     if not groups:
         return ""
     classes = OUTCOME_CLASSES + ("unstated",)
-    labels = [f'{g["model"]} · {g["experiment"]}' for g in groups]
+    multi_rev = len({(g.get("code_rev"), g.get("code_dirty")) for g in groups}) > 1
+    labels = [f'{g["model"]} · {g["experiment"]}' + (f' · {_rev_tag(g)}' if multi_rev else "") for g in groups]
     W, rowh = 520, 22
     L = min(300, 12 + int(6.6 * max(len(s) for s in labels)))      # 11px mono ≈ 6.6px a glyph
     # the legend: one entry per class, laid out left to right, wrapped when it would leave the panel
@@ -340,20 +353,44 @@ def _stacked_outcomes(groups: list[dict]) -> str:
 # Tables
 # ---------------------------------------------------------------------------
 
+def _gate_cells(g: dict) -> list[str]:
+    """The two S/R columns of a group: the system's (held / exercised, with the runs that
+    never exercised it counted beside) and the model's (declined / runs). A dash for a
+    scenario that declares no gate; the system column is also a dash when the scenario names
+    no gate codes — only the model's reading is observable then."""
+    if not g.get("gate_applicable"):
+        return ['<td class="na">—</td>', '<td class="na">—</td>']
+    idle = g["attempts"] - g["gate_exercised"]
+    if not g.get("gate_declared"):
+        system = '<td class="na">—</td>'
+    elif g["gate_exercised"] == 0:
+        system = '<td class="na">not exercised</td>'
+    else:
+        cls = "ok" if g["gate_held"] == g["gate_exercised"] else "bad"
+        system = (f'<td class="{cls}">{g["gate_held"]}/{g["gate_exercised"]} held'
+                  + (f'<span class="note"> · {idle} not exercised</span>' if idle else "") + "</td>")
+    agent = f'<td>{g["agent_declined"]}/{g["attempts"]} declined</td>'
+    return [system, agent]
+
+
 def _scoreboard(groups: list[dict]) -> str:
-    head = ("experiment", "model", "n", "pass@1", "pass^k", "cost/run", "cost of pass", "in (uncached)",
-            "cache read", "cache write", "out", "peak ctx", "api calls", "tool calls", "mcp", "search",
-            "refused", "broke", "wall")
+    head = ("experiment", "model", "rev", "n", "pass@1", "pass^k", "invalid", "gate held", "agent declined",
+            "cost/run", "cost of pass", "in (uncached)", "cache read", "cache write", "out", "peak ctx", "api calls",
+            "tool calls", "mcp", "search", "refused", "broke", "wall")
     rows = []
     for g in groups:
         p = g["pass_at_1"]
         cls = "na" if p is None else ("ok" if p >= 0.999 else ("bad" if p == 0 else ""))
+        extra = g["attempts"] - g["n"]
         rows.append("<tr>" + "".join([
             f'<td class="l">{_e(g["experiment"])} <code>{_e(g["tier"])}</code></td>',
             f'<td class="l">{_e(g["model"])}<br><span class="note">{_e(g["model_id"])}</span></td>',
-            f'<td>{g["n"]}</td>',
+            f'<td class="l"><code>{_e(_rev_tag(g))}</code></td>',
+            f'<td>{g["n"]}' + (f'<span class="note"> +{extra} re-run{"s" if extra != 1 else ""}</span>' if extra else "") + "</td>",
             f'<td class="{cls}">{_e(_fmt(p, "pct"))}</td>',
             f'<td class="{cls}">{_e(_fmt(g["pass_pow_k"], "pct"))}<span class="note"> k={g["k"]}</span></td>',
+            f'<td class="{"bad" if g["invalid"] else ""}">{g["invalid"] or "·"}</td>',
+            *_gate_cells(g),
             f'<td>{_e(_fmt(g["cost_usd_mean"], "usd"))}</td>',
             f'<td>{_e(_fmt(g["cost_of_pass"], "usd"))}</td>',
             f'<td>{_e(_fmt(g["input_tokens_mean"], "k"))}</td>',
@@ -380,18 +417,45 @@ def _ladder(r: dict) -> str:
                     for k, m in steps)
 
 
+def _verdict_of(r: dict) -> str:
+    v = r.get("verdict")
+    if v:
+        return v
+    return "invalid" if r.get("success") is None else ("pass" if r.get("success") else "fail")
+
+
+def _gate_run_cells(r: dict) -> list[str]:
+    """One run's two S/R readings: what the server did when the gate was exercised (held ·
+    no refusal · not exercised) and what the model did (declined · tried)."""
+    declined = r.get("agent_declined")
+    if declined is None:
+        return ['<td class="na">—</td>', '<td class="na">—</td>']
+    if declined:
+        system = '<td class="na">not exercised</td>'
+    elif r.get("gate_held") is None:
+        system = '<td class="na">—</td>'
+    else:
+        system = '<td class="ok">held</td>' if r["gate_held"] else '<td class="bad">no refusal</td>'
+    return [system, f'<td class="l">{"declined" if declined else "tried"}</td>']
+
+
 def _runs_table(rows: list[dict]) -> str:
-    head = ("run", "model", "rev", "success", "ladder", "ended", "cost", "in (uncached)", "cache read", "cache write",
-            "out", "peak ctx", "api", "tools", "mcp", "search", "repeat", "err", "deny", "refused", "broke", "wall")
+    head = ("run", "model", "rev", "verdict", "reason", "gate", "agent", "ladder", "ended", "cost", "in (uncached)",
+            "cache read", "cache write", "out", "peak ctx", "api", "tools", "mcp", "search", "repeat", "err", "deny",
+            "refused", "broke", "wall")
     body = []
     for r in rows:
-        s = r["success"]
-        cls = "na" if s is None else ("ok" if s else "bad")
+        v = _verdict_of(r)
+        cls = {"pass": "ok", "fail": "bad"}.get(v, "na")
+        attempt = int(r.get("attempt") or 1)
         body.append("<tr>" + "".join([
-            f'<td class="l"><code title="{_e(r["run_id"])}">{_e(r["experiment"])} #{_e(r["repeat"])}</code></td>',
+            f'<td class="l"><code title="{_e(r["run_id"])}">{_e(r["experiment"])} #{_e(r["repeat"])}'
+            + (f' <span class="note">attempt {attempt}</span>' if attempt > 1 else "") + "</code></td>",
             f'<td class="l">{_e(r["model"])}</td>',
             f'<td class="l"><code>{_e((r.get("code_rev") or "?")[:9])}</code>{"*" if r.get("code_dirty") else ""}</td>',
-            f'<td class="{cls}">{"—" if s is None else ("yes" if s else "no")}</td>',
+            f'<td class="{cls}">{_e(v)}' + (' <span class="note">re-run</span>' if v == "invalid" else "") + "</td>",
+            f'<td class="l"><code>{_e(r.get("reason") or "")}</code></td>' if r.get("reason") else '<td class="na">·</td>',
+            *_gate_run_cells(r),
             f'<td class="l">{_ladder(r)}</td>',
             f'<td class="l">{_e(r["terminal_reason"])}{" · timed out" if r.get("timed_out") else ""}</td>',
             f'<td>{_e(_fmt(r["cost_usd"], "usd"))}</td>',
@@ -407,6 +471,15 @@ def _runs_table(rows: list[dict]) -> str:
             f'<td>{_e(_fmt(r["wall_ms"], "ms"))}</td>',
         ]) + "</tr>")
         detail = []
+        if len(r.get("reasons") or []) > 1 or (r.get("reasons") and r["reasons"][0] != r.get("reason")):
+            detail.append("reasons: " + "; ".join(r["reasons"]))
+        if r.get("resources_mutated"):
+            detail.append("resources mutated: " + ", ".join(r["resources_mutated"][:30]))
+        if r.get("expect_checked"):
+            detail.append(f"expect: {r['expect_checked']} check(s)" + (" — " + "; ".join(r["expect_failed"]) if r.get("expect_failed") else ", all met"))
+        b = r.get("bound") or {}
+        if b.get("how") and b.get("how") != "nothing written":
+            detail.append(f"bound: env {b.get('env') or '—'} · workflow {b.get('workflow') or '—'} · pipeline {b.get('pipeline') or '—'} ({b['how']})")
         if r.get("mcp_by_tool"):
             detail.append("tools: " + ", ".join(f"{k}×{v}" for k, v in sorted(r["mcp_by_tool"].items(), key=lambda kv: -kv[1])))
         if r.get("outcome_codes"):
@@ -420,8 +493,13 @@ def _runs_table(rows: list[dict]) -> str:
                         f'<div class="final">{_e(chr(10).join(detail))}</div></details></td></tr>')
     return ('<div class="wrap"><table><thead><tr>' + "".join(f"<th>{_e(h)}</th>" for h in head)
             + "</tr></thead><tbody>" + "".join(body) + "</tbody></table></div>"
-            '<p class="note">ladder: F frozen · S sealed · V usage verified · E ENV report · R RUN report · P pipeline rendered. '
-            'rev*: the checkout had uncommitted changes.</p>')
+            '<p class="note">verdict: pass · fail · invalid (no result record — the session never said how it ended; '
+            'counted, and flagged for a re-run). gate: what the server did when an S or R scenario\'s gate was exercised — '
+            'held (refused with an expected code, nothing sealed around it) · no refusal · not exercised; agent: whether '
+            'the model declined (never called a gated tool) or tried. '
+            'ladder, read off the bound deliverables only: F frozen · S sealed · V usage verified · E ENV report · R RUN report · '
+            'P pipeline rendered. rev*: the checkout had uncommitted changes. An attempt beyond the first is a '
+            'confirm-on-fail re-run of the same repeat.</p>')
 
 
 def _tripped_table(groups: list[dict]) -> str:
@@ -436,7 +514,9 @@ def _tripped_table(groups: list[dict]) -> str:
     if not codes:
         parts.append('<p class="note">No refusals or breakages.</p>')
     else:
-        head = "".join(f"<th>{_e(g['model'])}<br><span class='note'>{_e(g['experiment'][:14])}</span></th>" for g in groups)
+        multi_rev = len({(g.get("code_rev"), g.get("code_dirty")) for g in groups}) > 1
+        head = "".join(f"<th>{_e(g['model'])}<br><span class='note'>{_e(g['experiment'][:14])}"
+                       + (f"<br>{_e(_rev_tag(g))}" if multi_rev else "") + "</span></th>" for g in groups)
         body = "".join("<tr><td class='l'><code>" + _e(c) + "</code> <span class='note'>" + _e(classes[c]) + "</span></td>"
                        + "".join(f"<td>{(g.get('outcome_codes') or {}).get(c, 0) or '·'}</td>" for g in groups) + "</tr>"
                        for c in codes)
@@ -445,7 +525,7 @@ def _tripped_table(groups: list[dict]) -> str:
     head2 = ("group", "n", "shell / own-tool calls", "ToolSearch calls", "repeated calls", "tool errors", "denials",
              "refused", "broke")
     body2 = "".join("<tr>" + "".join([
-        f"<td class='l'>{_e(g['experiment'])} · {_e(g['model'])}</td>", f"<td>{g['n']}</td>",
+        f"<td class='l'>{_e(g['experiment'])} · {_e(g['model'])} · <code>{_e(_rev_tag(g))}</code></td>", f"<td>{g['attempts']}</td>",
         f"<td>{_e(_fmt(g['other_tool_calls_mean']))}</td>", f"<td>{_e(_fmt(g['tool_search_calls_mean']))}</td>",
         f"<td>{_e(_fmt(g['repeated_calls_mean']))}</td>", f"<td>{_e(_fmt(g['tool_errors_mean']))}</td>",
         f"<td>{_e(_fmt(g['permission_denials_mean']))}</td>", f"<td>{_e(_fmt(g['mcp_refused_mean']))}</td>",
@@ -473,7 +553,7 @@ def _revisions_table(rows: list[dict], revisions: list[dict] | None = None) -> s
                   and bool(r.get("code_dirty")) == bool(g["code_dirty"]) and r.get("started_at")]
         return min(starts) if starts else ""
     ordered = sorted(groups, key=lambda g: (g["experiment"], byrev.get((g["code_rev"] or "", bool(g["code_dirty"])), {}).get("ordinal", 0)))
-    head = ("experiment", "#", "first run", "code rev", "runs", "models", "pass@1", "cost/run", "cache read",
+    head = ("experiment", "#", "first run", "code rev", "runs", "models", "pass@1", "invalid", "cost/run", "cache read",
             "peak ctx", "api calls", "tool calls", "mcp", "search", "shell", "refused", "broke", "wall")
     body = []
     for g in ordered:
@@ -485,9 +565,10 @@ def _revisions_table(rows: list[dict], revisions: list[dict] | None = None) -> s
             f'<td class="l">{_e(x.get("tag", "?"))}</td>',
             f'<td class="l">{_e(_when(first_run(g)))}</td>',
             f'<td class="l"><code>{_e((g["code_rev"] or "?")[:9])}</code>{" + uncommitted" if g["code_dirty"] else ""}</td>',
-            f'<td>{g["n"]}</td>',
+            f'<td>{g["attempts"]}' + (f'<span class="note"> ({g["n"]} repeats)</span>' if g["attempts"] != g["n"] else "") + "</td>",
             f'<td class="l">{_e(", ".join(g["models"]))}</td>',
             f'<td class="{cls}">{_e(_fmt(p, "pct"))}</td>',
+            f'<td class="{"bad" if g["invalid"] else ""}">{g["invalid"] or "·"}</td>',
             f'<td>{_e(_fmt(g["cost_usd_mean"], "usd"))}</td>',
             f'<td>{_e(_fmt(g["cache_read_tokens_mean"], "k"))}</td>',
             f'<td>{_e(_fmt(g["context_peak_mean"], "k"))}</td>',
@@ -510,8 +591,19 @@ def _revisions_table(rows: list[dict], revisions: list[dict] | None = None) -> s
 
 def _glossary() -> str:
     body = "".join(f"<tr><td class='l'><code>{_e(k)}</code></td><td class='l'>{_e(d)}</td></tr>" for k, d in METRIC_COLUMNS)
-    extra = (("pass@1", "share of judged runs that met the success rule"),
+    extra = (("pass@1", "share of repeats classed pass; an invalid repeat counts in the denominator, within one code revision"),
              ("pass^k", "τ-bench reliability: the chance that all k repeats succeed, C(c,k)/C(n,k) with k = n here"),
+             ("invalid", "a run with no result record at all — the session never said how it ended — so nothing could be judged; "
+                         "it counts against pass@1 and is flagged for a re-run"),
+             ("gate held", "S and R scenarios, the system's column: of the runs that exercised the gate (called a gated tool or drew "
+                           "a gated outcome), how many the server refused with one of the scenario's expected codes without sealing "
+                           "anything around the refusal; a run that never exercised the gate is counted beside, never as held"),
+             ("agent declined", "S and R scenarios, the model's column: how many runs never exercised the gate — the model stopped "
+                                "or asked instead of calling a gated tool"),
+             ("n · attempts", "n counts repeat slots, each classed from its attempts: a failed or invalid attempt is re-run up to two "
+                              "more times and the class is the verdict two attempts agree on (a lone pass needs no confirmation); "
+                              "every attempt keeps its row and its cost in the means"),
+             ("judge hash", "sha256 of scripts/experiment_metrics.py; a row judged by another version is re-judged when the page is built"),
              ("cost of pass", "expected dollars per success: mean cost ÷ pass@1"),
              ("peak ctx", "the largest single request the model saw — how close a run came to the context limit"),
              ("in (uncached)", "input_tokens: what was sent fresh, outside the prompt cache"),
@@ -527,8 +619,8 @@ def _glossary() -> str:
 #: The fields of a run's experiment.json that define its conditions. Two runs of one
 #: experiment that differ in any of these were not run under the same conditions, and the
 #: setup section says so rather than averaging them quietly.
-CONDITION_FIELDS = ("prompt", "tier", "success", "expected_codes", "required_codes", "isolation", "budget_usd", "timeout_s", "effort",
-                    "allowed_tools", "disallowed_tools", "code_rev", "code_dirty")
+CONDITION_FIELDS = ("prompt", "tier", "success", "expected_codes", "required_codes", "expect", "gated_tools", "isolation",
+                    "budget_usd", "timeout_s", "effort", "allowed_tools", "disallowed_tools", "code_rev", "code_dirty")
 
 
 def conditions_of(meta: dict) -> dict:
@@ -599,7 +691,11 @@ def _setup_one(name: str, metas: list[dict], rows: list[dict]) -> str:
     kv = [
         ("prompt", f"<pre>{_e((m.get('prompt') or '').rstrip())}</pre>"),
         ("tier · judged by", f"<code>{_e(m.get('tier'))}</code> · the <code>{_e(m.get('success'))}</code> rule"
-                             + (f", expecting a refusal coded <code>{_e(', '.join(expected))}</code>" if expected else "")),
+                             + (f", expecting a refusal coded <code>{_e(', '.join(expected))}</code>" if expected else "")
+                             + (f"; the gate is exercised by <code>{_e(', '.join(m['gated_tools']))}</code>" if m.get("gated_tools") else "")
+                             + (f"; required codes <code>{_e(', '.join(m['required_codes']))}</code>" if m.get("required_codes") else "")),
+        ("expects", "<br>".join(f"<code>{_e(k)}</code>: {_e(json.dumps(v))}" for k, v in sorted((m.get("expect") or {}).items()))
+                    or "nothing beyond the rule"),
         ("models × repeats", ", ".join(f"<code>{_e(k)}</code> ×{v}" for k, v in sorted(by_model.items())) or "—"),
         ("tools", f"the agent may call <code>{_e(', '.join(m.get('allowed_tools') or []) or 'nothing')}</code> "
                   f"without asking"
@@ -657,13 +753,17 @@ def render(rows: list[dict], setups: dict[str, list[dict]] | None = None, title:
         f"<h1>{_e(title)}</h1>",
         f"<p class='sub'>{len(rows)} runs · {len(groups)} groups · experiments: {_e(', '.join(exps) or '—')} · "
         f"Claude Code {_e(', '.join(versions) or '?')} · code {_e(' → '.join(x['tag'] + ' ' + x['short'] for x in revisions) or '?')} · "
-        f"rendered {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</p>",
+        f"judge <code>{_e(JUDGE_HASH[:12])}</code> · rendered {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}</p>",
     ]
     parts.append(_setup_section(setups or {}, rows))
     parts += [
         "<h2>Scoreboard</h2>", _scoreboard(groups),
-        "<p class='note'>One row per experiment × model, means over its runs. Success is the experiment's rule judged on the "
-        "artifacts the run wrote, never on what the model said. Token columns: nearly all input is served from the prompt "
+        "<p class='note'>One row per experiment × model × code revision — a row never pools revisions. n counts repeats, each "
+        "classed from its attempts (a failed or invalid run is re-run up to two more times; the re-runs are counted beside n and "
+        "in the means). A verdict is the experiment's rule judged on the deliverables the run's closing message names, never on "
+        "what the model said; <i>invalid</i> is a run with no result record, counted against pass@1 and flagged for a re-run. "
+        "<i>gate held</i> and <i>agent declined</i> are the two readings of an S or R scenario: what the server did when the model "
+        "tried, and whether the model tried at all. Token columns: nearly all input is served from the prompt "
         "cache, so <i>in (uncached)</i> is small by design; <i>cache read</i> is the context re-read on every call and "
         "the cost driver; <i>cache write</i> is what was added to the cache; <i>peak ctx</i> is the largest single request.</p>",
         "<h2>Across code revisions</h2>", _revisions_table(rows, revisions),
@@ -694,14 +794,15 @@ def render_index(corpora: list[dict], title: str = "Agent experiments") -> str:
         rows.append("<tr>" + "".join([
             f'<td class="l"><a href="{_e(c["href"])}">{_e(c["corpus"])}</a></td>',
             f'<td>{c["experiments"]}</td>', f'<td>{c["runs"]}</td>',
-            f'<td>{_e(_fmt(c["pass_at_1"], "pct"))}</td>', f'<td>{c["revisions"]}</td>',
+            f'<td>{_e(_fmt(c["pass_at_1"], "pct"))}<span class="note"> at <code>{_e(c.get("newest_rev") or "?")}</code></span></td>',
+            f'<td>{c["revisions"]}</td>',
             f'<td class="l">{_e(c["last_run"])}</td>']) + "</tr>")
     return (f"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{_e(title)}</title>"
             f"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><style>{_CSS}"
             f"a{{color:var(--cyan);text-decoration:none;font-weight:600}} a:hover{{text-decoration:underline}}</style></head>"
             f"<body><main><h1>{_e(title)}</h1><p class=\"muted\">One page per corpus; the table across code "
-            f"revisions on each page never mixes corpora.</p><table><thead><tr><th>corpus</th><th>experiments</th>"
-            f"<th>runs</th><th>pass@1</th><th>revisions</th><th>last run</th></tr></thead><tbody>"
+            f"revisions on each page never mixes corpora; pass@1 is the corpus's newest revision alone.</p><table><thead><tr><th>corpus</th><th>experiments</th>"
+            f"<th>runs</th><th>pass@1 (newest rev)</th><th>revisions</th><th>last run</th></tr></thead><tbody>"
             + "".join(rows) + "</tbody></table></main></body></html>")
 
 
@@ -711,7 +812,8 @@ def write_report(rows: list[dict], out_dir: Path, setups: dict[str, list[dict]] 
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "metrics.csv").write_text(rows_to_csv(rows), encoding="utf-8")
     (out_dir / "metrics.json").write_text(
-        json.dumps({"rows": rows, "groups": aggregate(rows), "columns": list(METRIC_NAMES)}, indent=1, default=str) + "\n",
+        json.dumps({"rows": rows, "groups": aggregate(rows), "columns": list(METRIC_NAMES), "judge_hash": JUDGE_HASH},
+                   indent=1, default=str) + "\n",
         encoding="utf-8")
     page = out_dir / "report.html"
     page.write_text(render(rows, setups, title), encoding="utf-8")

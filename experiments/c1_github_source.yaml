@@ -1,9 +1,14 @@
-# C1 — a tool built from its own source at a pinned ref. Trips to look for: an unpinned
-# default branch, a build on the host that never reaches the image, a freeze that adopts a
-# conda build the request did not ask for.
+# C1 — a tool built from its own source at a pinned ref. The record must carry seqtk as a
+# primary tool with the pinned ref or commit as its version (a floating branch is not a
+# version), a container-native build, and the git route's own outcome code. Trip left to the
+# reader: a build on the host that never reaches the image.
 corpus: A
 name: c1_github_source
 tier: C1
+required_codes: ["env_manager.git_installed"]
+expect:
+  tools: [seqtk]
+  build_method: container-native-build
 prompt: |
   Install seqtk by building it from source out of its GitHub repository
   (https://github.com/lh3/seqtk) at a pinned release. Prove it by converting one of the

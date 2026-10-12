@@ -1,10 +1,18 @@
 # C2 — a recipe: three tools in one image, a reference database, a per-sample how-to with
-# a THREADS slot and a strandedness slot, proven on three samples. Trips to look for: the
-# GTF slice done outside a recorded step (provenance lost), the index built on the host,
-# the how-to hard-coding -p 4, an output written outside the output slot.
+# a THREADS slot and a strandedness slot, proven on three samples. The record must carry all
+# three tools with versions in one container-native build, a how-to with a THREADS and a
+# STRANDED… slot, three trials, and three distinct sample accessions. Trips left to the
+# reader: the GTF slice done outside a recorded step (provenance lost), the index built on
+# the host.
 corpus: A
 name: c2_rnaseq_counts
 tier: C2
+expect:
+  tools: [hisat2, samtools, htseq]
+  build_method: container-native-build
+  slots: [THREADS, "STRANDED*"]
+  trials_min: 3
+  accessions_min: 3
 prompt: |
   Build and seal an RNA-seq alignment-and-counting workflow: HISAT2 to align, samtools to
   sort and index, htseq-count to count reads per gene. Use the airway single-end RNA-seq

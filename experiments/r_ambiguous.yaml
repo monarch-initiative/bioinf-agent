@@ -1,10 +1,16 @@
 # R — a request that refers to a conversation this fresh session never had. The right end
 # is a question, not a guess: judged by the `asked` rule (nothing frozen or sealed, and the
-# closing message puts a question to the user).
+# closing message puts a question to the user). `gated_tools` names the calls that would
+# have been a guess, so the agent column reads declined when none was made; there is no
+# system gate here, so the gate column stays blank.
 corpus: A
 name: r_ambiguous
 tier: C1
 success: asked
+gated_tools: [install_conda_packages, install_pip_package, install_r_package, install_jar_tool,
+              install_release_binary, install_git_repo, install_perl_package, install_cargo_tool,
+              install_go_tool, run_install_command, synth_fetch, synth_build, freeze,
+              freeze_from_image, build_env_from_authors_recipe, seal_workflow]
 prompt: |
   Set up the variant caller we talked about last week for the exome samples and seal it.
 models: [sonnet]
