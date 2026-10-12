@@ -4,16 +4,15 @@ ONE tool: `describe_sealed_step`. It is the MCP surface for re-running a single
 recorded step of an existing SEALED pipeline ("just generate step 2 of my existing pipeline").
 
 WHY ITS OWN MODULE (not workflow_tools). This is the third member of the
-reverse-theme-park ADVISORY-READER family — `interpret_request` (intent_tools, the
-front gate) · `plan_request` (plan_tools, composition) · `describe_sealed_step` (here,
-the RUN_STEP-of-sealed reader). All three DISPATCH NOTHING and return an untagged
-`{ok: …}` query dict, deliberately OFF the proven/refused honesty namespace: a read
-that reports facts is a different axis from an outcome that gates an action (the
-ShippedBinary "one key, one meaning" lesson). workflow_tools.py holds the honesty
-PRIMITIVES (seal_workflow / patch_pipeline / …), each returning a proven/refused
-terminal — and it is a FULLY-TAGGED file (tests/test_outcome_tags.py). An advisory
-reader's untagged `{ok/error}` returns belong with its siblings, not among tagged
-primitives; keeping them here is what keeps that ratchet honest.
+ADVISORY-READER family — `interpret_request` (intent_tools, the front gate) ·
+`plan_request` (plan_tools, composition) · `describe_sealed_step` (here, the
+RUN_STEP-of-sealed reader). All three DISPATCH NOTHING. A successful read returns an
+untagged `{ok: true, …}` query dict: the facts it reports are a different axis from an
+outcome that gates an action (the ShippedBinary "one key, one meaning" lesson). A
+request the reader cannot serve — no such workflow, a spec that does not parse, no
+such step — is a `refused` terminal like any other gate's. workflow_tools.py holds
+the honesty PRIMITIVES (seal_workflow / patch_pipeline / …), each returning a
+proven/refused terminal.
 
 The typed SEAM this reader stands on lives in `spec_writer`
 (`load_workflow_spec` / `select_pipeline_step`) — a sealed spec is read back through
@@ -31,6 +30,7 @@ from pathlib import Path
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp
 from agent.skills import workspace as _workspace
+from agent.skills.outcomes import refused
 
 
 @mcp.tool()
@@ -84,26 +84,26 @@ def describe_sealed_step(workflow_name: str, step: int) -> dict:
 
     spec_path = _workspace.sealed_workflow_path(workflow_name)
     if spec_path is None:
-        return {"ok": False,
-                "error": f"no sealed workflow '{workflow_name}'",
-                "available_workflows": _workspace.sealed_workflow_names()}
+        return refused("sealed.unknown_workflow", ok=False,
+                       error=f"no sealed workflow '{workflow_name}'",
+                       available_workflows=_workspace.sealed_workflow_names())
 
     try:
         spec = load_workflow_spec(spec_path)
     except Exception as e:
         # The typed seam refused a malformed artifact — the whole point of reading
         # back through the model instead of scraping. Surface it, never execute past it.
-        return {"ok": False,
-                "error": f"sealed workflow '{workflow_name}' is not a valid WorkflowSpec: "
-                         f"{type(e).__name__}: {str(e)[:400]}"}
+        return refused("sealed.invalid_spec", ok=False,
+                       error=f"sealed workflow '{workflow_name}' is not a valid WorkflowSpec: "
+                             f"{type(e).__name__}: {str(e)[:400]}")
 
     roster = [{"step": st.step, "tool": st.tool, "command": st.command}
               for st in spec.pipeline_steps]
     try:
         st = select_pipeline_step(spec, step)
     except Exception as e:
-        return {"ok": False, "error": str(e),
-                "available_steps": [r["step"] for r in roster], "steps": roster}
+        return refused("sealed.unknown_step", ok=False, error=str(e),
+                       available_steps=[r["step"] for r in roster], steps=roster)
 
     input_paths = [si.path for si in st.inputs]
     preconditions = [{"path": p, "exists": Path(p).exists()} for p in input_paths]

@@ -31,7 +31,7 @@ code{background:#0a1017;padding:1.5px 5px;border-radius:3px;color:var(--acc);fon
 </style>
 <div class="wrap">
 <h1>Intent grid — does a user's input reach what they meant?</h1>
-<p class="sub">The INPUT side. Its sibling <code>outcomes_dashboard.html</code> maps every place the code can END; this maps every thing a user can MEAN. A map of answers cannot show a question with no answer — and a terminal can be green with the wrong tool in it.</p>
+<p class="sub">The INPUT side: every thing a user can MEAN, and whether it reaches the right outcome. The outcome vocabulary swept from the code is the OUTPUT side — every place the code can END. A map of answers cannot show a question with no answer — and a terminal can be green with the wrong tool in it.</p>
 <div class="meter">
 <div class="m"><div class="n">61</div><div class="l">scenarios</div></div>
 <div class="m"><div class="n ok">36</div><div class="l">reach intent</div></div>
@@ -40,7 +40,7 @@ code{background:#0a1017;padding:1.5px 5px;border-radius:3px;color:var(--acc);fon
 <div class="m"><div class="n defer">12</div><div class="l">deferred → identity eval</div></div>
 <div class="m"><div class="n warn">12</div><div class="l">harness cannot check</div></div>
 </div>
-<p class="sub">Four states, and the last two are not failures. <b class="ok">36</b> graded rows reach the intent · <b class="bad">1</b> were measured and do NOT · <b class="defer">12</b> await a grader that does not exist yet · <b class="warn">12</b> name a fact no assertion here can read. The last two carry <b>no verdict at all</b> — not a red one. Counting them as failures (which this page did until 2026-08-06) rounds absence up into a judgement, in the one meter that exists to refuse exactly that.</p>
+<p class="sub">Four states, and the last two are not failures. <b class="ok">36</b> graded rows reach the intent · <b class="bad">1</b> were measured and do NOT · <b class="defer">12</b> await a grader that does not exist yet · <b class="warn">12</b> name a fact no assertion here can read. The last two carry <b>no verdict at all</b> — not a red one. Counting them as failures rounds absence up into a judgement, in the one meter that exists to refuse exactly that.</p>
 <div class="bar"><i class="bg-ok" style="width:97%"></i><i class="bg-bad" style="width:3%"></i></div>
 <h2>Where the meaning is lost</h2>
 <p class="sub">intent <span class="arrow">→[1]→</span> interpretation <span class="arrow">→[2]→</span> outcome <span class="arrow">→[3]→</span> report. Ordered by consequence: a silently wrong tool outranks a loud failure, because a failure tells you it failed. <b>Counts are of MEASURED failures only</b> — a row the harness cannot check contributes to no gap, because attributing it to one would be the verdict it is marked as unable to support.</p>
@@ -127,5 +127,5 @@ code{background:#0a1017;padding:1.5px 5px;border-radius:3px;color:var(--acc);fon
 <tr><td>❓</td><td><code>dorado +repo</code><span class="arrow">→</span><span class="note">last seen: synthesis</span><span class="arrow">·want</span><span class="note">binary</span> <span class="pill warn">harness cannot check</span><br><span class="note">dorado-cdn-binary-invisible-routes-to-cuda-source-build</span></td><td class="note">Install ONT dorado the way ONT ships it — the prebuilt linux-x64 binary (or their own image).</td><td class="note">Every gate reads green: the repo link worked as intended, the collision guard fired correctly, identity is CONFIRMED via anchor &#x27;repo&#x27; — and the outcome is still wrong, proving an </td></tr>
 </table></div>
 <div class="stamp">
-Projected from <code>docs/intent_corpus.json</code>, probed against live registries on <b>2026-08-06</b>. Executed by <code>tests/live/test_intent_corpus.py</code> (<code>pytest -m live</code>).<br>Nothing on this page is authored — it is a projection of that corpus, exactly as the outcomes dashboard is a projection of the code. This project hand-drew an intent map once; it rotted, and tier 7 deleted 2,653 lines of it. <b>A scenario probed long ago is a claim about the past</b> — if the date above is stale, re-probe before believing a single number here.
+Projected from <code>docs/intent_corpus.json</code>, probed against live registries on <b>2026-08-06</b>. Executed by <code>tests/live/test_intent_corpus.py</code> (<code>pytest -m live</code>).<br>Nothing on this page is authored — it is a projection of that corpus, exactly as the outcome vocabulary is swept from the code. A hand-drawn intent map rots. <b>A scenario probed long ago is a claim about the past</b> — if the date above is stale, re-probe before believing a single number here.
 </div></div>

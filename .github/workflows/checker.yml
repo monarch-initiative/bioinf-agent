@@ -1,17 +1,9 @@
-# The honesty checker — relocated to neutral infrastructure (Phase 6: the "adversary property").
-#
-# WHAT THIS IS. The repo's honesty gates run HERE, on GitHub's runners, on every push and
-# PR — not only when someone remembers to run pytest locally. That tier is anchored by the
-# outcome-tag ratchet (tests/test_outcome_tags.py) plus every Layer-1 / Layer-2 invariant
-# test (env_honesty.check_build, check_workflow_invariants, the seam-reader tests, ...).
-#
-# WHY IT MATTERS (docs/design_reverse_theme_park.md §9). The crown-jewel gate is
-# test_committed_ledger_matches_a_fresh_sweep_of_the_code: it RE-DERIVES the committed
-# docs/outcomes_ledger.json from a fresh AST sweep of the source and fails if they differ.
-# Because CI recomputes the ledger FROM SOURCE on a machine the agent does not run on, an
-# agent editing this repo cannot make the gate pass by locally doctoring the committed
-# ledger (or the coverage overlay) to hide an untagged terminal — the derivation is redone
-# off its machine. Relocation, not a new check: the same test, now beyond edit reach.
+# The honesty checker — the repo's honesty gates run HERE, on GitHub's runners, on every
+# push and PR, not only when someone remembers to run pytest locally. The tier is anchored
+# by the outcome-tag ratchet (tests/test_outcome_tags.py: every terminal in the swept
+# primitive modules is classified, re-derived by an AST sweep of the source on a machine
+# the agent does not run on) plus every Layer-1 / Layer-2 invariant test
+# (env_honesty.check_build, check_workflow_invariants, the seam-reader tests, ...).
 #
 # WHAT IT DOES NOT CLAIM. This file lives IN the repo, so it is itself within the agent's
 # edit reach. CI relocates EXECUTION onto neutral infra and makes any weakening of the gate

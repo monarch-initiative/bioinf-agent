@@ -8,11 +8,10 @@ an `outcome` class + a stable `code`. This does DOUBLE DUTY:
      caller (the agent) can branch on `outcome` / `code` instead of parsing an
      English error string. `refused` → fix inputs and retry; `broke` → likely
      rebuild; `proven` → proceed.
-  2. A reconciled system model — scripts/extract_outcomes.py harvests these tags
-     straight from the source (AST, no execution) into docs/outcomes_ledger.json,
-     rendered to docs/outcomes_dashboard.html. That model is DERIVED from the code,
-     so it cannot silently drift. tests/test_outcome_tags.py makes an untagged
-     terminal a build failure.
+  2. A derived system model — scripts/extract_outcomes.py harvests these tags
+     straight from the source (AST, no execution), so the decision surface is
+     read off the code and cannot silently drift. tests/test_outcome_tags.py
+     makes an untagged terminal a build failure.
 
 The six classes:
 

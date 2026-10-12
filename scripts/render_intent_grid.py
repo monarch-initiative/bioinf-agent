@@ -2,12 +2,10 @@
 """
 render_intent_grid — the INPUT-side map: does a user's intent reach what they meant?
 
-The sibling of `render_outcomes_dashboard.py`, and deliberately its mirror image:
-
-    outcomes_dashboard  — the OUTPUT side. Every place the code can END (swept from the
-                          AST). "What can the system emit, and has it ever run?"
-    intent_grid (here)  — the INPUT side. Every thing a user can MEAN (live-probed against
-                          real registries). "Does that meaning reach the right outcome?"
+The INPUT side: every thing a user can MEAN (live-probed against real registries) —
+"does that meaning reach the right outcome?" The outcome vocabulary
+(agent/skills/outcomes.py, swept from the source by scripts/extract_outcomes.py) is the
+OUTPUT side: every place the code can END.
 
 (No counts in this docstring on purpose — a number in prose rots, which is Rule 4's
 corollary and the reason the page renders every figure from the corpus at run time.)
@@ -17,7 +15,7 @@ a QUESTION that has no answer: an intent reaching no terminal is not a dark cell
 not a cell at all. And a cell can be GREEN WITH THE WRONG ANSWER IN IT — `resolve('cellranger')`
 returns a clean, fully-tagged `proven` install_call for a CRAN spreadsheet-range parser
 when the user meant 10x Genomics' scRNA-seq pipeline. Every terminal behaved perfectly.
-Terminal coverage cannot see it, because nothing is broken except the meaning.
+The outcome sweep cannot see it, because nothing is broken except the meaning.
 
 THE THREE GAPS this draws:
 
@@ -199,10 +197,10 @@ def render(corpus: dict) -> str:
     P.append(f"<style>{_CSS}</style>")
     P.append('<div class="wrap">')
     P.append("<h1>Intent grid — does a user's input reach what they meant?</h1>")
-    P.append('<p class="sub">The INPUT side. Its sibling '
-             '<code>outcomes_dashboard.html</code> maps every place the code can END; this '
-             'maps every thing a user can MEAN. A map of answers cannot show a question with '
-             'no answer — and a terminal can be green with the wrong tool in it.</p>')
+    P.append('<p class="sub">The INPUT side: every thing a user can MEAN, and whether it '
+             'reaches the right outcome. The outcome vocabulary swept from the code is the '
+             'OUTPUT side — every place the code can END. A map of answers cannot show a '
+             'question with no answer — and a terminal can be green with the wrong tool in it.</p>')
 
     # -- the meter -----------------------------------------------------------
     # % is over GRADED rows — the ones a resolve()-probe actually judged. The deferred and
@@ -322,7 +320,7 @@ def render(corpus: dict) -> str:
              f"registries on <b>{_e(probed)}</b>. Executed by "
              f"<code>tests/live/test_intent_corpus.py</code> (<code>pytest -m live</code>).<br>"
              f"Nothing on this page is authored — it is a projection of that corpus, exactly "
-             f"as the outcomes dashboard is a projection of the code. A hand-drawn intent "
+             f"as the outcome vocabulary is swept from the code. A hand-drawn intent "
              f"map rots. "
              f"<b>A scenario probed long ago is a claim about the past</b> — if the date "
              f"above is stale, re-probe before believing a single number here.")

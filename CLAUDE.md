@@ -249,21 +249,11 @@ The user opens `ssh hpc-agent` in a separate terminal and leaves it open. Every 
 
 `pytest tests/` — covers both layers: `env_honesty.check_build` for the env, `check_workflow_invariants` (roster: `agent/skills/invariants.py`) + the usage self-test for the workflow. Sanity tests verify the gates themselves catch silent-empty-success steps, relative paths, undeclared placeholders, and orphan step inputs. The suite runs on `./.conda_runtime/bin/python`.
 
-### The two maps
+### The intent grid
 
-The suite tells you the code does what it says. These tell you **what the system IS**, from opposite ends:
+The suite tells you the code does what it says. The intent grid tells you whether what a user can MEAN reaches the right outcome: `docs/intent_corpus.json` is live-probed against the real registries and rendered to `docs/intent_grid.html`. A terminal can be green with the wrong tool in it (a name collision resolving to the wrong project); the resolver's duty there is disclosure — `SAME NAME, DIFFERENT PROJECTS` blocks with the `github_repo=` to re-run with — and judging the entry's own words remains the reader's call.
 
-| | question | source | page |
-|---|---|---|---|
-| **outcomes dashboard** | what can the code EMIT, and has it ever run? | AST sweep → `docs/outcomes_ledger.json` + real coverage | `docs/outcomes_dashboard.html` |
-| **intent grid** | what can a user MEAN, and does it reach that? | live-probed → `docs/intent_corpus.json` | `docs/intent_grid.html` |
-
-Neither substitutes for the other: an intent that reaches no terminal isn't a dark cell — it isn't a cell; and a terminal can be green with the wrong tool in it (a name collision resolving to the wrong project). The resolver's duty there is disclosure — `SAME NAME, DIFFERENT PROJECTS` blocks with the `github_repo=` to re-run with — and judging the entry's own words remains the reader's call.
-
-    ./scripts/refresh_meters.sh   # output side: ledger + coverage overlay + dashboard (--fast skips the re-measure)
-    pytest -m live && python scripts/build_intent_corpus.py && python scripts/render_intent_grid.py   # input side
-
-**The meters are DERIVED, and derived files are never line-merged.** `outcomes_ledger.json` and `terminal_coverage.json` are tracked RECORDS; the dashboard HTML is an untracked VIEW. On any merge conflict in the two records: take EITHER side, run `./scripts/refresh_meters.sh` on the merged tree, commit what it writes.
+    pytest -m live && python scripts/build_intent_corpus.py && python scripts/render_intent_grid.py
 
 **The intent corpus** (`tests/live/test_intent_corpus.py`) is a **ratchet, not a green suite**: each row is one real user intent with the outcome it deserves; a change detector fires on behaviour drift, and a correctness ratchet (`xfail(strict=True)`) fails-on-XPASS so a fix must be PROMOTED. Its rules:
 

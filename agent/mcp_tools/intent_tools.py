@@ -20,6 +20,7 @@ import json
 
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp
+from agent.skills.outcomes import refused
 
 
 @mcp.tool()
@@ -60,19 +61,22 @@ def interpret_request(intent_json: str) -> dict:
     decline → out of scope, do nothing. ask → one targeted question, then re-interpret.
     investigate → look the gap up, record how, re-interpret. proceed → run `rail`.
     A malformed intake (bad JSON, a missing or extra field, a decline with no reason)
-    returns `{"ok": false, "error": …}` instead of routing anything.
+    returns a `refused` terminal — `{"ok": false, "error": …}` — instead of routing anything.
     """
     try:
         raw = json.loads(intent_json)
     except json.JSONDecodeError as e:
-        return {"ok": False, "error": f"intent_json is not valid JSON: {e}"}
+        return refused("intent.invalid_json", ok=False,
+                       error=f"intent_json is not valid JSON: {e}")
     if not isinstance(raw, dict):
-        return {"ok": False, "error": "intent_json must be a JSON object (the RequestIntent)"}
+        return refused("intent.not_an_object", ok=False,
+                       error="intent_json must be a JSON object (the RequestIntent)")
 
     try:
         intent = _ms._intent.parse_intent(raw)
     except Exception as e:  # pydantic.ValidationError or the post-init shape check
-        return {"ok": False, "error": f"RequestIntent validation failed: {e}"}
+        return refused("intent.validation_failed", ok=False,
+                       error=f"RequestIntent validation failed: {e}")
 
     result = _ms._intent.gate(intent)
     return {

@@ -3142,6 +3142,21 @@ def test_env_honesty_evidence_shape_word_boundary_and_perl_and_probes():
     assert sv("uname -a")                                             # no token, no recognizable probe
 
 
+def test_env_honesty_references_tool_needs_a_boundary_on_both_sides():
+    """`_references_tool` is the anchor every evidence check stands on. Its right
+    boundary was pinned (cat ⊄ concatenate); its left boundary was not, and the left
+    boundary is what stops `mysamtools` naming `samtools`. The one permitted glue on
+    the left is perl's `-M<Module>`, and only that."""
+    from agent.skills.env_honesty import _references_tool as ref
+    assert ref("samtools --version", "samtools") is True
+    assert ref("/opt/bin/samtools view x.bam", "samtools") is True      # `/` is a boundary
+    assert ref("mysamtools --version", "samtools") is False            # a letter on the left
+    assert ref("b2samtools --version", "samtools") is False            # a digit on the left
+    assert ref("samtools2 --version", "samtools") is False             # a digit on the right
+    assert ref("perl -MBio::DB::HTS -e1", "Bio::DB::HTS") is True      # the -M glue
+    assert ref("perl -MXBio::DB::HTS -e1", "Bio::DB::HTS") is False    # glue is -M, not any letter
+
+
 def test_env_honesty_POLICY_carries_I12_accelerator():
     from agent.skills.env_honesty import check_build
     # mps must be dev_only

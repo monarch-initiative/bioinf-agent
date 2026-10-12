@@ -259,6 +259,7 @@ def test_describe_sealed_step_unknown_workflow_lists_the_alternatives(reports_di
     _write_spec(reports_dir, _spec_dict(name="samtools_wf"))
     r = ST.describe_sealed_step("no_such_zzz", 1)
     assert r["ok"] is False
+    assert (r["outcome"], r["code"]) == ("refused", "sealed.unknown_workflow")
     assert set(r["available_workflows"]) == {"talos_wf", "samtools_wf"}
 
 
@@ -266,6 +267,7 @@ def test_describe_sealed_step_out_of_range_step_lists_the_roster(reports_dir):
     _write_spec(reports_dir, _spec_dict())
     r = ST.describe_sealed_step("talos_wf", 99)
     assert r["ok"] is False
+    assert (r["outcome"], r["code"]) == ("refused", "sealed.unknown_step")
     assert r["available_steps"] == [1, 2]
     assert [s["step"] for s in r["steps"]] == [1, 2]
 
@@ -277,6 +279,7 @@ def test_describe_sealed_step_refuses_a_corrupt_spec_instead_of_executing_past_i
         yaml.dump({"workflow_name": "corrupt", "pipeline_steps": [{"step": 1}]}))
     r = ST.describe_sealed_step("corrupt", 1)
     assert r["ok"] is False
+    assert (r["outcome"], r["code"]) == ("refused", "sealed.invalid_spec")
     assert "not a valid WorkflowSpec" in r["error"]
 
 

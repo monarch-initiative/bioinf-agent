@@ -37,6 +37,7 @@ import urllib.request
 from typing import Any, Optional
 
 from agent.models import core_data as _core_data
+from agent.skills.outcomes import broke, refused
 
 try:
     # the authors'-own-resources reliability gate (image / recipe completeness). Imported
@@ -1138,13 +1139,15 @@ def _release_for_version(repo: str, version: str, tool: str = "",
     is full (100) and misses — the >100-release repo. Only ever called on the
     already-narrow version+github_repo path."""
     if not repo or "/" not in repo or not version:
-        return {"status": "error", "error": "no repo/version"}
+        return refused("resolver.release_lookup_unspecified",
+                       status="error", error="no repo/version")
     data, err = _fetch_json(
         f"https://api.github.com/repos/{repo}/releases?per_page=100", timeout)
     if err:
-        return {"status": "error", "error": err}
+        return broke("resolver.release_lookup_failed", status="error", error=err)
     if not isinstance(data, list):
-        return {"status": "error", "error": "unexpected releases payload"}
+        return broke("resolver.release_lookup_failed", status="error",
+                     error="unexpected releases payload")
 
     def _asset_result(rel: dict) -> Optional[dict]:
         assets = [a.get("browser_download_url") for a in (rel.get("assets") or [])
@@ -1171,7 +1174,7 @@ def _release_for_version(repo: str, version: str, tool: str = "",
             rel, terr = _fetch_json(
                 f"https://api.github.com/repos/{repo}/releases/tags/{cand}", timeout)
             if terr:
-                return {"status": "error", "error": terr}
+                return broke("resolver.release_lookup_failed", status="error", error=terr)
             if isinstance(rel, dict) and rel.get("tag_name"):
                 return _asset_result(rel)
         return {"status": "incomplete",

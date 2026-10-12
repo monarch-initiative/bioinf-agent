@@ -1,24 +1,24 @@
 """
-Drift-lint for the outcome-tag system model (agent/skills/outcomes.py +
-scripts/extract_outcomes.py). These make an untagged terminal a BUILD FAILURE,
-so the harvested decision-surface model can't silently drift from the code —
-the same posture as the honesty contract, turned on the architecture itself.
-
-Prototype scope: the seal subsystem (workflow_tools.seal_workflow). Widen
-`_TAGGED_FUNCS` as tagging rolls out to more primitives.
+Drift-lint for the outcome-tag vocabulary (agent/skills/outcomes.py +
+scripts/extract_outcomes.py). An untagged terminal anywhere in the swept
+primitive modules is a BUILD FAILURE, so the decision surface the code can
+reach never drifts from the vocabulary that classifies it — the honesty
+contract's posture, turned on the architecture itself.
 """
 from __future__ import annotations
 
 import ast
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 WF = ROOT / "agent" / "mcp_tools" / "workflow_tools.py"
+EXTRACTOR = ROOT / "scripts" / "extract_outcomes.py"
 HELPERS = {"proven", "refused", "broke", "vanished", "degraded", "loop"}
-_TAGGED_FUNCS = {"seal_workflow"}
 
 
 def _fn(name: str) -> ast.FunctionDef:
@@ -28,19 +28,11 @@ def _fn(name: str) -> ast.FunctionDef:
     raise AssertionError(f"{name} not found in {WF}")
 
 
-@pytest.mark.integration
-def test_no_untagged_error_returns_in_tagged_funcs():
-    """Every terminal in a tagged function goes through an outcome helper — a raw
-    `return {...}` (a new, un-classified terminal) fails this test. Drift becomes
-    a build break, not a silent hole."""
-    offenders = []
-    for name in _TAGGED_FUNCS:
-        for n in ast.walk(_fn(name)):
-            if isinstance(n, ast.Return) and isinstance(n.value, ast.Dict):
-                offenders.append(f"{name}:{n.lineno}")
-    assert not offenders, (
-        "raw dict returns (must use an outcome helper from agent.skills.outcomes): "
-        f"{offenders}")
+def _load_extractor():
+    spec = importlib.util.spec_from_file_location("extract_outcomes", EXTRACTOR)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @pytest.mark.integration
@@ -59,325 +51,52 @@ def test_seal_codes_unique_namespaced_and_valid():
     assert len(codes) == len(set(codes)), f"duplicate seal codes: {sorted(codes)}"
 
 
-def _load_extractor():
-    spec = importlib.util.spec_from_file_location(
-        "extract_outcomes", ROOT / "scripts" / "extract_outcomes.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def _load_dashboard():
-    spec = importlib.util.spec_from_file_location(
-        "render_outcomes_dashboard", ROOT / "scripts" / "render_outcomes_dashboard.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 @pytest.mark.integration
-def test_committed_ledger_matches_a_fresh_sweep_of_the_code():
-    """The committed ledger must equal what a fresh AST sweep of the code yields.
-
-    THE BUG THIS EXISTS FOR (found in tier 7, real, and it had been live for two
-    commits): docs/outcomes_ledger.json is a CACHE OF THE CODE, and nothing
-    re-derived it from the code. Every other test here reads the checked-in JSON
-    and joins it to the checked-in overlay — so the two stayed consistent WITH
-    EACH OTHER while both drifted from reality, and the suite stayed green.
-
-    Measured at the time: the ledger listed 3 terminals that no longer existed
-    (ADOPTED_BY_DIGEST.digest_resolved/image_present, env_build.cache_hit — dead
-    since tier 5) and OMITTED 3 that did exist: run_container/seal/stage
-    .env_contract_violated. Those three are the tier-5 cache gates — the checks
-    that stop a stale env being SERVED. The instrument that measures the honesty
-    contract did not know the contract's most important gate existed, and the
-    dashboard rendered a fiction with full confidence.
-
-    Stale-in-both-directions, invisible to CI, in the audit's own instrument. So:
-    regenerating the ledger is not housekeeping you may skip. It is this test.
-
-    Fix when this fails:  python scripts/extract_outcomes.py
-    (then re-render the dashboard, which is a pure projection of the ledger).
-    """
-    import json
-    ex = _load_extractor()
-    committed = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
-
-    fresh = ex.sweep()
-    corpus = ex.test_corpus()
-    for e in fresh:
-        e["named_in_test"] = (e["code"] in corpus) if e["code"] else None
-    fresh = sorted(fresh, key=lambda e: (not e["tagged"], e["outcome"], e["where"]))
-
-    def ident(entries):
-        return {(e["code"], e["where"]) for e in entries}
-
-    # `code` is None on an UNTAGGED terminal, so these tuples are not sortable
-    # against each other — and the only place they get sorted is inside the
-    # failure message below. This lint's whole job is to name its own fix; it
-    # was raising TypeError from the f-string instead of printing the fix, so a
-    # routine ledger shift read as a crash in the test.
-    def _preview(ids):
-        return sorted(ids, key=lambda t: (t[0] or "", t[1] or ""))[:5]
-
-    phantom = ident(committed) - ident(fresh)   # in the ledger, not in the code
-    missing = ident(fresh) - ident(committed)   # in the code, not in the ledger
-    assert not phantom, (
-        f"{len(phantom)} ledger terminal(s) no longer exist in the code — the "
-        f"dashboard is rendering ghosts. Run scripts/extract_outcomes.py. {_preview(phantom)}")
-    assert not missing, (
-        f"{len(missing)} real terminal(s) are ABSENT from the ledger — they are "
-        f"invisible to the dashboard and to the seaworthy meter, so a gate can "
-        f"exist and be uncounted. Run scripts/extract_outcomes.py. {_preview(missing)}")
-    assert committed == fresh, (
-        "ledger metadata drifted from a fresh sweep (outcome/source/func/"
-        "named_in_test/end_line). Run scripts/extract_outcomes.py")
-
-
-@pytest.mark.integration
-def test_coverage_overlay_keys_resolve_against_the_ledger():
-    """The overlay joins to the ledger on `where` (file:line). That key MOVES on
-    any edit above a terminal, so a ledger regen without a coverage re-measure
-    silently makes every join miss — and a missed join reads as `dark`, i.e. the
-    meter quietly under-reports instead of erroring.
-
-    (Tier 7 asked whether to re-key this by `code` instead. Measured: `code` is
-    NOT unique — 18 codes appear at 2+ sites, and even file+code+func collides 7
-    times, because one function can emit the same code twice. There is no stable
-    unique natural key, so the honest fix is not a different key: it is asserting
-    the two artifacts were generated from the same sweep. That is this test.)"""
-    import json
-    ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
-    overlay = json.loads((ROOT / "docs" / "terminal_coverage.json").read_text())["by_where"]
-    ledger_keys = {e["where"] for e in ledger}
-    stale = set(overlay) - ledger_keys
-    unmeasured = ledger_keys - set(overlay)
-    assert not stale, (
-        f"{len(stale)} overlay key(s) point at no ledger terminal — the overlay "
-        f"predates the ledger. Run scripts/measure_terminal_coverage.py. {sorted(stale)[:5]}")
-    assert not unmeasured, (
-        f"{len(unmeasured)} ledger terminal(s) have no overlay entry, so they "
-        f"read as dark without ever being measured. Run "
-        f"scripts/measure_terminal_coverage.py. {sorted(unmeasured)[:5]}")
-
-
-@pytest.mark.integration
-def test_dashboard_renders_every_terminal_deterministically():
-    """The health panel (docs/outcomes_dashboard.html) must be a faithful,
-    self-contained projection of the ledger: every terminal present, no CDN, no
-    leftover format braces, byte-identical on a re-render, in BOTH the
-    coverage-measured and grep-fallback modes."""
-    import json, re
-    rd = _load_dashboard()
-    ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
-    for overlay in (None, {e["where"]: (i % 3 != 0) for i, e in enumerate(ledger)}):
-        html1 = rd.render(ledger, overlay)
-        html2 = rd.render(ledger, overlay)
-        assert html1 == html2, "dashboard render is not deterministic"
-        assert html1.count("<li class=") == len(ledger), \
-            "dashboard dropped or duplicated terminals vs the ledger"
-        assert "src=" not in html1.lower() or "http" not in html1.lower(), \
-            "dashboard must be self-contained (no external/CDN resources)"
-        assert not re.search(r"\{[a-z_]+\}", html1), \
-            "unfilled Python format placeholder leaked into the HTML"
-        for e in ledger:
-            if e.get("code"):
-                assert e["code"] in html1, f"terminal {e['code']} missing from dashboard"
-    # grep-fallback mode must SAY it's unmeasured; measured mode must not.
-    assert "NOT measured" in rd.render(ledger, None)
-    assert "NOT measured" not in rd.render(ledger, {e["where"]: True for e in ledger})
-
-
-def test_dashboard_declares_a_partially_stale_overlay_instead_of_counting_it_dark():
-    """A PARTIAL join is the failure the `file:line` key makes routine, and it is the
-    one the page used to render silently.
-
-    `_cover_state` maps a key the overlay has never heard of to "dark". That is right
-    for one terminal and a fabricated blackout for a file that shifted two lines: on
-    real history, the ledger at 4adf7c8 against the overlay from 513fbbd renders
-    95/149/310 where the truth is 129/160/265. Nothing in the page said so — the only
-    banner distinguished "overlay present" from "overlay absent", and a partial overlay
-    is present.
-
-    The CI-blocking test above stops that reaching main. This one is about the hours
-    before the push, when the page is the only thing you are reading."""
-    import json
-    rd = _load_dashboard()
-    ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
-    full = {e["where"]: True for e in ledger}
-
-    assert "overlay does not match" not in rd.render(ledger, full), \
-        "a fully-joining overlay must render no staleness banner"
-
-    # Drop five keys, exactly as a five-line-motion diff would.
-    dropped = sorted(full)[:5]
-    partial = {k: v for k, v in full.items() if k not in dropped}
-    html = rd.render(ledger, partial)
-
-    assert "overlay does not match" in html, (
-        "a partially-joining overlay rendered no warning — the page is counting "
-        "unmeasured terminals as dark and presenting that as a measurement")
-    assert "NOT measured" not in html, \
-        "a partial overlay is not the same state as no overlay; don't conflate them"
-    # The count must be the number of unjoined KEYS, and it must be visible. (Keys, not
-    # rows: `where` is not unique — freeze_tools.py:747 is a one-line ternary holding two
-    # terminals — so one dropped key can darken two rows. The banner counts what it can
-    # name, and says "terminals have no measurement", which is true of both.)
-    assert f"{len(dropped)} of {len(ledger)}" in html, (
-        f"banner must name how many terminals are unmeasured out of how many exist; "
-        f"expected '{len(dropped)} of {len(ledger)}'")
-    assert dropped[0] in html, "banner must name a concrete unjoined key to chase"
-
-
-@pytest.mark.integration
-def test_seaworthy_scope_is_well_defined_and_measurable():
-    """The Seaworthy milestone rests on a machine-derived load-bearing surface
-    (scripts/seaworthy_scope.py). Guard its definition so the goalposts can't
-    silently move: load-bearing = every proven ∪ every invariant ∪ named
-    firewalls; the surface splits local/HPC; and the meter is a clean fraction."""
-    import json, importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "seaworthy_scope", ROOT / "scripts" / "seaworthy_scope.py")
-    sc = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(sc)
-    ledger = json.loads((ROOT / "docs" / "outcomes_ledger.json").read_text())
-
-    lb = [e for e in ledger if sc.is_load_bearing(e)]
-    # every proven and every invariant record must be in scope (the trust surface)
-    for e in ledger:
-        if e.get("outcome") == "proven" or e.get("source") == "invariant":
-            assert sc.is_load_bearing(e), f"{e.get('code')} must be load-bearing"
-    # named firewalls too
-    for code in sc.FIREWALL_CODES:
-        hits = [e for e in ledger if e.get("code") == code]
-        for e in hits:
-            assert sc.is_load_bearing(e), f"firewall {code} must be load-bearing"
-    # every load-bearing terminal is in exactly one arena
-    for e in lb:
-        assert sc.arena(e) in ("local", "hpc")
-    # the meter is a clean fraction, and the summary is internally consistent
-    overlay = json.loads((ROOT / "docs" / "terminal_coverage.json").read_text())["by_where"]
-    m = sc.summarize(ledger, overlay)
-    assert m["local_total"] + m["hpc_total"] == len(lb)
-    assert 0 <= m["local_certified"] <= m["local_total"]
-    assert m["seaworthy_v1"] == (m["local_certified"] == m["local_total"] and m["local_total"] > 0)
-    # regression: the sha256 firewall we certified must be recognised as
-    # load-bearing AND certified (CERT-1). If this breaks, the milestone lost a rivet.
-    sha = next(e for e in ledger if e.get("code") == "env_manager.binary_sha256_mismatch")
-    assert sc.is_load_bearing(sha) and sc.is_certified(sha, overlay), \
-        "the certified sha256 firewall must count toward Seaworthy"
-
-
-@pytest.mark.integration
-def test_measure_executed_expands_to_enclosing_stmt_not_fuzz():
-    """measure_terminal_coverage._executed expands a terminal's span DOWN to its
-    enclosing simple-statement start — because coverage attributes a multi-line
-    `return wrapper(proven(...))` to the statement's first line, below the inner
-    node the extractor anchors on. This must NOT become adjacent-line fuzz: a
-    SIBLING statement running does not count."""
-    import importlib.util
-    from pathlib import Path as _P
-    _root = _P(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location(
-        "measure_terminal_coverage", _root / "scripts" / "measure_terminal_coverage.py")
-    mtc = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mtc)
-
-    # lines 10..12 belong to a statement that STARTS at line 8 (a multi-line
-    # `return _summarize(proven(...))`); the terminal is anchored at 10.
-    mtc._STMT_START_CACHE["fake.py"] = {8: 8, 9: 8, 10: 8, 11: 8, 12: 8, 7: 7}
-    term = {"where": "fake.py:10", "end_line": 12}
-    # coverage recorded only the statement-start line 8 → executed (fixes undercount).
-    assert mtc._executed(term, {"fake.py": {8}}) is True
-    # coverage recorded only line 7 (an ADJACENT sibling statement) → NOT executed
-    # (proves enclosing-stmt, not fuzz — line 7 is a different statement).
-    assert mtc._executed(term, {"fake.py": {7}}) is False
-    # file not measured at all → None.
-    assert mtc._executed(term, {}) is None
-
-
-def test_coverage_state_is_exact_span_not_fuzzy():
-    """The coverage classifier must use EXACT [line, end_line] span matching —
-    the fuzz variant we rejected marked error branches 'covered' by their
-    adjacent happy-path lines. Assert verified/exercised/dark are computed from
-    the overlay's executed flag + named_in_test, with no line fuzzing."""
-    rd = _load_dashboard()
-    e_named_run = {"where": "f.py:10", "code": "x.a", "outcome": "broke",
-                   "tagged": True, "named_in_test": True}
-    e_run_only = {"where": "f.py:20", "code": "x.b", "outcome": "broke",
-                  "tagged": True, "named_in_test": False}
-    e_dark = {"where": "f.py:30", "code": "x.c", "outcome": "broke",
-              "tagged": True, "named_in_test": True}
-    overlay = {"f.py:10": True, "f.py:20": True, "f.py:30": False}
-    assert rd._cover_state(e_named_run, overlay) == "verified"
-    assert rd._cover_state(e_run_only, overlay) == "exercised"
-    assert rd._cover_state(e_dark, overlay) == "dark"       # executed False → dark
-    assert rd._cover_state(e_dark, None) == "unknown"        # no overlay at all
-    # a terminal absent from a measured overlay counts as dark, not covered.
-    assert rd._cover_state({"where": "f.py:99", "code": "x.d", "named_in_test": True},
-                           overlay) == "dark"
-
-
-# Files where the outcome-tag rollout is COMPLETE — every dict-literal
-# error/success terminal is tagged. Add a file here once the extractor reports
-# zero untagged terminals for it; the ratchet below then keeps it that way.
-FULLY_TAGGED = [
-    "agent/mcp_tools/run_tools.py",
-    "agent/mcp_tools/env_tools.py",
-    "agent/mcp_tools/freeze_tools.py",
-    "agent/mcp_tools/data_tools.py",
-    "agent/mcp_tools/service_tools.py",
-    "agent/mcp_tools/observability_tools.py",
-    "agent/mcp_tools/pipeline_tools.py",
-    "agent/skills/run_cluster_step.py",
-    "agent/skills/stage_apptainer.py",
-    "agent/skills/cluster_jobs.py",
-    "agent/skills/cluster_modules.py",
-    "agent/skills/snapshot.py",
-    "agent/skills/agent_status.py",
-    "agent/skills/env_freeze.py",
-    "agent/validators/output_validator.py",
-    # Wave 2 (2026-07-02) — the deferred plumbing, now fully tagged.
-    "agent/skills/env_manager.py",
-    "agent/skills/transfer_providers.py",
-    "agent/skills/transfer.py",
-    "agent/skills/container_build.py",
-    "agent/skills/env_build.py",
-    "agent/skills/docker_builder.py",
-    "agent/skills/env_recipe.py",
-    "agent/mcp_tools/workflow_tools.py",
-    "agent/skills/core_test_data.py",
-    "agent/skills/job_manager.py",
-    "agent/skills/pipeline_state.py",
-    "agent/skills/submit_workflow.py",
-    "agent/skills/package_search.py",
-    "agent/skills/spec_writer.py",
-]
-
-
-@pytest.mark.integration
-def test_fully_tagged_files_stay_fully_tagged():
-    """The ratchet: a NEW raw `return {…}` error/success terminal in any
-    already-rolled-out file fails the build, forcing it to be classified. This is
-    what keeps the harvested system model from drifting as the code grows."""
+def test_every_swept_file_is_fully_tagged():
+    """The ratchet: a raw `return {…}` carrying an error/success key, anywhere in
+    agent/mcp_tools, agent/skills or agent/validators, fails the build until it is
+    classified through an outcome helper. No allow-list of files — a terminal that
+    is not in the vocabulary is a terminal the caller cannot branch on and the
+    reports cannot name."""
     mod = _load_extractor()
-    offenders = {}
-    for rel in FULLY_TAGGED:
-        untagged = [e["where"] for e in mod.harvest(ROOT / rel) if not e["tagged"]]
-        if untagged:
-            offenders[rel] = untagged
-    assert not offenders, f"new untagged terminals in fully-tagged files: {offenders}"
+    untagged: dict[str, list[str]] = {}
+    for e in mod.sweep():
+        if not e["tagged"]:
+            untagged.setdefault(e["where"].rsplit(":", 1)[0], []).append(
+                f"{e['where']} ({e['func']})")
+    assert not untagged, (
+        "untagged terminals — wrap each `return {...}` in proven/refused/broke/"
+        f"vanished/degraded/loop from agent.skills.outcomes: {untagged}")
+
+
+def _snapshot(d: Path) -> dict[str, int]:
+    return {str(p): p.stat().st_mtime_ns for p in d.rglob("*") if p.is_file()}
+
+
+@pytest.mark.integration
+def test_the_extractor_is_a_report_that_refuses_unknown_arguments():
+    """A plain run prints the tally and exits 0; an unrecognised flag exits 2 with
+    usage and does not fall through to the default action. Neither writes a byte
+    under docs/."""
+    before = _snapshot(ROOT / "docs")
+    bad = subprocess.run([sys.executable, str(EXTRACTOR), "--bogus"],
+                         capture_output=True, text=True, cwd=ROOT)
+    assert bad.returncode == 2 and "usage:" in bad.stderr, (bad.returncode, bad.stderr)
+    ok = subprocess.run([sys.executable, str(EXTRACTOR)],
+                        capture_output=True, text=True, cwd=ROOT)
+    assert ok.returncode == 0, ok.stderr
+    assert "SYSTEM DECISION SURFACE" in ok.stdout
+    assert _snapshot(ROOT / "docs") == before, "the report must not write under docs/"
 
 
 @pytest.mark.integration
 def test_rewrapping_a_tagged_result_does_not_double_tag():
-    """The systemic double-tag guard (2026-07-02 wave 2). A boundary function
-    routinely re-wraps an ALREADY-TAGGED inner result by spreading it —
-    `broke("outer.code", **provider_result)` where provider_result itself carries
-    `code`/`outcome`. `code` is POSITIONAL-ONLY in the helpers precisely so this
-    can't raise `TypeError: got multiple values for argument 'code'` at call
-    bind (a landmine that used to lurk on untested Docker/cluster paths). This
-    test fails if anyone drops the `/` from the helper signatures."""
+    """The systemic double-tag guard. A boundary function routinely re-wraps an
+    ALREADY-TAGGED inner result by spreading it — `broke("outer.code",
+    **provider_result)` where provider_result itself carries `code`/`outcome`.
+    `code` is POSITIONAL-ONLY in the helpers precisely so this can't raise
+    `TypeError: got multiple values for argument 'code'` at call bind. This test
+    fails if anyone drops the `/` from the helper signatures."""
     from agent.skills.outcomes import broke, proven, loop
     inner = broke("transfer.scp_upload_failed", success=False,
                   error="boom", returncode=1)

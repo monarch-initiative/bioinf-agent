@@ -147,13 +147,13 @@ def _battery():
         ("install_pipeline_brief", D.install_pipeline_brief, dict(name=""), False),
         # -- intent (the front door) ----------------------------------------
         # interpret_request is a pure validation/routing QUERY: malformed JSON (or an
-        # invalid intent) comes back as {ok: False, error: …} — interpretable, no crash,
+        # invalid intent) comes back as a refused {ok: False, error: …} — interpretable, no crash,
         # no side effects. Its verdicts (decline/ask/investigate/proceed) are a DIFFERENT
         # axis from the outcome-tag vocabulary, so no tag is required. Like resolve_tool.
         ("interpret_request", I.interpret_request, dict(intent_json="not valid json{{"), False),
         # -- plan (the composition front door) ------------------------------
         # plan_request is a pure validation/gating QUERY, exactly like interpret_request:
-        # malformed JSON (or an invalid plan) comes back as {ok: False, error: …} —
+        # malformed JSON (or an invalid plan) comes back as a refused {ok: False, error: …} —
         # interpretable, no crash, no side effects. Its verdict (plan_ready) is a
         # DIFFERENT axis from the outcome-tag vocabulary, so no tag is required. It
         # dispatches NOTHING, so there is no action to gate.
@@ -161,8 +161,9 @@ def _battery():
         # -- sealed-step reader (RUN_STEP-of-a-sealed-workflow) --------------
         # describe_sealed_step is a pure typed-read QUERY, the third advisory reader
         # (sibling of interpret_request/plan_request): a missing workflow / bad step
-        # comes back as {ok: False, error, available_*} — interpretable, no crash, no
-        # side effects, dispatches nothing. Off the outcome-tag axis, so no tag required.
+        # comes back as a refused {ok: False, error, available_*} — interpretable, no crash, no
+        # side effects, dispatches nothing. Its facts are off the outcome-tag axis, so no tag
+        # is required.
         ("describe_sealed_step", ST.describe_sealed_step,
          dict(workflow_name="no_such_workflow_zzz", step=1), False),
         # -- the pipeline layer (a sealed workflow rendered as a directory) --

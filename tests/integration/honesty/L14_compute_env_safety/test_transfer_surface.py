@@ -553,6 +553,64 @@ class TestOverwriteRefusal:
         assert "already exists" in out2["error"]
 
     @pytest.mark.integration
+    def test_upload_refuses_an_existing_remote_on_an_ssh_env_before_any_byte_moves(
+            self, tmp_path, monkeypatch):
+        """The no-overwrite contract on the wire that matters. On an ssh env the
+        existence check is the provider's (`ssh test -e` for scp, `globus ls` for
+        Globus); a hit is refused before the parent dir is prepared or a byte moves,
+        and the refusal is journaled. The provider is a stub: no ssh, no Globus."""
+        from agent.skills import transfer_providers
+
+        access = {
+            "compute_envs": [{
+                "name": "fakehpc", "type": "ssh",
+                "host": "fake.example.edu", "user": "u",
+                "agent_scratch_target": {
+                    "path": "/scratch/u/CLAUDE_SCRATCH",
+                    "permissions": ["file_name_only", "upload", "download", "exec"],
+                },
+            }],
+            "projects": [{"name": "demo_project", "compute_envs": ["fakehpc"],
+                          "directories": []}],
+        }
+        access_path = tmp_path / "projects_access.yaml"
+        access_path.write_text(yaml.safe_dump(access, sort_keys=False))
+
+        calls: list[str] = []
+
+        class ExistingRemote(transfer_providers.TransferProvider):
+            name = "stub_wire"
+
+            def remote_exists(self, *, env, abs_remote_path, timeout):
+                calls.append("remote_exists")
+                return {"exists": True}
+
+            def ensure_parent_dir(self, *, env, abs_remote_path, timeout):
+                calls.append("ensure_parent_dir")
+                return None
+
+            def upload_one(self, *, env, local_path, abs_remote_path, local_sha256,
+                           timeout, label=None):
+                calls.append("upload_one")
+                return {"success": True}
+
+        monkeypatch.setattr(transfer_providers, "get_transfer_provider",
+                            lambda env: ExistingRemote())
+        out = transfer.upload(
+            project_name="demo_project", compute_env_name="fakehpc",
+            local_path=str(_src_file(tmp_path)),
+            remote_abs_path="/scratch/u/CLAUDE_SCRATCH/demo_project/z.txt",
+            access_path=str(access_path))
+
+        assert (out["outcome"], out["code"]) == ("refused", "transfer.remote_exists"), out
+        assert "already exists" in out["error"]
+        assert calls == ["remote_exists"], \
+            f"the refusal must come before mkdir or any byte moves; provider saw {calls}"
+        record = json.loads(Path(out["manifest"]).read_text())
+        assert record["outcome"] == "refused"
+        assert "already exists" in record["reason"]
+
+    @pytest.mark.integration
     def test_download_refuses_existing_local(self, tmp_path):
         access_path = _make_access(tmp_path,
                                     scratch_path=str(tmp_path / "scratch"))

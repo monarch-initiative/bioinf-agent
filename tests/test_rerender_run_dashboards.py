@@ -208,9 +208,10 @@ def test_a_failed_step_flips_the_headline_pill():
     match. It answers a different question than "did it work", and the page presented it
     as the verdict."""
     html = _render(_spec_with_steps([_failed_step(1)]))
-    m = re.search(r'<span class="pill [a-z]+">([^<]*)</span>', html)
-    assert "FAILED" in m.group(1), m.group(1)
-    assert "✓ validated in shipped image" not in m.group(1)
+    m = re.search(r'<span class="pill ([a-z]+)">([^<]*)</span>', html)
+    assert m.group(1) == "bad", m.group(0)
+    assert "FAILED" in m.group(2), m.group(2)
+    assert "✓ validated in shipped image" not in m.group(2)
 
 
 def test_a_locus_group_containing_a_failure_is_not_badged_validated_here():
@@ -229,8 +230,9 @@ def test_the_steps_own_exit_code_is_shown():
 
 def test_a_clean_run_still_reads_clean():
     html = _render(_spec_with_steps([_ok_step(1), _ok_step(2)]))
-    m = re.search(r'<span class="pill [a-z]+">([^<]*)</span>', html)
-    assert "✓ validated in shipped image" in m.group(1)
+    m = re.search(r'<span class="pill ([a-z]+)">([^<]*)</span>', html)
+    assert m.group(1) == "ok", m.group(0)
+    assert "✓ validated in shipped image" in m.group(2)
     assert "FAILED" not in html
 
 

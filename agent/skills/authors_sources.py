@@ -34,6 +34,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
 
+from agent.skills.outcomes import broke
+
 # Files that carry the authors' own build/environment definition, by kind.
 _CONTAINER_RECIPES = ("Dockerfile", "dockerfile", "Containerfile",
                       "Singularity", "Singularity.def", "apptainer.def", "container.def")
@@ -297,7 +299,7 @@ def _probe_registry_image(registry: str, ref: str, *, tag: str = "latest",
     host, label = _REGISTRY_HOST[registry], _REGISTRY_LABEL[registry]
     txt, err = _registry_fetch(_registry_token_url(registry, ref), {}, timeout)
     if err:
-        return {"error": f"{label} token endpoint: {err}"}
+        return broke("authors_image.registry_probe_failed", error=f"{label} token endpoint: {err}")
     if txt is None:
         return None
     try:
@@ -309,7 +311,7 @@ def _probe_registry_image(registry: str, ref: str, *, tag: str = "latest",
     auth = {"Authorization": f"Bearer {token}", "Accept": _MANIFEST_ACCEPT}
     body, err = _registry_fetch(f"https://{host}/v2/{ref}/manifests/{tag}", auth, timeout, method="HEAD")
     if err:
-        return {"error": f"{label} manifest: {err}"}
+        return broke("authors_image.registry_probe_failed", error=f"{label} manifest: {err}")
     has_tag = body is not None
     tags_txt, terr = _registry_fetch(f"https://{host}/v2/{ref}/tags/list?n=1000", auth, timeout)
     tags: list[str] = []
@@ -319,7 +321,9 @@ def _probe_registry_image(registry: str, ref: str, *, tag: str = "latest",
         except ValueError:
             tags = []
     if not has_tag and not tags:
-        return {"error": f"{label} tags: {terr}"} if terr else None
+        if terr:
+            return broke("authors_image.registry_probe_failed", error=f"{label} tags: {terr}")
+        return None
     return {"ref": image_ref(registry, ref), "source": registry, "tag": tag if has_tag else "",
             "tags": tags[-_TAGS_LISTED:], "tags_total": len(tags)}
 
@@ -416,7 +420,9 @@ def _default_probe_author_image(owner: str, repo: str, *, tag: str = "latest", t
             if declared_as:
                 found["declared_as"] = declared_as
             return found
-    return {"error": "; ".join(errors)} if errors else None
+    if errors:
+        return broke("authors_image.no_registry_answered", error="; ".join(errors))
+    return None
 
 
 #: A container recipe by its file name, anywhere in a repository tree.
