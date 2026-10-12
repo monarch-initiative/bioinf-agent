@@ -65,6 +65,7 @@ def test_build_failure_surfaces_broke(tmp_path, monkeypatch):
     assert out["outcome"] == "broke" and out["code"] == "local_sif.build_failed"
 
 
+@pytest.mark.integration_docker
 @pytest.mark.skipif(not shutil.which("docker"), reason="docker required")
 def test_functional_build_from_tiny_local_image(tmp_path):
     """docker-gated: build a real .sif from a locally-built tiny image."""
