@@ -1,8 +1,13 @@
-# C1 — a Java jar tool. Trips to look for: the Java runtime missing from the image, the
-# jar fetched without a checksum, a how-to that hard-codes the jar's host path.
+# C1 — a Java jar tool. The record must carry picard as a primary tool with a version, a
+# container-native build, and the jar route's own outcome code. Trips left to the reader:
+# the jar fetched without a checksum, a how-to that hard-codes the jar's host path.
 corpus: A
 name: c1_jar
 tier: C1
+required_codes: ["env_manager.jar_installed"]
+expect:
+  tools: [picard]
+  build_method: container-native-build
 prompt: |
   Install Picard (the Java jar tool). Prove it by converting one of the single-end RNA-seq
   fastq files in the core test data to an unmapped BAM with FastqToSam, freeze the

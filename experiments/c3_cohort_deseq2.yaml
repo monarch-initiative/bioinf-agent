@@ -1,11 +1,17 @@
 # C3 — two sealed workflows composed into one pipeline: per-sample counting, then a cohort
 # stage that runs once over every sample's counts. Judged by the `pipeline` rule (sealed,
-# plus a rendered pipeline directory with main.nf). Trips to look for: the fan-in inferred
-# rather than declared, the samplesheet not bound as a trial input, the R script not
-# carried into bin/.
+# plus a rendered pipeline directory with main.nf) on the pipeline the closing message names.
+# The record must carry the three counting tools with versions, three distinct sample
+# accessions in the counting workflow, and a main.nf process that runs once over a collected
+# channel (a fan-in that was declared, since the renderer never infers one). Trips left to
+# the reader: the samplesheet not bound as a trial input, the R script not carried into bin/.
 corpus: A
 name: c3_cohort_deseq2
 tier: C3
+expect:
+  tools: [hisat2, samtools, htseq]
+  accessions_min: 3
+  cohort_stage: true
 prompt: |
   Starting from nothing, build two sealed workflows and compose them into one pipeline.
   First a per-sample RNA-seq counts workflow (HISAT2 alignment, samtools sort and index,

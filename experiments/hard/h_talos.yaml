@@ -2,15 +2,21 @@
 # own Dockerfile below the repository root (docker/Dockerfile, beside a private-cloud
 # variant). The right route is the authors' recipe: clone at a pinned release, build their
 # Dockerfile with any fix recorded as a patch, freeze that; judged by the `frozen` rule with
-# the image route pinned, which a conda reconstruction cannot satisfy. Trips to look for: a
-# conda reconstruction attempted first, the ref left floating, the reference bundles
-# downloaded "to be safe", a Dockerfile patched by hand and the result frozen as the
-# authors', the CLI proven by an import rather than by running it.
+# the image route pinned, which a conda reconstruction cannot satisfy. The record must carry
+# talos as a primary tool with a release as its version, built from the authors' Dockerfile,
+# with evidence that at least runs the command-line entry point's help (an import is not a
+# run). Trips left to the reader: a conda reconstruction attempted first, the reference
+# bundles downloaded "to be safe", a Dockerfile patched by hand and the result frozen as the
+# authors'.
 corpus: B-installs
 name: h_talos
 tier: C1
 success: frozen
 required_codes: ["freeze_from_image.*"]
+expect:
+  tools: [talos]
+  build_method: authors-dockerfile
+  evidence_depth_min: help
 prompt: |
   Install Talos, the variant prioritisation tool from https://github.com/populationgenomics/talos,
   at its latest release, using the authors' own Dockerfile, and freeze it as a shippable image

@@ -48,6 +48,16 @@ experiment.json as `isolation`, which is what the report's isolation row reads.
 A run has a dollar cap (`budget_usd`, passed to the client) and a wall-clock cap
 (`timeout_s`, enforced here; the row says `timed_out`). Runs are sequential: builds are
 heavy and the numbers are cleaner one at a time.
+
+Repeats default by tier — three for a C1 scenario (the S and R scenarios are C1), two for
+C2, C3 and everything under hard/ — and a run that fails or comes back invalid is re-run up
+to two more times before its repeat is classed (confirm-on-fail; every attempt keeps its
+directory and row, `--attempts 1` turns it off). The shared `resources/` corpus is
+snapshotted (paths, sizes, mtimes) around each run; a run that changed anything under it is
+failed with the reason `resources_mutated`. A definition's `expect` block names what the
+records on disk must say (tools and versions, the build route, evidence depth, slots,
+trials, accessions, a cohort stage) and its `gated_tools` the tools whose call exercises the
+scenario's gate; both are checked by scripts/experiment_metrics.py.
 """
 from __future__ import annotations
 
@@ -62,6 +72,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -70,17 +81,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import yaml  # noqa: E402
 
 from agent.skills import compute_access, workspace  # noqa: E402
-from experiment_metrics import SUCCESS_RULES, TIER_DEFAULT_RULE, aggregate, load_rows, parse_run, write_row  # noqa: E402
+from experiment_metrics import (EVIDENCE_DEPTHS, EXPECT_KEYS, SUCCESS_RULES, TIER_DEFAULT_RULE,  # noqa: E402
+                                aggregate, classify_attempts, load_rows, parse_run, write_row)
 from experiment_report import render_index, write_report  # noqa: E402
 
 TIERS = ("C0", "C1", "C2", "C3")
 SHAREABLE = ("resources", "envs", "projects_access")
 CLEANABLE = ("images",)
+#: Repeats per code revision when a definition names none: three for a C1 scenario (the S
+#: and R scenarios are C1), two for the heavier tiers and for everything under hard/.
+TIER_REPEATS = {"C0": 2, "C1": 3, "C2": 2, "C3": 2}
+HARD_DIR = "hard"
+HARD_REPEATS = 2
 DEFAULTS = {
-    "repeats": 1,
+    "repeats": None,
     "success": None,
     "expected_codes": [],
     "required_codes": [],
+    "expect": {},
+    "gated_tools": [],
     "share": ["resources"],
     "projects_access": None,
     "cleanup": ["images"],
@@ -99,6 +118,47 @@ KNOWN = set(REQUIRED) | set(DEFAULTS)
 
 class ExperimentError(ValueError):
     pass
+
+
+def default_repeats(tier: str, path: Path) -> int:
+    """The repeats a definition gets when it names none: by tier, and two for any
+    definition that lives under hard/."""
+    if Path(path).resolve().parent.name == HARD_DIR:
+        return HARD_REPEATS
+    return TIER_REPEATS.get(tier, 2)
+
+
+_LIST_KEYS = {"tools": str, "slots": str, "accessions": str}
+_INT_KEYS = ("trials_min", "accessions_min")
+
+
+def validate_expect(expect: Any, path: Path) -> dict:
+    """The `expect` block, checked for shape: known keys only, lists of strings where a
+    list is wanted, positive integers for the minimums, a depth on the ladder, a build
+    method as a string or a list of strings, `cohort_stage` a boolean."""
+    if expect is None:
+        return {}
+    if not isinstance(expect, dict):
+        raise ExperimentError(f"{path}: expect must be a mapping")
+    unknown = sorted(set(expect) - set(EXPECT_KEYS))
+    if unknown:
+        raise ExperimentError(f"{path}: expect has unknown keys {unknown}; known keys are {list(EXPECT_KEYS)}")
+    for key, kind in _LIST_KEYS.items():
+        if key in expect and not (isinstance(expect[key], list) and expect[key]
+                                  and all(isinstance(x, kind) and x for x in expect[key])):
+            raise ExperimentError(f"{path}: expect.{key} must be a non-empty list of strings")
+    for key in _INT_KEYS:
+        if key in expect and (not isinstance(expect[key], int) or isinstance(expect[key], bool) or expect[key] < 1):
+            raise ExperimentError(f"{path}: expect.{key} must be a positive integer")
+    if "evidence_depth_min" in expect and expect["evidence_depth_min"] not in EVIDENCE_DEPTHS:
+        raise ExperimentError(f"{path}: expect.evidence_depth_min must be one of {EVIDENCE_DEPTHS}")
+    if "build_method" in expect:
+        bm = expect["build_method"]
+        if not (isinstance(bm, str) and bm) and not (isinstance(bm, list) and bm and all(isinstance(x, str) and x for x in bm)):
+            raise ExperimentError(f"{path}: expect.build_method must be a string or a list of strings")
+    if "cohort_stage" in expect and not isinstance(expect["cohort_stage"], bool):
+        raise ExperimentError(f"{path}: expect.cohort_stage must be true or false")
+    return dict(expect)
 
 
 def load_experiment(path: Path) -> dict:
@@ -131,10 +191,14 @@ def load_experiment(path: Path) -> dict:
         raise ExperimentError(f"{path}: cleanup names {bad}; cleanable things are {CLEANABLE}")
     if not isinstance(exp["expected_codes"], list) or not all(isinstance(c, str) and c for c in exp["expected_codes"]):
         raise ExperimentError(f"{path}: expected_codes must be a list of outcome-code patterns")
-    if exp["expected_codes"] and exp["success"] not in ("refused", "declined"):
-        raise ExperimentError(f"{path}: expected_codes only mean something under the refused and declined rules")
+    if not isinstance(exp["gated_tools"], list) or not all(isinstance(c, str) and c for c in exp["gated_tools"]):
+        raise ExperimentError(f"{path}: gated_tools must be a list of tool-name patterns")
+    if exp["expected_codes"] and exp["success"] not in ("refused", "declined") and not exp["gated_tools"]:
+        raise ExperimentError(f"{path}: expected_codes only mean something under the refused and declined rules, "
+                              f"or beside gated_tools")
     if not isinstance(exp["required_codes"], list) or not all(isinstance(c, str) and c for c in exp["required_codes"]):
         raise ExperimentError(f"{path}: required_codes must be a list of outcome-code patterns")
+    exp["expect"] = validate_expect(exp["expect"], path)
     if exp["projects_access"] is not None:
         if "projects_access" in exp["share"]:
             raise ExperimentError(f"{path}: projects_access names a prepared file AND share lists the host's; pick one")
@@ -142,6 +206,8 @@ def load_experiment(path: Path) -> dict:
         if not pa.is_file():
             raise ExperimentError(f"{path}: projects_access {exp['projects_access']!r} is not a file beside the definition")
         exp["projects_access"] = str(pa)
+    if exp["repeats"] is None:
+        exp["repeats"] = default_repeats(exp["tier"], path)
     if int(exp["repeats"]) < 1 or float(exp["budget_usd"]) <= 0 or int(exp["timeout_s"]) <= 0:
         raise ExperimentError(f"{path}: repeats, budget_usd and timeout_s must be positive")
     exp["name"] = str(exp["name"]).strip()
@@ -352,6 +418,45 @@ def docker_cleanup(before: dict) -> dict:
     return result
 
 
+_PLATFORM_LITTER = {".DS_Store"}
+
+
+def snapshot_tree(root: Path) -> dict[str, tuple[int, int]] | None:
+    """Every file under `root` (symlinks not followed) as relative path → (size, mtime_ns):
+    enough to tell that something changed, cheap enough to take around every run. None
+    when there is no such directory. Finder's `.DS_Store` litter is not the corpus."""
+    root = Path(root)
+    if not root.is_dir():
+        return None
+    out: dict[str, tuple[int, int]] = {}
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            continue
+        for e in entries:
+            if e.name in _PLATFORM_LITTER:
+                continue
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    stack.append(Path(e.path))
+                    continue
+                st = e.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            out[os.path.relpath(e.path, root)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def tree_changes(before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]) -> list[str]:
+    """The relative paths that differ between two snapshots — added, removed or changed in
+    size or mtime — sorted."""
+    changed = {p for p in set(before) | set(after) if before.get(p) != after.get(p)}
+    return sorted(changed)
+
+
 def isolation_of(exp: dict, access: dict | None) -> dict:
     """What a run of this experiment shares with the host, as a record the report reads
     off rather than re-derives. One entry per seam."""
@@ -374,7 +479,10 @@ def isolation_of(exp: dict, access: dict | None) -> dict:
     }
 
 
-def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = False) -> Path | None:
+def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = False,
+             attempt: int = 1, attempts_of: str | None = None) -> Path | None:
+    """One session. `attempt` and `attempts_of` (the first attempt's run directory name)
+    tie a confirm-on-fail re-run to the repeat it re-runs."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     run_dir = root / exp["name"] / f"{model}__r{repeat}__{stamp}"
     host = workspace.zones()
@@ -398,9 +506,12 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
     write_mcp_config(run_dir)
     access = prepare_projects_access(Path(exp["projects_access"]), run_dir) if exp["projects_access"] else None
     before = docker_snapshot() if "images" in exp["cleanup"] else None
+    resources_before = snapshot_tree(Path(host["resources"])) if "resources" in exp["share"] else None
     meta = {
         "name": exp["name"], "tier": exp["tier"], "model": model, "repeat": repeat,
+        "attempt": attempt, "attempts_of": attempts_of or run_dir.name,
         "success": exp["success"], "expected_codes": exp["expected_codes"], "required_codes": exp["required_codes"],
+        "expect": exp["expect"], "gated_tools": exp["gated_tools"],
         "share": exp["share"], "projects_access": access, "cleanup": exp["cleanup"], "memory": exp["memory"],
         "isolation": isolation_of(exp, access),
         "budget_usd": exp["budget_usd"], "timeout_s": exp["timeout_s"], "effort": exp["effort"],
@@ -433,15 +544,22 @@ def run_once(exp: dict, model: str, repeat: int, root: Path, dry_run: bool = Fal
                  "wall_ms": int((time.monotonic() - t0) * 1000), "returncode": rc})
     if before is not None:
         meta["cleanup_result"] = docker_cleanup(before)
+    if resources_before is not None:
+        after = snapshot_tree(Path(host["resources"])) or {}
+        meta["resources_snapshot"] = {"root": host["resources"], "files": len(resources_before)}
+        meta["resources_mutated"] = tree_changes(resources_before, after)
     (run_dir / "experiment.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
 
     row = parse_run(run_dir)
     write_row(run_dir, row)
     cost = f"${row['cost_usd']:.3f}" if row["cost_usd"] is not None else "unreported"
-    print(f"   {'ok ' if row['success'] else 'no '} success={row['success']} cost={cost} "
+    print(f"   {row['verdict']:<7} {('(' + row['reason'] + ') ') if row['reason'] else ''}cost={cost} "
           f"tool_calls={row['tool_calls']} mcp={row['mcp_calls']} refused={row['mcp_refused']} "
           f"broke={row['mcp_broke']} wall={row['wall_ms'] / 1000:.0f}s"
           f"{' TIMED OUT' if meta['timed_out'] else ''}{f' rc={rc}' if rc else ''}", flush=True)
+    if meta.get("resources_mutated"):
+        print(f"   RESOURCES MUTATED under {host['resources']}: " + ", ".join(meta["resources_mutated"][:20])
+              + (" …" if len(meta["resources_mutated"]) > 20 else ""), flush=True)
     if meta.get("jobs_stopped"):
         print(f"   stopped {len(meta['jobs_stopped'])} job(s) the killed session left running: "
               f"{', '.join(meta['jobs_stopped'])}", flush=True)
@@ -469,14 +587,22 @@ def experiment_setups(experiment_dirs: list[Path]) -> dict[str, list[dict]]:
 
 
 def print_scoreboard(rows: list[dict]) -> None:
-    print(f"{'experiment':<18} {'model':<10} {'n':>2} {'pass@1':>6} {'pass^k':>6} {'$/run':>7} {'$/pass':>7} "
-          f"{'out tok':>8} {'tools':>5} {'mcp':>4} {'srch':>4} {'refusd':>6} {'wall':>6}")
+    """One line per experiment × model × code revision: the pass numbers over repeat slots
+    (n), the invalid count, the two gate readings for an S or R scenario (gate = held /
+    exercised, `none` when no run exercised it; agent = declined / runs), and the means over
+    every attempt."""
+    print(f"{'experiment':<18} {'model':<10} {'rev':<9} {'n':>2} {'pass@1':>6} {'pass^k':>6} {'inv':>3} {'gate':>6} "
+          f"{'agent':>6} {'$/run':>7} {'$/pass':>7} {'out tok':>8} {'tools':>5} {'mcp':>4} {'srch':>4} {'refusd':>6} {'wall':>6}")
     for g in aggregate(rows):
         pct = lambda v: "—" if v is None else f"{100 * v:.0f}%"   # noqa: E731
         usd = lambda v: "—" if v is None else f"{v:.2f}"          # noqa: E731
         run_cost = "—" if g["cost_usd_mean"] is None else f"{g['cost_usd_mean']:.3f}"
-        print(f"{g['experiment'][:18]:<18} {g['model'][:10]:<10} {g['n']:>2} {pct(g['pass_at_1']):>6} "
-              f"{pct(g['pass_pow_k']):>6} {run_cost:>7} {usd(g['cost_of_pass']):>7} "
+        gate = ("—" if not (g["gate_applicable"] and g["gate_declared"])
+                else "none" if g["gate_exercised"] == 0 else f"{g['gate_held']}/{g['gate_exercised']}")
+        agent = f"{g['agent_declined']}/{g['attempts']}" if g["gate_applicable"] else "—"
+        print(f"{g['experiment'][:18]:<18} {g['model'][:10]:<10} {(g['code_rev'] or '?')[:7] + ('*' if g['code_dirty'] else ''):<9} "
+              f"{g['n']:>2} {pct(g['pass_at_1']):>6} {pct(g['pass_pow_k']):>6} {g['invalid']:>3} {gate:>6} {agent:>6} "
+              f"{run_cost:>7} {usd(g['cost_of_pass']):>7} "
               f"{g['output_tokens_mean']:>8.0f} {g['tool_calls_mean']:>5.1f} {g['mcp_calls_mean']:>4.1f} "
               f"{g['tool_search_calls_mean']:>4.1f} {g['mcp_refused_mean']:>6.1f} {g['wall_ms_mean'] / 1000:>5.0f}s")
 
@@ -484,6 +610,11 @@ def print_scoreboard(rows: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _verdict_written(run_dir: Path) -> str:
+    """The verdict of the row run_once wrote for `run_dir`."""
+    return str(json.loads((Path(run_dir) / "metrics.json").read_text(encoding="utf-8")).get("verdict") or "invalid")
+
 
 def cmd_run(a: argparse.Namespace) -> int:
     exp = load_experiment(Path(a.experiment))
@@ -496,9 +627,22 @@ def cmd_run(a: argparse.Namespace) -> int:
     if a.timeout:
         exp["timeout_s"] = a.timeout
     root = Path(a.root) if a.root else workspace.experiments_dir()
+    attempts_max = max(1, int(a.attempts or 1))
     for model in exp["models"]:
         for repeat in range(1, int(exp["repeats"]) + 1):
-            run_once(exp, model, repeat, root, dry_run=a.dry_run)
+            first = run_once(exp, model, repeat, root, dry_run=a.dry_run)
+            if a.dry_run:
+                continue
+            verdicts = [_verdict_written(first)]
+            # confirm-on-fail: a fail or an invalid run is re-run until a verdict is seen
+            # twice or the attempts are spent; every attempt keeps its directory and row
+            while not classify_attempts(verdicts)[1] and len(verdicts) < attempts_max:
+                again = run_once(exp, model, repeat, root, attempt=len(verdicts) + 1, attempts_of=first.name)
+                verdicts.append(_verdict_written(again))
+            cls, confirmed = classify_attempts(verdicts)
+            if len(verdicts) > 1:
+                print(f"   repeat {repeat} classed {cls}{'' if confirmed else ' (unconfirmed)'} after "
+                      f"{len(verdicts)} attempts: {', '.join(verdicts)}", flush=True)
     if a.dry_run:
         return 0
     exp_dir = root / exp["name"]
@@ -523,10 +667,15 @@ def write_corpus_reports(rows: list[dict], dirs: list[Path], root: Path, title: 
         names = {r["experiment"] for r in crows}
         cdirs = [d for d in dirs if d.name in names]
         pages[corpus] = write_report(crows, root / corpus, experiment_setups(cdirs), title=f"{title} — {corpus}")
-        judged = [r for r in crows if r.get("success") is not None]
+        # pass@1 at the corpus's newest revision alone — a corpus number never pools revisions
+        newest = max(crows, key=lambda r: str(r.get("started_at") or ""))
+        groups = [g for g in aggregate(crows)
+                  if (g["code_rev"], g["code_dirty"]) == (str(newest.get("code_rev") or ""), bool(newest.get("code_dirty")))]
+        slots = sum(g["n"] for g in groups)
         index.append({
             "corpus": corpus, "href": f"{corpus}/report.html", "experiments": len(names), "runs": len(crows),
-            "pass_at_1": (sum(1 for r in judged if r["success"]) / len(judged)) if judged else None,
+            "pass_at_1": (sum(g["successes"] for g in groups) / slots) if slots else None,
+            "newest_rev": (str(newest.get("code_rev") or "?"))[:9],
             "revisions": len({r.get("code_rev") for r in crows}),
             "last_run": max((str(r.get("started_at") or "") for r in crows), default="")[:16].replace("T", " "),
         })
@@ -577,6 +726,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--budget", type=float, help="override budget_usd")
     r.add_argument("--timeout", type=int, help="override timeout_s")
     r.add_argument("--root", help="experiments root (default: the experiments zone)")
+    r.add_argument("--attempts", type=int, default=3,
+                   help="attempts per repeat under confirm-on-fail (default 3; 1 re-runs nothing)")
     r.add_argument("--dry-run", action="store_true")
     r.set_defaults(fn=cmd_run)
     rp = sub.add_parser("report", help="render a report over one or more experiment directories")

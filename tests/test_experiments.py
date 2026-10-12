@@ -159,6 +159,8 @@ SEALED_FILES = {
     "environments/seqkit/seqkit.ENV.html": "<html>",
     "environments/seqkit/seqkit_stats.RUN.html": "<html>",
 }
+#: The first line the renderer writes into main.nf, which names the sealed workflow it came from.
+RENDERED_HEADER = "// rendered from sealed workflow {workflow} (pipeline {pipeline}) — edit params.yaml, not this file\nworkflow {{}}\n"
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +244,9 @@ class TestParseRun:
         assert csv[0] == ",".join(metrics.METRIC_NAMES)
         assert len(csv) == 2
 
-    def test_an_empty_transcript_is_an_unjudged_row_not_a_crash(self, tmp_path):
+    def test_an_empty_transcript_is_an_invalid_row_not_a_crash(self, tmp_path):
         row = metrics.parse_run(_write_run(tmp_path / "r", records=[]))
-        assert row["success"] is None
+        assert row["verdict"] == "invalid" and row["success"] is None and row["reason"] == "no_result"
         assert row["terminal_reason"] == "none"
         assert row["tool_calls"] == 0 and row["cost_usd"] is None     # no result event, no figure
 
@@ -275,15 +277,27 @@ class TestWorkspaceLadderAndSuccess:
         row = metrics.parse_run(_write_run(tmp_path / "r"))
         assert row["success"] is False
 
-    def test_the_pipeline_rule_needs_main_nf(self, tmp_path):
+    def test_the_pipeline_rule_needs_main_nf_rendered_from_the_bound_workflow(self, tmp_path):
         files = dict(SEALED_FILES)
         row = metrics.parse_run(_write_run(tmp_path / "a", meta={"tier": "C3", "success": "pipeline"},
                                            workspace_files=files))
-        assert row["success"] is False
+        assert row["success"] is False and row["reason"] == "rule:pipeline"
+        # a main.nf with no record of what it was rendered from binds to nothing and does not count
         files["pipelines/seqkit_stats/main.nf"] = "workflow {}"
         row = metrics.parse_run(_write_run(tmp_path / "b", meta={"tier": "C3", "success": "pipeline"},
                                            workspace_files=files))
-        assert row["pipeline_rendered"] is True and row["success"] is True
+        assert row["pipeline_rendered"] is False and row["success"] is False
+        # one rendered from ANOTHER sealed workflow does not count either
+        files["pipelines/seqkit_stats/main.nf"] = RENDERED_HEADER.format(workflow="other_workflow", pipeline="seqkit_stats")
+        row = metrics.parse_run(_write_run(tmp_path / "c", meta={"tier": "C3", "success": "pipeline"},
+                                           workspace_files=files))
+        assert row["pipeline_rendered"] is False and row["bound"]["pipeline"] is None
+        files["pipelines/seqkit_stats/main.nf"] = RENDERED_HEADER.format(workflow="seqkit_stats", pipeline="seqkit_stats")
+        row = metrics.parse_run(_write_run(tmp_path / "d", meta={"tier": "C3", "success": "pipeline"},
+                                           workspace_files=files))
+        assert row["pipeline_rendered"] is True and row["success"] is True and row["verdict"] == "pass"
+        assert row["bound"] == {"env": "seqkit", "workflow": "seqkit_stats", "pipeline": "seqkit_stats",
+                                "how": "newest workflow spec: the final message names none", "named": False}
 
     def test_the_completed_rule_wants_a_server_that_answered(self, tmp_path):
         row = metrics.parse_run(_write_run(tmp_path / "r", meta={"tier": "C0", "success": "completed"}))
@@ -1089,3 +1103,689 @@ class TestCorporaKilledRunsAndFreezeRoutes:
             if proc.poll() is None:
                 proc.kill()
         assert experiments.stop_live_jobs(tmp_path / "nowhere") == []
+
+
+# ---------------------------------------------------------------------------
+# The judge: one session, one bound set of deliverables, three verdicts
+# ---------------------------------------------------------------------------
+
+
+def _errored(records: list[dict], text: str = "You've hit your limit · resets 1:30am") -> list[dict]:
+    """The fixture transcript as a session that ended in error: the result record says so
+    and the closing text is the client's own message."""
+    recs = json.loads(json.dumps(records))
+    for r in recs:
+        if r["type"] == "result":
+            r["is_error"] = True
+            r["result"] = text
+        if r["type"] == "assistant" and r["message"]["id"] == "m5":
+            r["message"]["content"][0]["text"] = text
+    return recs
+
+
+def _closing(records: list[dict], text: str) -> list[dict]:
+    recs = json.loads(json.dumps(records))
+    for r in recs:
+        if r["type"] == "assistant" and r["message"]["id"] == "m5":
+            r["message"]["content"][0]["text"] = text
+    return recs
+
+
+RECIPE = {"recipe_version": 1, "name": "seqkit", "version": "", "platform": "linux/amd64", "build_method": "adopt",
+          "primary_tools": ["seqkit"], "install_steps": [], "shipped_binaries": [], "tool_identities": [],
+          "resolved_packages": [{"name": "seqkit", "version": "2.14.0", "kind": "conda", "license": "MIT"}]}
+
+
+def _attestation(checks: list[tuple[str, str]]) -> str:
+    return json.dumps({"_type": "https://in-toto.io/Statement/v1", "predicate": {"buildDefinition": {
+        "internalParameters": {"build_method": "adopt-image", "mode": "adopt",
+                               "validated_in_image": [{"tool": t, "check": c, "passed": True} for t, c in checks]}}}})
+
+
+def _spec(name: str = "seqkit_stats", trials: int = 1, template: str = "seqkit stats -j {THREADS} {INPUT_FASTQ} -o {OUTPUT_DIR}/stats.tsv",
+          accessions: tuple[str, ...] = ("SRR1039508",), verified: bool = True) -> str:
+    accs = list(accessions) + [accessions[-1]] * max(0, trials - len(accessions))
+    return yaml.safe_dump({
+        "workflow_name": name, "usage_verified": verified, "env_request_key": "seqkit=2.14.0|linux/amd64|none",
+        "usage": {"description": "stats", "command_template": template,
+                  "inputs": [{"name": "INPUT_FASTQ", "format": "fastq.gz"}, {"name": "THREADS", "format": "threads"}],
+                  "outputs": [{"name": "stats", "files": ["stats.tsv"]}],
+                  "trials": [{"name": f"trial_{i}", "substitutions": {"INPUT_FASTQ": f"/data/airway_{accs[i]}_10K_R1.fastq.gz",
+                                                                       "THREADS": "4", "OUTPUT_DIR": "/out"}}
+                             for i in range(trials)]},
+        "test_data": {"accession": accessions[0], "sample": "airway"}})
+
+
+def _record_files(**over) -> dict[str, str]:
+    """A complete bound set for env `seqkit` / workflow `seqkit_stats`: recipe, attestation,
+    ENV page, spec, RUN page, and a pipeline rendered from that workflow."""
+    files = {
+        "environments/seqkit/seqkit.recipe.yaml": yaml.safe_dump(RECIPE),
+        "environments/seqkit/seqkit.attestation.json": _attestation([("seqkit", "seqkit version")]),
+        "environments/seqkit/seqkit.ENV.html": "<html>",
+        "environments/seqkit/seqkit_stats.workflow.yaml": _spec(),
+        "environments/seqkit/seqkit_stats.RUN.html": "<html>",
+        "pipelines/seqkit_stats/main.nf": RENDERED_HEADER.format(workflow="seqkit_stats", pipeline="seqkit_stats"),
+    }
+    files.update(over)
+    return files
+
+
+class TestJudgeSoundness:
+    @pytest.mark.parametrize("rule,meta,files,records", [
+        ("completed", {"tier": "C0"}, {}, None),
+        ("frozen", {}, {"environments/seqkit/seqkit.ENV.html": "<html>"}, None),
+        ("sealed", {}, SEALED_FILES, None),
+        ("pipeline", {"tier": "C3"}, {**SEALED_FILES, "pipelines/seqkit_stats/main.nf":
+                                      RENDERED_HEADER.format(workflow="seqkit_stats", pipeline="seqkit_stats")}, None),
+        ("refused", {"expected_codes": ["freeze.fixture_*"]}, {}, None),
+        ("declined", {"expected_codes": ["freeze.fixture_*"]}, {}, "quiet"),
+        ("asked", {}, {}, "asked"),
+    ])
+    def test_a_session_that_ended_in_error_fails_under_every_rule(self, tmp_path, rule, meta, files, records):
+        """Whatever landed on disk, a session the client reports as errored is a failed run:
+        the same artifacts pass when the session ended cleanly."""
+        recs = transcript_records()
+        if records == "quiet":
+            recs = [r for r in recs if r["type"] != "assistant" or r["message"]["id"] == "m5"]
+        elif records == "asked":
+            recs = _closing([r for r in recs if r["type"] != "assistant" or r["message"]["id"] in ("m1", "m4", "m5")],
+                            "Which caller did you mean?")
+        m = {"success": rule, **meta}
+        clean = metrics.parse_run(_write_run(tmp_path / "clean", records=recs, meta=m, workspace_files=files))
+        assert clean["verdict"] == "pass" and clean["success"] is True, (rule, clean["reasons"])
+        errored = metrics.parse_run(_write_run(tmp_path / "errored", records=_errored(recs, text=clean["final_text"] + " x"),
+                                               meta=m, workspace_files=files))
+        assert errored["is_error"] is True
+        assert errored["verdict"] == "fail" and errored["success"] is False
+        assert errored["reasons"] == ["session_error"], rule
+        assert metrics.judge(rule, errored) is False
+
+    def test_no_result_record_is_invalid_counted_and_flagged(self, tmp_path):
+        """A transcript with no result record is neither a pass nor a fail: the verdict is
+        `invalid`, it stays in pass@1's denominator and the page flags it for a re-run. A
+        killed run is different — the runner knows why it ended — and stays a fail."""
+        no_result = [r for r in transcript_records() if r["type"] != "result"]
+        inv = metrics.parse_run(_write_run(tmp_path / "a", records=no_result, workspace_files=SEALED_FILES))
+        assert inv["verdict"] == "invalid" and inv["success"] is None and inv["reasons"] == ["no_result"]
+        ok = metrics.parse_run(_write_run(tmp_path / "b", meta={"repeat": 2}, workspace_files=SEALED_FILES))
+        [g] = metrics.aggregate([inv, ok])
+        assert (g["n"], g["successes"], g["invalid"], g["pass_at_1"]) == (2, 1, 1, 0.5)
+        assert g["pass_pow_k"] == 0.0
+        killed = metrics.parse_run(_write_run(tmp_path / "c", records=no_result, meta={"timed_out": True, "repeat": 3},
+                                              workspace_files=SEALED_FILES))
+        assert killed["verdict"] == "fail" and killed["reasons"] == ["timed_out"]
+        page = report.render([inv, ok, killed], experiments.experiment_setups([tmp_path]))
+        runs = page.split("<h2>Runs</h2>")[1]
+        assert 'class="na">invalid <span class="note">re-run</span>' in runs
+        assert "<code>no_result</code>" in runs and "<code>timed_out</code>" in runs
+        board = page.split("<h2>Scoreboard</h2>")[1].split("<h2>")[0]
+        assert "<th>invalid</th>" in board and '<td class="bad">1</td>' in board
+        assert "<code>invalid</code>" in page.split("<h2>Metrics</h2>")[1]
+
+    def test_superseded_specs_and_stray_renders_do_not_count(self, tmp_path):
+        """A `.superseded.N` spec is the record a re-seal replaced; a RUN page or main.nf
+        that belongs to another workflow is not part of the bound set."""
+        files = {
+            "environments/seqkit/seqkit_stats.superseded.1.workflow.yaml": yaml.safe_dump({"usage_verified": True}),
+            "environments/seqkit/seqkit.ENV.html": "<html>",
+            "environments/seqkit/seqkit_stats.RUN.html": "<html>",
+            "environments/other/other.ENV.html": "<html>",
+            "environments/other/other_wf.workflow.yaml": yaml.safe_dump({"usage_verified": True}),
+            "pipelines/stray/main.nf": RENDERED_HEADER.format(workflow="seqkit_stats", pipeline="stray"),
+        }
+        row = metrics.parse_run(_write_run(tmp_path / "a", workspace_files=files))
+        # the only current spec is other_wf; its env has no RUN page and nothing was rendered from it
+        assert row["sealed_names"] == ["other_wf"]
+        assert row["bound"]["workflow"] == "other_wf" and row["bound"]["env"] == "other"
+        assert (row["sealed"], row["usage_verified"], row["env_report"], row["run_report"], row["pipeline_rendered"]) == \
+            (True, True, True, False, False)
+        assert row["verdict"] == "fail" and row["reason"] == "rule:sealed"
+
+    def test_the_closing_message_binds_the_deliverables(self, tmp_path):
+        """Two sealed workflows in two envs and two rendered pipelines: the one the agent's
+        closing message names is the one judged, and the record says how it was bound."""
+        files = {
+            "environments/counts/counts.ENV.html": "<html>",
+            "environments/counts/counts.workflow.yaml": yaml.safe_dump({"usage_verified": True}),
+            "environments/counts/counts.RUN.html": "<html>",
+            "environments/deseq2/deseq2.ENV.html": "<html>",
+            "environments/deseq2/deseq2.workflow.yaml": yaml.safe_dump({"usage_verified": False}),
+            "environments/deseq2/deseq2.RUN.html": "<html>",
+            "pipelines/composed/main.nf": RENDERED_HEADER.format(workflow="counts", pipeline="composed"),
+            "pipelines/composed/.pipeline/pipeline.yaml": yaml.safe_dump({"name": "composed", "sealed_workflow": "counts",
+                                                                          "cohort_workflows": [{"sealed_workflow": "deseq2"}]}),
+            "pipelines/scratch_render/main.nf": RENDERED_HEADER.format(workflow="deseq2", pipeline="scratch_render"),
+        }
+        run = _write_run(tmp_path / "a", records=_closing(transcript_records(), "The pipeline is under workspace/pipelines/composed/."),
+                         meta={"tier": "C3", "success": "pipeline"}, workspace_files=files)
+        import os, time
+        now = time.time()
+        os.utime(run / "workspace" / "environments" / "deseq2" / "deseq2.workflow.yaml", (now, now))      # the newest spec
+        os.utime(run / "workspace" / "environments" / "counts" / "counts.workflow.yaml", (now - 100, now - 100))
+        row = metrics.parse_run(run)
+        assert row["bound"] == {"env": "counts", "workflow": "counts", "pipeline": "composed",
+                                "how": "final message names pipeline composed", "named": True}
+        assert row["verdict"] == "pass"
+        # the same workspace with a message that names nothing binds the newest spec, and says so
+        quiet = _write_run(tmp_path / "b", records=_closing(transcript_records(), "Done."),
+                           meta={"tier": "C3", "success": "pipeline"}, workspace_files=files)
+        os.utime(quiet / "workspace" / "environments" / "deseq2" / "deseq2.workflow.yaml", (now, now))
+        os.utime(quiet / "workspace" / "environments" / "counts" / "counts.workflow.yaml", (now - 100, now - 100))
+        row = metrics.parse_run(quiet)
+        assert row["bound"]["workflow"] == "deseq2" and row["bound"]["pipeline"] == "scratch_render"
+        assert row["bound"]["how"] == "newest workflow spec: the final message names none" and row["bound"]["named"] is False
+        assert row["usage_verified"] is False and row["verdict"] == "fail"
+        # a spec named by file, an env named by directory, a bare workflow name
+        for text, want in (("Sealed: workspace/environments/counts/counts.workflow.yaml", ("counts", "counts", "final message names workflow counts")),
+                           ("The ENV report is environments/deseq2/deseq2.ENV.html", ("deseq2", "deseq2", "final message names env deseq2")),
+                           ("I sealed counts for you.", ("counts", "counts", "final message mentions workflow counts"))):
+            b = metrics.bind_deliverables(run / "workspace", text)
+            assert (b["env"], b["workflow"], b["how"]) == want, text
+        page = report.render([row], experiments.experiment_setups([tmp_path]))
+        assert "bound: env deseq2 · workflow deseq2 · pipeline scratch_render (newest workflow spec: the final message names none)" in page
+
+    def test_the_cohort_run_that_hit_a_rate_limit_is_a_fail(self, tmp_path):
+        """The layout a real C3 run left behind — two envs, a superseded spec beside its
+        replacement, a test render of the counting workflow alone — with a session that ended
+        on the client's rate-limit message. The verdict is fail on the session alone; had the
+        session been clean, the pipeline rule would still have had nothing bound to pass on,
+        because the closing message names no pipeline and the test render came from the
+        counting workflow, not the newest spec."""
+        import os, time
+        files = {
+            "environments/rnaseq_counts/rnaseq_counts.ENV.html": "<html>",
+            "environments/rnaseq_counts/rnaseq_counts.recipe.yaml": yaml.safe_dump({**RECIPE, "name": "rnaseq_counts",
+                                                                                     "build_method": "container-native-build",
+                                                                                     "primary_tools": ["hisat2", "samtools", "htseq"],
+                                                                                     "resolved_packages": [
+                                                                                         {"name": "hisat2", "version": "2.2.3", "kind": "conda"},
+                                                                                         {"name": "samtools", "version": "1.24", "kind": "conda"},
+                                                                                         {"name": "htseq", "version": "2.1.2", "kind": "conda"}]}),
+            "environments/rnaseq_counts/rnaseq_counts.workflow.yaml": _spec("rnaseq_counts", verified=False),
+            "environments/rnaseq_counts/rnaseq_counts_workflow.superseded.1.workflow.yaml": _spec("rnaseq_counts_workflow"),
+            "environments/rnaseq_counts/rnaseq_counts_workflow.workflow.yaml": _spec("rnaseq_counts_workflow"),
+            "environments/rnaseq_counts/rnaseq_counts.RUN.html": "<html>",
+            "environments/rnaseq_counts/rnaseq_counts_workflow.RUN.html": "<html>",
+            "environments/cohort_deseq2/cohort_deseq2.ENV.html": "<html>",
+            "environments/cohort_deseq2/cohort_deseq2.recipe.yaml": yaml.safe_dump({**RECIPE, "name": "cohort_deseq2",
+                                                                                     "primary_tools": ["bioconductor-deseq2"],
+                                                                                     "resolved_packages": [{"name": "bioconductor-deseq2", "version": "1.50.2", "kind": "conda"}]}),
+            "environments/cohort_deseq2/cohort_deseq2.workflow.yaml": _spec("cohort_deseq2", verified=False),
+            "environments/cohort_deseq2/cohort_deseq2_workflow.workflow.yaml": _spec("cohort_deseq2_workflow"),
+            "environments/cohort_deseq2/cohort_deseq2.RUN.html": "<html>",
+            "environments/cohort_deseq2/cohort_deseq2_workflow.RUN.html": "<html>",
+            "pipelines/test_rnaseq_only/main.nf": RENDERED_HEADER.format(workflow="rnaseq_counts_workflow", pipeline="test_rnaseq_only"),
+            "pipelines/test_rnaseq_only/.pipeline/pipeline.yaml": yaml.safe_dump({"name": "test_rnaseq_only",
+                                                                                  "sealed_workflow": "rnaseq_counts_workflow",
+                                                                                  "cohort_workflows": []}),
+        }
+        meta = {"name": "c3_cohort_deseq2", "tier": "C3", "success": "pipeline",
+                "expect": {"tools": ["hisat2", "samtools", "htseq"], "accessions_min": 3, "cohort_stage": True}}
+        run = _write_run(tmp_path / "sonnet__r1__x", records=_errored(transcript_records()), meta=meta, workspace_files=files)
+        envs = run / "workspace" / "environments"
+        order = ["rnaseq_counts/rnaseq_counts.workflow.yaml", "cohort_deseq2/cohort_deseq2.workflow.yaml",
+                 "rnaseq_counts/rnaseq_counts_workflow.superseded.1.workflow.yaml",
+                 "rnaseq_counts/rnaseq_counts_workflow.workflow.yaml", "cohort_deseq2/cohort_deseq2_workflow.workflow.yaml"]
+        t0 = time.time() - 1000
+        for i, rel in enumerate(order):                       # the cohort workflow was sealed last
+            os.utime(envs / rel, (t0 + 60 * i, t0 + 60 * i))
+        row = metrics.parse_run(run)
+        assert row["is_error"] is True and row["final_text"].startswith("You've hit your limit")
+        assert row["verdict"] == "fail" and row["success"] is False and row["reasons"] == ["session_error"]
+        assert row["sealed_names"] == ["cohort_deseq2", "cohort_deseq2_workflow", "rnaseq_counts", "rnaseq_counts_workflow"]
+        assert row["bound"] == {"env": "cohort_deseq2", "workflow": "cohort_deseq2_workflow", "pipeline": None,
+                                "how": "newest workflow spec: the final message names none", "named": False}
+        assert row["pipeline_rendered"] is False
+        # the same workspace behind a clean session still has nothing bound that the pipeline rule could pass on
+        clean = _write_run(tmp_path / "sonnet__r2__x", records=transcript_records(), meta={**meta, "repeat": 2}, workspace_files=files)
+        for i, rel in enumerate(order):
+            os.utime(clean / "workspace" / "environments" / rel, (t0 + 60 * i, t0 + 60 * i))
+        row = metrics.parse_run(clean)
+        assert row["verdict"] == "fail" and row["reasons"][0] == "rule:pipeline"
+        assert any(r.startswith("expect:tools: hisat2 is not in primary_tools") for r in row["reasons"])
+        assert "expect:cohort_stage: no main.nf rendered from the bound workflow" in row["reasons"]
+        # naming the test render binds it — and the cohort check then says what that render lacks
+        named = _write_run(tmp_path / "sonnet__r3__x",
+                           records=_closing(transcript_records(), "Rendered workspace/pipelines/test_rnaseq_only/ as a test."),
+                           meta={**meta, "repeat": 3}, workspace_files=files)
+        for i, rel in enumerate(order):
+            os.utime(named / "workspace" / "environments" / rel, (t0 + 60 * i, t0 + 60 * i))
+        row = metrics.parse_run(named)
+        assert row["bound"]["workflow"] == "rnaseq_counts_workflow" and row["bound"]["pipeline"] == "test_rnaseq_only"
+        assert row["pipeline_rendered"] is True
+        assert row["verdict"] == "fail"
+        assert row["reasons"] == ["expect:accessions_min: 1 distinct accession(s) in the spec ['SRR1039508'], 3 wanted",
+                                  "expect:cohort_stage: no process in main.nf runs over a collected channel"]
+
+    def test_every_row_carries_the_judge_hash_and_a_stale_row_is_rejudged(self, tmp_path):
+        exp = tmp_path / "c1_seqkit"
+        run = _write_run(exp / "sonnet__r1__x", workspace_files=SEALED_FILES)
+        row = metrics.parse_run(run)
+        assert row["judge_hash"] == metrics.JUDGE_HASH and re.fullmatch(r"[0-9a-f]{64}", row["judge_hash"])
+        assert metrics.JUDGE_HASH == __import__("hashlib").sha256((SCRIPTS / "experiment_metrics.py").read_bytes()).hexdigest()
+        metrics.write_row(run, {**row, "cost_usd": 99.0})
+        assert metrics.load_rows([exp])[0]["cost_usd"] == 99.0              # judged by this judge: read as written
+        metrics.write_row(run, {**row, "cost_usd": 99.0, "judge_hash": "0" * 64})
+        again = metrics.load_rows([exp])[0]
+        assert again["cost_usd"] == pytest.approx(0.4321) and again["judge_hash"] == metrics.JUDGE_HASH
+        assert json.loads((run / "metrics.json").read_text())["judge_hash"] == metrics.JUDGE_HASH
+        j = json.loads((report.write_report([row], tmp_path / "out").parent / "metrics.json").read_text())
+        assert j["judge_hash"] == metrics.JUDGE_HASH
+        assert metrics.JUDGE_HASH[:12] in report.render([row])
+
+
+# ---------------------------------------------------------------------------
+# The expect block
+# ---------------------------------------------------------------------------
+
+
+class TestExpectBlock:
+    def _row(self, tmp_path, name, expect, files=None, records=None):
+        return metrics.parse_run(_write_run(tmp_path / name, records=records, meta={"expect": expect},
+                                            workspace_files=_record_files(**(files or {}))))
+
+    def test_a_complete_record_meets_every_check(self, tmp_path):
+        row = self._row(tmp_path, "a", {"tools": ["seqkit"], "build_method": "adopt", "evidence_depth_min": "version",
+                                        "slots": ["THREADS", "INPUT*"], "trials_min": 1, "accessions": ["SRR1039508"],
+                                        "accessions_min": 1})
+        assert row["expect_checked"] == 7 and row["expect_failed"] == [] and row["verdict"] == "pass"
+
+    def test_tools_must_be_primary_and_carry_a_version(self, tmp_path):
+        row = self._row(tmp_path, "a", {"tools": ["seqkit", "samtools"]})
+        assert row["expect_failed"] == ["expect:tools: samtools is not in primary_tools ['seqkit']"]
+        assert row["verdict"] == "fail" and row["reason"] == "expect:tools: samtools is not in primary_tools ['seqkit']"
+        unversioned = yaml.safe_dump({**RECIPE, "resolved_packages": []})
+        spec = yaml.safe_load(_spec())
+        spec["env_request_key"] = "seqkit|linux/amd64|none"
+        row = self._row(tmp_path, "b", {"tools": ["seqkit"]},
+                        {"environments/seqkit/seqkit.recipe.yaml": unversioned,
+                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec)})
+        assert row["expect_failed"] == ["expect:tools: no recorded version for seqkit"]
+        # the spec's env request key is a version source; so is the EnvCache's adopted tag; a floating one is not
+        row = self._row(tmp_path, "c", {"tools": ["seqkit"]}, {"environments/seqkit/seqkit.recipe.yaml": unversioned})
+        assert row["expect_failed"] == []
+        cache = {"seqkit|linux/amd64|none": {"name": "seqkit", "request_key": "seqkit|linux/amd64|none",
+                                             "adopt_source": {"tag": "2.14.0--h9ee0642_0"}}}
+        row = self._row(tmp_path, "d", {"tools": ["seqkit"]},
+                        {"environments/seqkit/seqkit.recipe.yaml": unversioned,
+                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec),
+                         "environments/_env_cache.json": json.dumps(cache)})
+        assert row["expect_failed"] == []
+        cache["seqkit|linux/amd64|none"]["adopt_source"]["tag"] = "latest"
+        row = self._row(tmp_path, "e", {"tools": ["seqkit"]},
+                        {"environments/seqkit/seqkit.recipe.yaml": unversioned,
+                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec),
+                         "environments/_env_cache.json": json.dumps(cache)})
+        assert row["expect_failed"] == ["expect:tools: no recorded version for seqkit"]
+        # a source install pinned to a tag carries it as the version; one on a branch does not
+        source = {**RECIPE, "resolved_packages": [], "install_steps": [{"tool": "git", "installed_packages": [
+            {"name": "seqkit", "install_method": {"type": "source", "ref": "v1.5", "commit_sha": "94e7070"}}]}]}
+        row = self._row(tmp_path, "f", {"tools": ["seqkit"]},
+                        {"environments/seqkit/seqkit.recipe.yaml": yaml.safe_dump(source),
+                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec)})
+        assert row["expect_failed"] == []
+        source["install_steps"][0]["installed_packages"][0]["install_method"]["ref"] = "master"
+        row = self._row(tmp_path, "g", {"tools": ["seqkit"]},
+                        {"environments/seqkit/seqkit.recipe.yaml": yaml.safe_dump(source),
+                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec)})
+        assert row["expect_failed"] == ["expect:tools: no recorded version for seqkit"]
+        # names fold case, separators and the conda channel prefixes
+        assert metrics._norm_tool("bioconductor-deseq2") == metrics._norm_tool("DESeq2") == "deseq2"
+        assert metrics._norm_tool("HiC-Pro") == metrics._norm_tool("hicpro")
+        assert metrics.recorded_version("DESeq2", {"tool_identities": [{"tool": "DESeq2", "package": "bioconductor-deseq2",
+                                                                        "version": "1.50.2"}]}, None, None, None) == "1.50.2"
+
+    def test_build_method_and_evidence_depth_read_the_recipe_and_the_attestation(self, tmp_path):
+        row = self._row(tmp_path, "a", {"build_method": "container-native-build"})
+        assert row["expect_failed"] == ["expect:build_method: 'adopt' is not ['container-native-build']"]
+        row = self._row(tmp_path, "b", {"build_method": ["adopt", "container-native-build"]})
+        assert row["expect_failed"] == []
+        presence = _attestation([("seqkit", "command -v seqkit || python -c 'import importlib.metadata as _m; _m.distribution(\"seqkit\")'"),
+                                 ("samtools", "samtools --version")])
+        row = self._row(tmp_path, "c", {"evidence_depth_min": "version"}, {"environments/seqkit/seqkit.attestation.json": presence})
+        assert row["expect_failed"] == ["expect:evidence_depth_min: below version: seqkit=presence"]
+        row = self._row(tmp_path, "d", {"evidence_depth_min": "help"},
+                        {"environments/seqkit/seqkit.attestation.json": _attestation([("seqkit", "seqkit --help")])})
+        assert row["expect_failed"] == []
+        row = self._row(tmp_path, "e", {"evidence_depth_min": "help"},
+                        {"environments/seqkit/seqkit.attestation.json": _attestation([("talos", 'python -c "import importlib.metadata; print(importlib.metadata.version(\'talos\'))"')])})
+        assert row["expect_failed"] == ["expect:evidence_depth_min: below help: talos=presence"]
+        row = self._row(tmp_path, "f", {"evidence_depth_min": "version"}, {"environments/seqkit/seqkit.attestation.json": "{}"})
+        assert row["expect_failed"] == ["expect:evidence_depth_min: no validated_in_image checks in the attestation"]
+        assert metrics.EVIDENCE_DEPTHS == ("presence", "version", "import", "help", "smoke", "functional")
+
+    def test_slots_trials_and_accessions_read_the_bound_spec(self, tmp_path):
+        row = self._row(tmp_path, "a", {"slots": ["THREADS", "STRANDED*"]})
+        assert row["expect_failed"] == ["expect:slots: no {STRANDED*} slot in the how-to (slots: ['INPUT_FASTQ', 'OUTPUT_DIR', 'THREADS'])"]
+        three = _spec(trials=3, accessions=("SRR1039508", "SRR1039509", "SRR1039512"),
+                      template=["mkdir -p {OUTDIR}", "htseq-count --stranded {STRANDEDNESS} -p {THREADS} {BAM} > {OUTDIR}/c.txt"])
+        row = self._row(tmp_path, "b", {"slots": ["THREADS", "STRANDED*"], "trials_min": 3, "accessions_min": 3,
+                                        "accessions": ["SRR1039509"]},
+                        {"environments/seqkit/seqkit_stats.workflow.yaml": three})
+        assert row["expect_failed"] == []
+        row = self._row(tmp_path, "c", {"trials_min": 3, "accessions_min": 2, "accessions": ["SRR1039513"]})
+        assert row["expect_failed"] == ["expect:trials_min: 1 trial(s) declared, 3 wanted",
+                                        "expect:accessions: SRR1039513 does not appear in the workflow spec",
+                                        "expect:accessions_min: 1 distinct accession(s) in the spec ['SRR1039508'], 2 wanted"]
+        # a run with no spec at all fails the spec checks by absence
+        row = metrics.parse_run(_write_run(tmp_path / "d", meta={"expect": {"slots": ["X"], "trials_min": 1, "accessions": ["SRR1"]}}))
+        assert row["expect_failed"] == ["expect:slots: no workflow spec bound", "expect:trials_min: 0 trial(s) declared, 1 wanted",
+                                        "expect:accessions: no workflow spec bound"]
+
+    def test_the_cohort_stage_is_a_process_over_a_collected_channel(self, tmp_path):
+        row = self._row(tmp_path, "a", {"cohort_stage": True})
+        assert row["expect_failed"] == ["expect:cohort_stage: no process in main.nf runs over a collected channel"]
+        cohort = RENDERED_HEADER.format(workflow="seqkit_stats", pipeline="seqkit_stats") + (
+            "process RUN_DESEQ2 {\n  input:\n  path 'counts_dir/*'\n  script:\n  \"\"\"\n  Rscript x\n  \"\"\"\n}\n"
+            "workflow {\n    STATS(rows)\n    RUN_DESEQ2(STATS.out.counts.map { meta, f -> f }.collect(), file(params.script))\n}\n")
+        row = self._row(tmp_path, "b", {"cohort_stage": True}, {"pipelines/seqkit_stats/main.nf": cohort})
+        assert row["expect_failed"] == [] and row["expect_checked"] == 1
+        files = _record_files()
+        del files["pipelines/seqkit_stats/main.nf"]
+        row = metrics.parse_run(_write_run(tmp_path / "c", meta={"expect": {"cohort_stage": True}}, workspace_files=files))
+        assert row["expect_failed"] == ["expect:cohort_stage: no main.nf rendered from the bound workflow"]
+
+    def test_expect_failures_are_reasons_and_appear_on_the_page(self, tmp_path):
+        row = self._row(tmp_path, "a", {"tools": ["bwa"], "trials_min": 2})
+        assert row["verdict"] == "fail" and row["reasons"] == row["expect_failed"] and len(row["reasons"]) == 2
+        assert row["reason"] == row["expect_failed"][0]
+        page = report.render([row], experiments.experiment_setups([tmp_path]))
+        assert "expect: 2 check(s) — expect:tools: bwa is not in primary_tools" in page
+        assert "<td class='k'>expects</td>" in page and "<code>tools</code>: [&quot;bwa&quot;]" in page
+        ok = self._row(tmp_path, "b", {"tools": ["seqkit"]})
+        assert "expect: 1 check(s), all met" in report.render([ok], experiments.experiment_setups([tmp_path / "b"]))
+
+    def test_the_definition_validates_its_expect_block(self, tmp_path):
+        e = experiments.load_experiment(_exp(tmp_path, expect={"tools": ["seqkit"], "build_method": ["adopt"], "trials_min": 2,
+                                                              "slots": ["THREADS"], "evidence_depth_min": "help", "cohort_stage": False}))
+        assert e["expect"]["tools"] == ["seqkit"] and e["expect"]["trials_min"] == 2
+        assert experiments.load_experiment(_exp(tmp_path))["expect"] == {}
+        for bad, msg in ((["seqkit"], "mapping"), ({"bogus": 1}, "unknown keys"), ({"tools": []}, "non-empty list"),
+                         ({"tools": "seqkit"}, "non-empty list"), ({"trials_min": 0}, "positive integer"),
+                         ({"accessions_min": "3"}, "positive integer"), ({"evidence_depth_min": "deep"}, "one of"),
+                         ({"build_method": 3}, "string or a list"), ({"cohort_stage": "yes"}, "true or false")):
+            with pytest.raises(experiments.ExperimentError, match=msg):
+                experiments.load_experiment(_exp(tmp_path, expect=bad))
+        assert set(metrics.EXPECT_KEYS) == {"tools", "build_method", "evidence_depth_min", "slots", "trials_min",
+                                            "accessions", "accessions_min", "cohort_stage"}
+
+
+# ---------------------------------------------------------------------------
+# S and R scenarios: the system's column and the model's
+# ---------------------------------------------------------------------------
+
+
+class TestGateColumns:
+    GATED = {"expected_codes": ["freeze.fixture_*"], "gated_tools": ["freeze", "seal_workflow"]}
+
+    def test_no_gated_call_is_not_exercised_and_declined(self, tmp_path):
+        quiet = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] == "m5"]
+        row = metrics.parse_run(_write_run(tmp_path / "a", records=quiet, meta={"success": "declined", **self.GATED}))
+        assert (row["gate_held"], row["agent_declined"]) == (None, True)
+        assert row["verdict"] == "pass"
+        # under the refused rule the same run is a miss — and still never reads as the system passing
+        row = metrics.parse_run(_write_run(tmp_path / "b", records=quiet, meta={"success": "refused", **self.GATED}))
+        assert (row["gate_held"], row["agent_declined"]) == (None, True) and row["verdict"] == "fail"
+
+    def test_a_refused_gated_call_is_held_and_tried(self, tmp_path):
+        row = metrics.parse_run(_write_run(tmp_path / "a", meta={"success": "refused", **self.GATED}))
+        assert (row["gate_held"], row["agent_declined"]) == (True, False) and row["verdict"] == "pass"
+        # a gated call the server did not refuse with an expected code: tried, not held
+        row = metrics.parse_run(_write_run(tmp_path / "b", meta={"success": "refused", "expected_codes": ["seal.no_*"],
+                                                                 "gated_tools": ["seal_workflow"]}))
+        assert (row["gate_held"], row["agent_declined"]) == (False, False) and row["verdict"] == "fail"
+        # a record sealed around the refusal without its self-test is not a held gate
+        files = dict(SEALED_FILES)
+        files["environments/seqkit/seqkit_stats.workflow.yaml"] = yaml.safe_dump({"usage_verified": False})
+        row = metrics.parse_run(_write_run(tmp_path / "c", meta={"success": "refused", **self.GATED}, workspace_files=files))
+        assert row["gate_held"] is False and row["verdict"] == "fail"
+
+    def test_the_gate_is_exercised_by_a_gated_tool_or_a_gated_code(self, tmp_path):
+        """A scenario may name the tools that exercise its gate, the codes the gate answers
+        with, or both; either observation counts as exercised."""
+        row = metrics.parse_run(_write_run(tmp_path / "a", meta={"success": "refused", "expected_codes": ["freeze.fixture_*"]}))
+        assert (row["gate_held"], row["agent_declined"]) == (True, False)
+        busy = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] in ("m4", "m5")]
+        row = metrics.parse_run(_write_run(tmp_path / "b", records=busy, meta={"success": "asked", "gated_tools": ["seal_workflow"]}))
+        assert (row["gate_held"], row["agent_declined"]) == (None, False)       # tried, no gate codes to read the server by
+        quiet = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] in ("m1", "m5")]
+        quiet = _closing(quiet, "Which caller did you mean?")
+        row = metrics.parse_run(_write_run(tmp_path / "c", records=quiet, meta={"success": "asked", "gated_tools": ["seal_workflow", "install_*"]}))
+        assert (row["gate_held"], row["agent_declined"]) == (None, True) and row["verdict"] == "pass"
+        # the accession token the corpus spells is found inside a file name, not only as a bare word
+        assert metrics._ACCESSION_RE.findall("airway_SRR1039508_10K_R1.fastq.gz ERR188297 xSRR123456") == ["SRR1039508", "ERR188297"]
+        row = metrics.parse_run(_write_run(tmp_path / "d", workspace_files=SEALED_FILES))
+        assert (row["gate_held"], row["agent_declined"]) == (None, None)        # no gate declared: nothing to read
+
+    def test_both_columns_reach_the_scoreboard_the_runs_table_and_the_glossary(self, tmp_path):
+        quiet = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] == "m5"]
+        a = metrics.parse_run(_write_run(tmp_path / "a", records=quiet, meta={"success": "declined", **self.GATED}))
+        b = metrics.parse_run(_write_run(tmp_path / "b", meta={"success": "declined", "repeat": 2, **self.GATED}))
+        c = metrics.parse_run(_write_run(tmp_path / "c", meta={"success": "declined", "repeat": 3, "expected_codes": ["seal.no_*"],
+                                                               "gated_tools": ["seal_workflow"]}))
+        [g] = metrics.aggregate([a, b, c])
+        assert (g["gate_applicable"], g["gate_declared"], g["gate_exercised"], g["gate_held"], g["agent_declined"]) == (True, True, 2, 1, 1)
+        page = report.render([a, b, c], experiments.experiment_setups([tmp_path]))
+        board = page.split("<h2>Scoreboard</h2>")[1].split("<h2>")[0]
+        assert "<th>gate held</th><th>agent declined</th>" in board
+        assert '1/2 held<span class="note"> · 1 not exercised</span>' in board and "1/3 declined" in board
+        runs = page.split("<h2>Runs</h2>")[1].split("<h2>")[0]
+        assert "<th>gate</th><th>agent</th>" in runs
+        assert runs.count('<td class="na">not exercised</td>') == 1 and runs.count('<td class="l">declined</td>') == 1
+        assert runs.count('<td class="ok">held</td>') == 1 and runs.count('<td class="bad">no refusal</td>') == 1
+        assert runs.count('<td class="l">tried</td>') == 2
+        glossary = page.split("<h2>Metrics</h2>")[1]
+        assert "<code>gate held</code>" in glossary and "<code>agent declined</code>" in glossary
+        assert "<code>gate_held</code>" in glossary and "<code>agent_declined</code>" in glossary
+        # a group with no gate at all shows dashes in both columns; one that names no gate codes only in the system's
+        plain = metrics.parse_run(_write_run(tmp_path / "p", meta={"name": "c1_x"}, workspace_files=SEALED_FILES))
+        asked = metrics.parse_run(_write_run(tmp_path / "q", records=quiet, meta={"name": "r_x", "success": "asked",
+                                                                                 "gated_tools": ["seal_workflow"]}))
+        board = report.render([plain, asked]).split("<h2>Scoreboard</h2>")[1].split("<h2>")[0]
+        assert board.count('<td class="na">—</td><td class="na">—</td>') == 1
+        assert '<td class="na">—</td><td>1/1 declined</td>' in board
+        experiments.print_scoreboard([a, b, c, plain, asked])
+
+    def test_the_shipped_s_and_r_scenarios_declare_their_gates(self, tmp_path):
+        for path in CORPUS:
+            e = experiments.load_experiment(path)
+            if e["name"].startswith(("s_", "r_")):
+                assert e["gated_tools"], f"{path.name} names no gated tools"
+                assert "install_pipeline_brief" not in e["gated_tools"], "a brief is a query, not a gated call"
+            else:
+                assert e["gated_tools"] == [], path.name
+            if e["name"].startswith("s_"):
+                assert e["expected_codes"], f"{path.name} names no gate codes"
+            if e["success"] in ("sealed", "pipeline", "frozen"):
+                assert e["expect"].get("tools"), f"{path.name} does not say which tools the record must carry"
+        with pytest.raises(experiments.ExperimentError, match="gated_tools must"):
+            experiments.load_experiment(_exp(tmp_path, gated_tools="seal_workflow"))
+
+
+# ---------------------------------------------------------------------------
+# Isolation: the shared corpus is the same after the run as before it
+# ---------------------------------------------------------------------------
+
+
+class TestIsolation:
+    def test_snapshot_and_changes(self, tmp_path):
+        import os
+        res = tmp_path / "resources"
+        (res / "core").mkdir(parents=True)
+        (res / "core" / "a.fq").write_text("A")
+        (res / "core" / "b.fq").write_text("B")
+        (res / "manifest.yaml").write_text("x: 1")
+        (res / ".DS_Store").write_text("finder litter")
+        before = experiments.snapshot_tree(res)
+        assert set(before) == {"core/a.fq", "core/b.fq", "manifest.yaml"}
+        assert experiments.tree_changes(before, experiments.snapshot_tree(res)) == []
+        (res / "core" / "a.fq").write_text("AAA")                              # size
+        (res / "core" / "c.fq").write_text("C")                                # added
+        (res / "manifest.yaml").unlink()                                       # removed
+        st = (res / "core" / "b.fq").stat()
+        os.utime(res / "core" / "b.fq", ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))   # mtime alone
+        (res / ".DS_Store").write_text("more litter")
+        after = experiments.snapshot_tree(res)
+        assert experiments.tree_changes(before, after) == ["core/a.fq", "core/b.fq", "core/c.fq", "manifest.yaml"]
+        assert experiments.snapshot_tree(tmp_path / "nowhere") is None
+
+    def test_a_mutated_corpus_fails_the_run_with_its_own_reason(self, tmp_path):
+        row = metrics.parse_run(_write_run(tmp_path / "a", meta={"resources_mutated": ["core/a.fq", "core/new.fq"]},
+                                           workspace_files=SEALED_FILES))
+        assert row["verdict"] == "fail" and row["reasons"] == ["resources_mutated"]
+        assert row["resources_mutated"] == ["core/a.fq", "core/new.fq"]
+        clean = metrics.parse_run(_write_run(tmp_path / "b", meta={"resources_mutated": []}, workspace_files=SEALED_FILES))
+        assert clean["verdict"] == "pass"
+        page = report.render([row], experiments.experiment_setups([tmp_path]))
+        assert "<code>resources_mutated</code>" in page and "resources mutated: core/a.fq, core/new.fq" in page
+
+    def test_the_runner_snapshots_the_shared_corpus_around_the_session(self, tmp_path, monkeypatch):
+        """run_once with the client stubbed out: the session (the stub) writes into the shared
+        corpus, and the run's record names the path and fails for it."""
+        res = tmp_path / "host_resources"
+        (res / "core").mkdir(parents=True)
+        (res / "core" / "a.fq").write_text("A")
+        host = {"envs": str(tmp_path / "host_envs"), "resources": str(res), "projects_access": str(tmp_path / "pa.yaml"),
+                "experiments": str(tmp_path / "exp")}
+
+        class FakeProc:
+            pid = 4242
+
+            def __init__(self, cmd, cwd, env, **kw):
+                self.cwd = Path(cwd)
+
+            def wait(self, timeout=None):
+                (self.cwd / "transcript.jsonl").write_text("\n".join(json.dumps(r) for r in transcript_records()) + "\n")
+                (res / "core" / "a.fq").write_text("rewritten by the session")
+                (res / "core" / "index.ht2").write_text("built into the corpus")
+                return 0
+
+        monkeypatch.setattr(experiments.workspace, "zones", lambda: host)
+        monkeypatch.setattr(experiments.subprocess, "Popen", FakeProc)
+        e = experiments.load_experiment(_exp(tmp_path, cleanup=[]))
+        run = experiments.run_once(e, "sonnet", 1, tmp_path / "root")
+        meta = json.loads((run / "experiment.json").read_text())
+        assert meta["resources_snapshot"] == {"root": str(res), "files": 1}
+        assert meta["resources_mutated"] == ["core/a.fq", "core/index.ht2"]
+        assert meta["attempt"] == 1 and meta["attempts_of"] == run.name
+        row = json.loads((run / "metrics.json").read_text())
+        assert row["verdict"] == "fail" and row["reason"] == "resources_mutated"
+        # a definition that does not share the corpus has nothing to snapshot
+        e2 = experiments.load_experiment(_exp(tmp_path, cleanup=[], share=[]))
+        run2 = experiments.run_once(e2, "sonnet", 1, tmp_path / "root2", attempt=2, attempts_of="first")
+        meta2 = json.loads((run2 / "experiment.json").read_text())
+        assert "resources_mutated" not in meta2 and (meta2["attempt"], meta2["attempts_of"]) == (2, "first")
+
+    def test_the_real_docker_build_is_in_the_docker_tier(self):
+        src = (ROOT / "tests" / "test_local_sif.py").read_text()
+        assert "@pytest.mark.integration_docker\n@pytest.mark.skipif(not shutil.which(\"docker\")" in src
+        assert "integration_docker" in (ROOT / "pytest.ini").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Repeats: per tier, per code revision, confirmed on fail
+# ---------------------------------------------------------------------------
+
+
+class TestRepeats:
+    def test_default_repeats_by_tier_and_for_hard(self, tmp_path):
+        assert [experiments.default_repeats(t, tmp_path / "x.yaml") for t in ("C0", "C1", "C2", "C3")] == [2, 3, 2, 2]
+        assert experiments.default_repeats("C1", tmp_path / "hard" / "h_x.yaml") == 2
+        assert experiments.load_experiment(_exp(tmp_path))["repeats"] == 3
+        assert experiments.load_experiment(_exp(tmp_path, tier="C2"))["repeats"] == 2
+        assert experiments.load_experiment(_exp(tmp_path, repeats=5))["repeats"] == 5
+        hard = tmp_path / "hard"
+        hard.mkdir()
+        (hard / "h_x.yaml").write_text(yaml.safe_dump({"name": "h_x", "tier": "C1", "prompt": "p", "models": ["sonnet"]}))
+        assert experiments.load_experiment(hard / "h_x.yaml")["repeats"] == 2
+        for path in CORPUS:
+            e = experiments.load_experiment(path)
+            want = 2 if path.parent.name == "hard" else {"C0": 2, "C1": 3, "C2": 2, "C3": 2}[e["tier"]]
+            assert e["repeats"] == want, path.name
+
+    def test_classify_attempts(self):
+        c = metrics.classify_attempts
+        assert c(["pass"]) == ("pass", True)
+        assert c(["fail"]) == ("fail", False)
+        assert c(["invalid"]) == ("invalid", False)
+        assert c(["fail", "fail"]) == ("fail", True)
+        assert c(["fail", "pass", "pass"]) == ("pass", True)
+        assert c(["fail", "pass", "fail"]) == ("fail", True)
+        assert c(["invalid", "invalid"]) == ("invalid", True)
+        assert c(["invalid", "pass"]) == ("pass", False)
+        assert c(["fail", "pass", "invalid"]) == ("pass", False)
+        assert c(["invalid", "fail", "pass"]) == ("pass", False)
+
+    def test_aggregate_never_pools_code_revisions_and_counts_slots_not_attempts(self, tmp_path):
+        a1 = metrics.parse_run(_write_run(tmp_path / "a1", meta={"code_rev": "aaa1"}))
+        a2 = metrics.parse_run(_write_run(tmp_path / "a2", meta={"code_rev": "aaa1", "attempt": 2, "attempts_of": "a1"}))
+        a3 = metrics.parse_run(_write_run(tmp_path / "a3", meta={"code_rev": "aaa1", "repeat": 2}, workspace_files=SEALED_FILES))
+        b1 = metrics.parse_run(_write_run(tmp_path / "b1", meta={"code_rev": "bbb2"}, workspace_files=SEALED_FILES))
+        groups = metrics.aggregate([a1, a2, a3, b1])
+        assert [(g["code_rev"], g["n"], g["attempts"], g["successes"], g["pass_at_1"]) for g in groups] == \
+            [("aaa1", 2, 3, 1, 0.5), ("bbb2", 1, 1, 1, 1.0)]
+        assert groups[0]["slots"][0]["verdicts"] == ["fail", "fail"] and groups[0]["slots"][0]["confirmed"] is True
+        assert groups[0]["unconfirmed"] == 0 and groups[0]["cost_usd_mean"] == pytest.approx(0.4321)
+        page = report.render([a1, a2, a3, b1], experiments.experiment_setups([tmp_path]))
+        board = page.split("<h2>Scoreboard</h2>")[1].split("<h2>")[0]
+        assert "<th>rev</th>" in board and "<code>aaa1</code>" in board and "<code>bbb2</code>" in board
+        assert '2<span class="note"> +1 re-run</span>' in board
+        runs = page.split("<h2>Runs</h2>")[1].split("<h2>")[0]
+        assert '#1 <span class="note">attempt 2</span>' in runs
+        experiments.print_scoreboard([a1, a2, a3, b1])
+
+    def test_confirm_on_fail_reruns_until_a_verdict_is_seen_twice(self, tmp_path, monkeypatch, capsys):
+        """The runner stubbed at run_once: a scripted sequence of verdicts per repeat shows a
+        fail re-run once and confirmed, a fail overturned by two passes, a lone pass left
+        alone, and `--attempts 1` re-running nothing."""
+        script = {1: ["fail", "fail", "pass"], 2: ["fail", "pass", "pass"], 3: ["pass"]}
+        made: list[tuple[int, int, str | None]] = []
+
+        def fake_run_once(exp, model, repeat, root, dry_run=False, attempt=1, attempts_of=None):
+            verdict = script[repeat][attempt - 1]
+            made.append((repeat, attempt, attempts_of))
+            recs = transcript_records()
+            files = SEALED_FILES if verdict == "pass" else {}
+            if verdict == "invalid":
+                recs = [r for r in recs if r["type"] != "result"]
+            run = _write_run(root / exp["name"] / f"{model}__r{repeat}__{attempt:02d}", records=recs,
+                             meta={"repeat": repeat, "attempt": attempt, "attempts_of": attempts_of or f"{model}__r{repeat}__01"},
+                             workspace_files=files)
+            metrics.write_row(run, metrics.parse_run(run))         # as run_once does
+            return run
+
+        monkeypatch.setattr(experiments, "run_once", fake_run_once)
+        root = tmp_path / "root"
+        rc = experiments.main(["run", str(_exp(tmp_path, repeats=3, models=["sonnet"])), "--root", str(root)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert made == [(1, 1, None), (1, 2, "sonnet__r1__01"), (2, 1, None), (2, 2, "sonnet__r2__01"), (2, 3, "sonnet__r2__01"), (3, 1, None)]
+        assert "repeat 1 classed fail after 2 attempts: fail, fail" in out
+        assert "repeat 2 classed pass after 3 attempts: fail, pass, pass" in out
+        rows = metrics.load_rows([root / "c1_seqkit"])
+        assert len(rows) == 6
+        [g] = metrics.aggregate(rows)
+        assert (g["n"], g["attempts"], g["successes"], g["failures"], g["invalid"]) == (3, 6, 2, 1, 0)
+        assert g["pass_at_1"] == pytest.approx(2 / 3)
+        made.clear()
+        script.update({1: ["fail"], 2: ["fail"], 3: ["fail"]})
+        experiments.main(["run", str(_exp(tmp_path, repeats=3, models=["sonnet"])), "--root", str(tmp_path / "root2"), "--attempts", "1"])
+        assert made == [(1, 1, None), (2, 1, None), (3, 1, None)]
+        rows = metrics.load_rows([tmp_path / "root2" / "c1_seqkit"])
+        [g] = metrics.aggregate(rows)
+        assert g["unconfirmed"] == 3 and g["pass_at_1"] == 0.0
+
+    def test_the_corpus_index_reports_the_newest_revision_alone(self, tmp_path, monkeypatch):
+        exps = tmp_path / "experiments"
+        _write_run(exps / "c1_a" / "sonnet__r1__old", meta={"name": "c1_a", "corpus": "A", "code_rev": "aaa1",
+                                                            "started_at": "2026-10-08T06:00:00+00:00"})
+        _write_run(exps / "c1_a" / "sonnet__r1__new", meta={"name": "c1_a", "corpus": "A", "code_rev": "bbb2",
+                                                            "started_at": "2026-10-09T06:00:00+00:00"}, workspace_files=SEALED_FILES)
+        monkeypatch.setattr(experiments.workspace, "experiments_dir", lambda: exps)
+        assert experiments.main(["report"]) == 0
+        index = (exps / "_report" / "index.html").read_text()
+        assert "100%" in index and "<code>bbb2</code>" in index and "pass@1 (newest rev)" in index
+        page = (exps / "_report" / "A" / "report.html").read_text()
+        section = page.split("Across code revisions")[1].split("<h2>")[0]
+        assert section.index("<code>aaa1</code>") < section.index("<code>bbb2</code>")
