@@ -233,10 +233,11 @@ def freeze(
     dependency closure. Returns {mode, image, image_digest, content_digest,
     request_key, hpc_delivery, cache_hit, …}.
 
-    `evidence` — OPTIONAL `{tool_name: command}`. On the ADOPT path the default
-    evidence is a conda-metadata presence probe: it proves the package is in the
-    image, never that it RUNS. Pass a command that exercises the tool on a real
-    input and the record earns a functional claim instead of a presence one —
+    `evidence` — OPTIONAL `{tool_name: command}`, honoured on BOTH the adopt and
+    the build path. The default verification of a conda or pip tool is a
+    conda-metadata presence probe: it proves the package is in the image, never
+    that it RUNS, and the ENV report says so. Pass a command that exercises the
+    tool on a real input and the record earns a functional claim instead —
     `{"samtools": "samtools sort /t.bam -o /o.bam && test -s /o.bam"}`.
     Authored evidence is held to the same two guards as `freeze_from_image`'s: the
     shape rule, and the control-image experiment (it must FAIL in a digest-pinned
@@ -503,7 +504,8 @@ def freeze(
             draft or {}, name=name, version=version, conda_deps=conda_deps,
             primary_tools=[n for n, _ in parsed], platform=docker_platform,
             accelerator=effective_accel,
-            license_gated=gated, licenses=licenses, redistributable=not gated)
+            license_gated=gated, licenses=licenses, redistributable=not gated,
+            evidence=evidence)
         if not br.get("success"):
             # build_env_image refuses pip/r_install with no generator, a non-replayable
             # source, or any honesty-contract violation (incl. I13: a gated build needs

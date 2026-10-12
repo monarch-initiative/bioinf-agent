@@ -399,9 +399,11 @@ class PipelineState:
           - all other cases: the new entry lands at slot N (edit in place).
             Agent is e.g. bumping a version on an already-successful step.
 
-        Either way the prior entry at N is DELETED — appending without removal
-        leaves both the rc=1 and rc=0 records in install_steps and surfaces as
-        duplicate installs in the freeze replay.
+        Either way the prior entry at N is DELETED and none of its fields survive
+        into the new one — appending without removal leaves both the rc=1 and rc=0
+        records in install_steps and surfaces as duplicate installs in the freeze
+        replay; merging would let a host re-run inherit the container run's
+        `ran_in_container` / `container_image_digest` and claim its badge.
         """
         def _apply(draft):
             nonlocal step_data
@@ -426,21 +428,12 @@ class PipelineState:
                         if isinstance(st, dict):
                             st["step"] = i
                     return new_index
-                # Edit-in-place semantic (success-keeps-position OR rc unknown):
-                # merge the new fields over the existing record at the same slot.
-                merged = {**existing, **step_data, "step": replace_step}
-                # `validation` is captured OUT OF BAND (add_validation runs AFTER
-                # add_step), so a re-run's step_data never carries it — and the merge
-                # above would preserve the PRIOR command's per-file validation records.
-                # That silently violates the "throw away whatever was at N" contract:
-                # replacing an index-build step (8 .ht2 outputs) with a fastqc step
-                # leaves 8 stale validation records behind, attributed to a command
-                # that never produced them. A re-run re-validates its OWN outputs, so
-                # drop the inherited records unless the caller explicitly provided
-                # replacements.
-                if "validation" not in step_data:
-                    merged.pop("validation", None)
-                steps.insert(replace_step - 1, merged)
+                # Edit-in-place (success-keeps-position OR rc unknown): the new
+                # record IS slot N. Nothing is carried over from the entry it
+                # replaces — where a step ran, which image it ran in, its cluster
+                # receipts and its per-file validation records describe ONE
+                # execution, and a re-run earns its own or has none.
+                steps.insert(replace_step - 1, {**step_data, "step": replace_step})
                 return replace_step
             new_index = len(steps) + 1
             step_data = {**step_data, "step": new_index}
@@ -500,8 +493,13 @@ class PipelineState:
         return bool(ok and hit)
 
     def set_test_data(self, pipeline_id: str, test_data: dict) -> bool:
+        """Record the draft's test_data block, constructed through `TestDataRef` so a
+        block the model refuses (a flat field contradicting `samples[0]`, a malformed
+        anchor) never reaches the draft; a malformed block raises at the producer."""
+        from agent.models.core_data import TestDataRef, test_data_block
+        block = test_data_block(TestDataRef.model_validate(test_data))
         return self._mutate(
-            pipeline_id, lambda draft: draft.__setitem__("test_data", test_data))[0]
+            pipeline_id, lambda draft: draft.__setitem__("test_data", block))[0]
 
     def upsert_service_dependency(
         self, pipeline_id: str, name: str, fields: dict

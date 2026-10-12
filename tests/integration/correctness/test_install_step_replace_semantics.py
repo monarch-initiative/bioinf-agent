@@ -56,11 +56,13 @@ def test_replace_step_after_failure_drops_failed_entry_and_appends_at_end(tmp_pa
 
 @pytest.mark.integration
 def test_replace_step_when_prior_succeeded_edits_in_place(tmp_path):
-    """The edit-in-place branch: prior step also succeeded → new merges over
-    the prior at the same slot (e.g. agent bumping a version)."""
+    """The edit-in-place branch: prior step also succeeded → the new record takes
+    the same slot (e.g. agent bumping a version), and nothing of the prior record
+    survives into it."""
     ps = _state(tmp_path)
     ps.start("p1", "test")
-    ps.add_install_step("p1", {"tool": "samtools", "version": "1.20", "returncode": 0})
+    ps.add_install_step("p1", {"tool": "samtools", "version": "1.20", "returncode": 0,
+                                "channel": "bioconda"})
     ps.add_install_step("p1", {"tool": "samtools", "version": "1.21", "returncode": 0},
                         replace_step=1)
 
@@ -68,6 +70,50 @@ def test_replace_step_when_prior_succeeded_edits_in_place(tmp_path):
     assert len(steps) == 1
     assert steps[0]["version"] == "1.21"
     assert steps[0]["step"] == 1
+    assert "channel" not in steps[0], "a field of the replaced record survived the replacement"
+
+
+@pytest.mark.integration
+def test_a_host_rerun_of_a_container_step_does_not_inherit_the_shipped_image_claim(tmp_path):
+    """A step run inside the frozen image carries `ran_in_container` and the image
+    digest. The agent re-runs the same step on the host with replace_step=N: the
+    host record has neither, so the claim that every validated step ran in the
+    shipped image must fall — on the seal's predicate and on the RUN page."""
+    import re
+    from agent.models.core_data import PipelineStep, validated_in_shipped_image
+    from agent.skills.run_dashboard_html import render_run_dashboard_html
+
+    out = tmp_path / "out.txt"
+    out.write_text("result\n")
+    usage = {"wall_seconds": 1.0, "peak_rss_mb": 10.0, "max_cpu_percent": 5.0}
+    ok = {"passed": True, "validation_method": "exists_nonzero", "file": str(out)}
+    ps = _state(tmp_path)
+    ps.start("p1", "test")
+    ps.add_step("p1", PipelineStep.produce(
+        tool="samtools", command="samtools view a.bam", returncode=0,
+        detected_outputs=[str(out)], resource_usage=usage,
+        ran_in_container=True, container_image="demo:1.0",
+        container_image_digest="sha256:img"))
+    ps.add_validation("p1", 1, str(out), ok)
+    env = {"image_digest": "sha256:img"}
+    assert validated_in_shipped_image(ps.get_draft("p1"), env) is True
+
+    ps.add_step("p1", PipelineStep.produce(
+        tool="samtools", command="samtools view a.bam", returncode=0,
+        detected_outputs=[str(out)], resource_usage=usage), replace_step=1)
+    ps.add_validation("p1", 1, str(out), ok)
+    draft = ps.get_draft("p1")
+    step = draft["pipeline_steps"][0]
+    assert len(draft["pipeline_steps"]) == 1
+    assert "ran_in_container" not in step and "container_image_digest" not in step, step
+    assert validated_in_shipped_image(draft, env) is False
+
+    spec = {**draft, "workflow_name": "wf", "created_at": "2026-01-01T00:00:00Z",
+            "env_request_key": "k", "env_image": "demo:1.0", "env_content_digest": "sha256:d",
+            "validated_in_shipped_image": validated_in_shipped_image(draft, env)}
+    html = render_run_dashboard_html(spec, env_record=None)
+    pill = re.search(r'<span class="pill ([a-z]+)">([^<]*)</span>', html)
+    assert pill and "shipped image" not in pill.group(2).lower(), pill.group(0)
 
 
 @pytest.mark.integration

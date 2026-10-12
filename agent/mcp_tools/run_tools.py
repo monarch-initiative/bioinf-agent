@@ -109,9 +109,14 @@ def run_pipeline_step(
                   response as `output_types_unmatched` so a typo doesn't go
                   silent.
 
-    watch_dir: the directory whose new and modified files are the step's outputs
-                  (default: the first input's directory). A missing watch_dir is
-                  created, so no shell is needed to prepare an output directory.
+    watch_dir: the directory whose new and modified files are the step's outputs.
+                  Default: a fresh directory for this step under the workspace's
+                  scratch zone, which is also the command's working directory — a
+                  step never writes beside its inputs, and a relative output path
+                  lands where it is detected. Pass watch_dir when the command writes
+                  somewhere else (`-o <path>`, `> <path>`); a missing one is created,
+                  so no shell is needed to prepare an output directory. The response
+                  names the directory used as `watch_dir`.
     Long stdout/stderr is cut to head+tail in the response; the full text is on
     disk at `log_path`. `untraced_inputs`, when present, lists the inputs that trace to
     nothing the draft knows (no prior step's output, no declared external source) with
@@ -124,11 +129,14 @@ def run_pipeline_step(
                        error="pipeline_id is required for run_pipeline_step")
     if (_bad := _inputs_refusal(inputs, "run_pipeline_step.invalid_inputs")):
         return _bad
-    watch_dir_created = _ensure_watch_dir(watch_dir)
+    step_dir = ""
+    if not watch_dir:
+        step_dir = watch_dir = _fresh_step_dir()
+    watch_dir_created = bool(step_dir) or _ensure_watch_dir(watch_dir)
 
     result = _ms._env_mgr.run_in_env(
-        env_name, command, timeout=timeout_seconds, inputs=inputs,
-        watch_dir=watch_dir or None,
+        env_name, command, timeout=timeout_seconds, inputs=inputs, watch_dir=watch_dir,
+        **({"working_dir": step_dir} if step_dir else {}),
     )
     # L11 (universal lineage): hash each detected_output at production time
     # so seal can verify the same path holds the same bytes through to its
@@ -205,19 +213,20 @@ def run_pipeline_step(
         out["output_types_unmatched"] = unmatched
     # Legibility: rc=0 + the caller expected outputs
     # (output_types given) + NOTHING detected is the silent-empty trap. The step
-    # only sees files created/modified under watch_dir (defaults to the input's
-    # dir), so an output written via `-o <path>`/`> <path>` to another directory
-    # goes undetected — and an undetected output fails I3 at seal. Not an error
-    # (the run genuinely succeeded); a hint so an unattended agent self-corrects.
+    # only sees files created/modified under watch_dir, so an output written via
+    # `-o <path>`/`> <path>` to another directory goes undetected — and an
+    # undetected output fails I3 at seal. Not an error (the run genuinely
+    # succeeded); a hint so an unattended agent self-corrects.
     if result.get("returncode") == 0 and output_types and not result.get("detected_outputs"):
         out["output_detection_hint"] = (
             "rc=0 but no outputs were detected. run_pipeline_step only sees files "
-            "created/modified under watch_dir (default: the input's directory). If "
-            "your command writes via `-o <path>`/`> <path>` to a different dir, pass "
-            "watch_dir=<that dir> so the output is detected and validated — otherwise "
-            "it will fail I3 (no validated detected_outputs) at seal_workflow. A missing "
-            "watch_dir is created for you."
+            f"created/modified under watch_dir ({watch_dir}). If your command writes "
+            "via `-o <path>`/`> <path>` to a different dir, pass watch_dir=<that dir> "
+            "so the output is detected and validated — otherwise it will fail I3 (no "
+            "validated detected_outputs) at seal_workflow. A missing watch_dir is "
+            "created for you."
         )
+    out["watch_dir"] = watch_dir
     if watch_dir_created:
         out["watch_dir_created"] = watch_dir
     out.update(_lineage_disclosure(pipeline_id, idx))
@@ -269,6 +278,15 @@ def _under(path: Path, root: Path) -> bool:
     except OSError:
         return False
     return path == root or root in path.parents
+
+
+def _fresh_step_dir() -> str:
+    """A new directory for one step's outputs under the scratch zone: the default
+    watch_dir, and the command's working directory, when the caller named neither."""
+    from datetime import datetime, timezone
+    import uuid
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    return str(_workspace.scratch_dir("step_outputs", stamp))
 
 
 def _ensure_watch_dir(watch_dir: str) -> bool:
@@ -545,7 +563,10 @@ def run_in_env(
               sublist under that input in the HTML report and are kept in the
               spec so the lineage is programmatic (not memory-bound).
     watch_dir: directory to snapshot before/after execution. New and modified files
-               are returned as detected_outputs. Defaults to working_dir if omitted.
+               are returned as detected_outputs. Defaults to working_dir; when neither
+               is given the command gets a fresh directory under the scratch zone as
+               both, so nothing is written beside its inputs. The directory used is
+               returned as `watch_dir`.
 
     If pipeline_id is supplied, a PipelineStep entry is appended to
     draft.pipeline_steps with the command, returncode, runtime, inputs, and
@@ -559,13 +580,15 @@ def run_in_env(
     # built, and an ad-hoc shell run has no shape contract to satisfy.
     if pipeline_id and (_bad := _inputs_refusal(inputs, "run_in_env.invalid_inputs")):
         return _bad
+    step_dir = "" if (watch_dir or working_dir) else _fresh_step_dir()
     result = _ms._env_mgr.run_in_env(
         env_name, command,
-        working_dir=working_dir or None,
+        working_dir=working_dir or step_dir or None,
         timeout=timeout_seconds,
         inputs=inputs,
-        watch_dir=watch_dir or working_dir or None,
+        watch_dir=watch_dir or working_dir or step_dir,
     )
+    result["watch_dir"] = watch_dir or working_dir or step_dir
     if pipeline_id:
         step_data = PipelineStep.produce(
             tool=tool or default_step_tool(command),

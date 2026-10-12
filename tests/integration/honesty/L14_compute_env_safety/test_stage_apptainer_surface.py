@@ -38,6 +38,8 @@ def _install_local_build_mocks(monkeypatch, *, remote_exists=False, capture=None
     ever constructed (the whole point of the fix)."""
     def fake_build(*, out_sif, tarball="", image_tag="", platform="linux/amd64",
                    builder_image="", timeout=1800):
+        if capture is not None:
+            capture["tarball"], capture["image_tag"] = tarball, image_tag
         Path(out_sif).parent.mkdir(parents=True, exist_ok=True)
         Path(out_sif).write_bytes(b"FAKESIF")
         return proven("local_sif.built", success=True, sif_path=out_sif,
@@ -428,9 +430,15 @@ class TestBuildShipsSifToContainerZone:
                 "directories": [],
             }],
         })
-        # A freeze docker-save tarball the record points at (build mode).
-        fake_tar = tmp_path / "bioinf_samtools.tar"
+        # A freeze docker-save tarball the record points at (build mode). The record
+        # carries the archive's NAME; its directory is the env's directory in the
+        # environments zone, so the archive is written where the zone says it lives,
+        # and the recorded path is deliberately somewhere else.
+        from agent.skills import workspace
+        fake_tar = workspace.environments_dir() / "bioinf_samtools" / "bioinf_samtools.tar"
+        fake_tar.parent.mkdir(parents=True, exist_ok=True)
         fake_tar.write_bytes(b"FAKE TAR BYTES FOR TEST")
+        recorded_tar = tmp_path / "retired_zone" / "bioinf_samtools.tar"
 
         captured = {}
         _install_local_build_mocks(monkeypatch, remote_exists=False,
@@ -439,7 +447,7 @@ class TestBuildShipsSifToContainerZone:
         cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(
             mode="build",
             image="samtools_env:latest",
-            tarball=str(fake_tar),
+            tarball=str(recorded_tar),
             image_digest="sha256:23cda33a3a4212587276",
             content_digest="sha256:23cda33a3a4212587276")})
 
@@ -454,6 +462,9 @@ class TestBuildShipsSifToContainerZone:
         assert captured["remote_abs_path"] == r["sif_path"]
         assert "COMMON_DATA" not in captured["remote_abs_path"]
         assert r["mode"] == "build_local_sif"
+        # the .sif was built from the archive where the zone holds it, not from the
+        # path the record remembers and not from the mutable image tag
+        assert captured["tarball"] == str(fake_tar) and captured["image_tag"] == ""
 
 
 # ===========================================================================

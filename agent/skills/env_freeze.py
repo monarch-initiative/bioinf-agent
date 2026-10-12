@@ -672,6 +672,7 @@ def build_env_image(
     engine=None,
     conda_lock_files: Optional[dict[str, str]] = None,
     apt_snapshot: str = "",
+    evidence: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Build a ship-platform env IMAGE from a spec/draft, container-native. Routes
     each non-conda install to its generator, injects coupled toolchains, and runs
@@ -686,7 +687,14 @@ def build_env_image(
     `apt_snapshot`: UTC timestamp (e.g. "20260526T200000Z") pinning the apt layer
     to snapshot.debian.org at that moment. Empty on FRESH freeze → auto-generated
     as `now() - _APT_SNAPSHOT_LAG` so the resulting recipe captures a timestamp going
-    forward. The recipe-replay path passes the recipe's stored timestamp through verbatim."""
+    forward. The recipe-replay path passes the recipe's stored timestamp through verbatim.
+
+    `evidence`: `{tool: command}` authored by the caller. For a conda or pip tool it
+    REPLACES the synthesized presence probe as that tool's in-image verification, and
+    EnvBuild holds it to the same two guards as every verification: the shape rule
+    before the build and the control-image experiment after it. The same dict serves
+    the adopt path (`freeze_tools._validate_tools_in_image`), so one evidence contract
+    covers both ways an image is obtained."""
     if not apt_snapshot:
         # Fresh freeze: pin the apt layer to a snapshot.debian.org timestamp — but
         # `now()` MINUS a safety margin, NOT `now()` itself. snapshot.debian.org
@@ -805,9 +813,11 @@ def build_env_image(
         # so a `pip install -e .` source build has a real pip in the activated env.
         has_flag_bearing_pip=bool(pip_with_flags) or source_needs_pip,
     )
+    authored = {str(k): str(v) for k, v in (evidence or {}).items() if v}
     if all_conda:
         non_conda_names = {x.get("name", "") for x in non_conda}
-        verify = [(t, _conda_presence_check(t)) for t in primary_tools if t not in non_conda_names]
+        verify = [(t, authored.get(t) or _conda_presence_check(t))
+                  for t in primary_tools if t not in non_conda_names]
         verify += _java_version_verifications(non_conda)
         eb.add_conda(all_conda, verify=verify)
     if pip_installs:
@@ -825,7 +835,7 @@ def build_env_image(
             # functional_evidence (when the install captured a functional smoke) is the
             # VALIDATED_IN_IMAGE verify → freeze proves the pkg RAN, not just imported.
             func = (x.get("install_method") or {}).get("functional_evidence")
-            pip_verify.append((nm, func or _pip_presence_check(nm)))
+            pip_verify.append((nm, authored.get(nm) or func or _pip_presence_check(nm)))
         eb.add_pip(pip_specs, verify=pip_verify)
     for s in tool_specs:
         eb.add_tool(s)

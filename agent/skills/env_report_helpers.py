@@ -199,10 +199,29 @@ def _pkg_index(resolved: list[dict]) -> dict[str, dict]:
     return {p["name"].lower(): p for p in (resolved or []) if isinstance(p, dict) and p.get("name")}
 
 
+_SPEC_RE = re.compile(r"^(?P<name>[^<>=!~ \[]+)\s*(?P<op>==|=|<=|>=|!=|~=|<|>)?\s*(?P<ver>.*)$")
+
+
+def split_spec(tok: str) -> tuple[str, str]:
+    """`samtools=1.21` → ('samtools', '1.21'); `notebook<7` → ('notebook', '<7');
+    `fastqc` → ('fastqc', ''). An equality operator is dropped (a pin is a pin); any
+    other operator stays on the version, because `<7` and `7` are different asks."""
+    m = _SPEC_RE.match((tok or "").strip())
+    if not m or not m.group("name"):
+        return (tok or "").strip(), ""
+    op, ver = m.group("op") or "", m.group("ver").strip()
+    if not ver:
+        return m.group("name"), ""
+    return m.group("name"), (ver if op in ("", "=", "==") else f"{op}{ver}")
+
+
 def requested_versions(record: dict) -> dict[str, str]:
-    """tool → user-asked version constraint (empty string if unpinned). Sourced
+    """tool → user-asked version (empty string if unpinned): a pin as `1.21`, a
+    constraint as the operator it was asked with, `<7` / `>=1.2` / `!=3`. Sourced
     from the request_key (the canonical 'what was asked' tuple, present on every
-    record build OR adopt) with conda_specs as a fallback for older records.
+    record build OR adopt), then conda_specs: the specs are the literal install
+    asks, so a constraint one carries outranks the request_key's pin for that tool —
+    the pin there is the version the install record resolved, not the ask.
 
     The .html renderer needs this for the requested-version cell in adopt mode
     (the biocontainer's digest binds the artifact to exactly that version, so
@@ -211,17 +230,51 @@ def requested_versions(record: dict) -> dict[str, str]:
     out: dict[str, str] = {}
     rk = (record or {}).get("request_key", "") or ""
     if "|" in rk:
-        spec = rk.split("|", 1)[0]
-        for tok in spec.split(","):
-            n, _, v = tok.replace("==", "=").partition("=")
-            if n.strip():
-                out[n.strip()] = v.strip()
+        for tok in rk.split("|", 1)[0].split(","):
+            n, v = split_spec(tok)
+            if n:
+                out[n] = v
     for s in (record or {}).get("conda_specs", []) or []:
         if isinstance(s, str):
-            n, _, v = s.replace("==", "=").partition("=")
-            if n.strip() and n.strip() not in out:
-                out[n.strip()] = v.strip()
+            n, v = split_spec(s)
+            if n and (n not in out or (v and v[0] in "<>!~")):
+                out[n] = v
     return out
+
+
+_CONSTRAINT_RE = re.compile(r"^(<=|>=|!=|~=|<|>)\s*(\S+)$")
+
+
+def _version_tuple(s: str) -> Optional[tuple[int, ...]]:
+    m = re.match(r"^v?(\d+(?:\.\d+)*)", (s or "").strip())
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def constraint_holds(requested: str, installed: str) -> Optional[bool]:
+    """Whether `installed` satisfies a requested CONSTRAINT (`<7`, `>=1.2`, `!=3`,
+    `~=1.4`). None when `requested` is not a constraint, or either side carries no
+    numeric version to compare — a verdict is never read off a value that could not
+    be parsed."""
+    m = _CONSTRAINT_RE.match((requested or "").strip())
+    if not m:
+        return None
+    op, want = m.group(1), _version_tuple(m.group(2))
+    have = _version_tuple(_version_core(installed) or installed)
+    if want is None or have is None:
+        return None
+    n = max(len(want), len(have))
+    w, h = want + (0,) * (n - len(want)), have + (0,) * (n - len(have))
+    if op == "<":
+        return h < w
+    if op == "<=":
+        return h <= w
+    if op == ">":
+        return h > w
+    if op == ">=":
+        return h >= w
+    if op == "!=":
+        return h != w
+    return have[:len(want) - 1] == want[:-1] and h >= w          # ~= (compatible release)
 
 
 def _version_core(s: str) -> str:
@@ -242,7 +295,13 @@ def versions_diverge(requested: str, installed: str) -> bool:
     `1.21` vs installed `1.21.0`, or a biocontainer core). A False here is NOT a
     claim of agreement; the two raw values are always shown side by side so a human
     still sees them. It only suppresses the ⚠, which must fire on real divergence
-    alone."""
+    alone.
+
+    A requested CONSTRAINT is checked as one: `<7` against an installed `7.6.2` is a
+    divergence (the ask was not met), `>=1.2` against `1.21` is not."""
+    held = constraint_holds(requested, installed)
+    if held is not None:
+        return not held
     rq, inst = _version_core(requested), _version_core(installed)
     if not rq or not inst or rq == inst:
         return False

@@ -748,6 +748,17 @@ def _sif_lines(im: dict, ctx: _Context) -> list[str]:
             "container = ''"]
 
 
+def _local_image(im: dict) -> str:
+    """What the local profile hands docker: an immutable handle. A ref already pinned
+    by digest (`repo@sha256:…`) is used as it is; otherwise the image id the seal
+    recorded, which docker runs directly and which no later `docker tag`, rebuild or
+    cleanup of a `:latest` tag can move. The tag stays in the comment, for the reader."""
+    ref = im.get("ref") or ""
+    if "@sha256:" in ref:
+        return ref
+    return im.get("digest") or ref
+
+
 def _render_config(record: PipelineRecord, ctx: _Context) -> str:
     L: list[str] = [f"// {ctx.header}", ""]
     # Each profile names the image it runs, so params.yaml carries nothing about WHERE.
@@ -755,12 +766,13 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
           f"{_INDENT * 2}process {{", f"{_INDENT * 3}executor = 'local'"]
     if len(ctx.images) == 1:
         im = ctx.images[0]
-        L.append(f"{_INDENT * 3}// the frozen image {im['digest'] or im['ref']}, as docker names it here")
-        L.append(f"{_INDENT * 3}container = {_nf_quote(im['ref'])}")
+        L.append(f"{_INDENT * 3}// the frozen image by its immutable id; docker knows it here as {im['ref']}")
+        L.append(f"{_INDENT * 3}container = {_nf_quote(_local_image(im))}")
     else:
         for s in record.stages:
+            im = ctx.image_of[s.name]
             L.append(f"{_INDENT * 3}withName: '{s.name}' {{ container = "
-                     f"{_nf_quote(ctx.image_of[s.name]['ref'])} }}")
+                     f"{_nf_quote(_local_image(im))} }}   // {im['ref']}")
     L += [f"{_INDENT * 2}}}", f"{_INDENT}}}", f"{_INDENT}slurm {{",
           f"{_INDENT * 2}apptainer.enabled = true",
           f"{_INDENT * 2}apptainer.autoMounts = true",

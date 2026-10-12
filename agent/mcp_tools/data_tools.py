@@ -10,6 +10,8 @@ pipelines.
 """
 from __future__ import annotations
 
+import copy
+
 import shlex
 import time
 from pathlib import Path
@@ -447,10 +449,17 @@ def select_test_data(
     subset: str = "",
     file_format: str = "",
     pipeline_id: str = "",
+    replace: bool = False,
 ) -> dict:
     """Find a matching test dataset on disk and return a TestDataRef-shaped
-    dict ready to drop into the spec. If pipeline_id is supplied, also sets
-    draft.test_data.
+    dict ready to drop into the spec. If pipeline_id is supplied, also records it
+    as draft.test_data — and a workflow may hold SEVERAL samples: a second call
+    for the same genome_build and assay_type with a new accession ADDS that sample
+    (`samples[]`, its paths anchored under `samples.<i>.r1/r2`) rather than
+    replacing the first; a different kind of data, the same accession again, or
+    `replace=True` replaces the block. `pipeline_merge.status` says which happened:
+    `merged` (first selection), `added_sample`, or `replaced`. With a pipeline_id
+    the returned `test_data` is the block as recorded, every sample included.
 
     Match is best-effort: each criterion scores points; the highest-scoring
     AVAILABLE dataset wins. Returns {test_data, available, match_score}, or
@@ -569,6 +578,10 @@ def select_test_data(
         "core_data_dir":   best.get("core_dir"),
     }
     test_data_ref = {k: v for k, v in test_data_ref.items() if v is not None}
+    # The block's first sample, as the plural noun records it; the flat fields above
+    # mirror it (TestDataRef enforces that).
+    sample_fields = {k: test_data_ref[k] for k in _core_data.TEST_SAMPLE_FIELDS if k in test_data_ref}
+    test_data_ref["samples"] = [sample_fields]
 
     # THE REFERENCE THE READS ALIGN TO. `test_data.reference_fasta` / `.fai` have been in
     # TEST_DATA_PATH_KEYS — i.e. traceable and anchorable — since I8 learned about external
@@ -599,12 +612,48 @@ def select_test_data(
               # one whose genome was deleted, and the two have different remedies.
               "genome_reference": genome}
     if pipeline_id:
-        ok = _ms._pipeline_state.set_test_data(pipeline_id, test_data_ref)
+        block, status = test_data_ref, "merged"
+        existing = (_ms._pipeline_state.get_draft(pipeline_id) or {}).get("test_data")
+        if isinstance(existing, dict) and existing.get("genome_build"):
+            same_kind = (existing.get("genome_build") == test_data_ref.get("genome_build")
+                         and (existing.get("assay_type") or None) == (test_data_ref.get("assay_type") or None))
+            recorded = {smp.get("accession")
+                        for smp in (existing.get("samples") or [existing]) if isinstance(smp, dict)}
+            if same_kind and not replace and test_data_ref.get("accession") not in recorded:
+                block, status = _with_added_sample(existing, sample_fields), "added_sample"
+            else:
+                status = "replaced"
+        ok = _ms._pipeline_state.set_test_data(pipeline_id, block)
         result["pipeline_merge"] = (
-            {"status": "merged", "pipeline_id": pipeline_id} if ok
+            {"status": status, "pipeline_id": pipeline_id} if ok
             else {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
+        if ok:
+            result["test_data"] = block
     return result
+
+
+def _with_added_sample(existing: dict, sample: dict) -> dict:
+    """The recorded block with one more sample: appended to `samples`, its paths
+    anchored under `samples.<i>.<key>` at selection time like every other path. The
+    flat fields keep mirroring the first sample. A block recorded before `samples`
+    existed contributes its flat fields as the first sample."""
+    block = copy.deepcopy(existing)
+    samples = [smp for smp in (block.get("samples") or []) if isinstance(smp, dict)]
+    if not samples:
+        samples = [{k: block[k] for k in _core_data.TEST_SAMPLE_FIELDS if block.get(k) is not None}]
+    samples.append(dict(sample))
+    block["samples"] = samples
+    i = len(samples) - 1
+    anchors = _core_data.test_data_anchors(block)
+    for key, path in _core_data.test_data_paths({"samples": samples}).items():
+        if key.startswith(f"samples.{i}."):
+            anchor = _core_data.anchor_for_path(_core_data.resolve_data_path(path))
+            if anchor is not None:
+                anchors[key] = anchor.model_dump()
+    if anchors:
+        block["content_anchors"] = anchors
+    return block
 
 
 #: Practical notes for the brief's Layer-2 roster: WHICH PRIMITIVE satisfies the clause.
@@ -646,7 +695,7 @@ _PRIMITIVE_NOTES = {
                                     "sha256-sidecars everything it produces",
     "run_pipeline_step": "run + auto-validate every detected output in one call. Pass "
                          "output_types to declare file types; pass watch_dir when the "
-                         "command writes outside the input's directory",
+                         "command writes somewhere other than its own step directory",
     "run_step_in_container": "once frozen, use THIS — the recorded run is then the one "
                              "that ships (validated==shipped) with in-container resource_usage",
     "stage_authored_artifact": "record a file you WROTE (a driver script, a small synthetic "

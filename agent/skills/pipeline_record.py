@@ -587,7 +587,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             return "per_sample", f"declared format {fmt!r} is per-sample data"
         if v in test_paths:
             key = next(k for k, p in core_data.test_data_paths(spec_d.get("test_data") or {}).items() if p == v)
-            if key in ("r1", "r2") or key.startswith("r1_") or key.startswith("r2_"):
+            slot = key.rsplit(".", 1)[-1]                 # `samples.2.r1` → `r1`
+            if slot in ("r1", "r2") or slot.startswith(("r1_", "r2_")):
                 return "per_sample", f"bound to test_data.{key} (reads)"
         return "shared", "one trial, not a reads input"
 

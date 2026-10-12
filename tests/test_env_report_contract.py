@@ -106,13 +106,65 @@ def test_the_failure_notice_precedes_the_content_it_undermines():
     assert html.index("FAILS the honesty contract") < html.index("<h2>Tools")
 
 
-def test_a_clean_record_is_unaffected():
-    """16 of the 18 real envs pass, and their pages must not change meaning."""
+def test_a_clean_record_still_renders_green():
+    """A passing contract is a green pill. The fixture's evidence is `--version`,
+    which proves presence, so the green pill is the presence one."""
     rec = env_record(name="fine")
     assert not H.check_build(rec)
     html = render_env_report_html(rec)
-    assert "✓ Validated in shipped image" in _pill(html)
-    assert _headline(html)[0] == "ok", _headline(html)
+    assert _headline(html) == ("ok", "✓ Present in shipped image · not exercised"), _headline(html)
+
+
+# ---------------------------------------------------------------------------------------
+# The headline says what the evidence showed
+# ---------------------------------------------------------------------------------------
+#
+# "✓ Validated in shipped image" over a Tools table whose every row reads "present in
+# the image · not exercised" is the page contradicting itself in the one sentence a
+# reader takes away. Depth is disclosure, never a gate: both headlines are green and
+# freeze registers both; only the words differ, and they must differ in both directions.
+
+def _ran(tool: str = "samtools") -> dict:
+    return {"label": tool, "tool": tool,
+            "check": f"{tool} sort /t.bam -o /o.bam && test -s /o.bam",
+            "rc": 0, "passed": True, "out": ""}
+
+
+def _present(tool: str = "samtools") -> dict:
+    return {"label": tool, "tool": tool, "check": f"command -v {tool}",
+            "rc": 0, "passed": True, "out": f"/opt/conda/bin/{tool}"}
+
+
+def test_the_headline_says_present_when_every_check_is_presence_depth():
+    rec = env_record(name="present", verifications=[_present("samtools"), _present("bwa")])
+    assert not H.check_build(rec)
+    assert _headline(render_env_report_html(rec)) == \
+        ("ok", "✓ Present in shipped image · not exercised")
+
+
+def test_the_headline_says_validated_only_when_a_tool_ran():
+    rec = env_record(name="ran", verifications=[_ran("samtools")])
+    assert not H.check_build(rec)
+    assert _headline(render_env_report_html(rec)) == ("ok", "✓ Validated in shipped image")
+
+
+def test_one_exercised_tool_among_presence_checks_earns_validated_and_the_tools_line_qualifies_it():
+    """Parity with the tools line: the pill reads the same depth list the per-tool
+    badges read, so a page can never be `Present` in the headline and `ran on data`
+    in the table, or the reverse."""
+    rec = env_record(name="mixed", requested_tools=["samtools", "bwa"],
+                     verifications=[_present("samtools"), _ran("bwa")])
+    html = render_env_report_html(rec)
+    assert _headline(html) == ("ok", "✓ Validated in shipped image")
+    assert "For 1 of them the check only confirmed the tool is present" in html
+
+
+def test_a_failed_check_is_not_softened_into_present():
+    rec = env_record(name="half", verifications=[_present("samtools"),
+                                                  {**_present("bwa"), "passed": False, "rc": 127}])
+    html = render_env_report_html(rec)
+    assert "Present in shipped image" not in _pill(html)
+    assert _headline(html)[0] == "bad"
 
 
 def test_a_clean_adopted_record_still_reads_adopted():
