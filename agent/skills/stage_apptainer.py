@@ -57,7 +57,7 @@ in the designated zone).
 Authorization
 -------------
 Same env-implicit grant as every other env-target primitive:
-  - project must have a `compute_env_access` entry for this env
+  - the project's `compute_envs` must list this env
   - env must declare `container_upload_target` with `upload` perm
 Local docker (build/pull) + apptainer-in-docker run locally; the only
 cluster interaction is a read-only `test -f` probe and the .sif upload.

@@ -21,15 +21,14 @@ will want later though."* **Detection stays in v1** — `artifact_is_a_workflow`
 synthesize an install from a workflow repo, and the refusal names the pipeline and why we
 will not stamp a false green on the launcher.
 
-The design for later is already agreed in principle: **a pipeline is a manifest of N
-envs, not one env.** Layer 1 freezes the SET (resolve each process's declared container,
-adopt each by digest, validate each, report every tool+version+digest); Layer 2 records
-which ones really ran from the pipeline's own `software_versions.yml` (an observation,
-not a declaration). Declared set is a superset (varies with `--aligner` etc.); report
-both, distinguished. This preserves validated==shipped instead of stamping it on the
-launcher. Do **not** wire up an engine-freeze route as a shortcut — freezing the Nextflow
-engine and sealing would claim `validated_in_shipped_image` while every process ran in
-images this system never saw.
+**The "manifest of N envs" design is REJECTED (2026-10-11), not deferred.** A pipeline
+will not be one upstream image per process, adopted and validated one by one. The agent
+or the user packages tools into however many frozen environments make sense, and ONE
+rendered pipeline may run several of them, one of our frozen images per stage
+(`render_pipeline(cohort=)` already does). An upstream pipeline's own per-process images
+are never adopted. Do **not** wire up an engine-freeze route as a shortcut either —
+freezing the Nextflow engine and sealing would claim `validated_in_shipped_image` while
+every process ran in images this system never saw.
 
 ### Long-read base-modification (5mC/m6A) methylation routing
 A real user ask, parked. The pod5 test data shipped 2026-06-04; the methylation routing
@@ -54,7 +53,10 @@ enumeration, and never by a tool-name table.
 ### New meters / new MCP tools
 Standing exclusion for v1 ("ship, don't scaffold"). The intent grid is maintained as-is, not
 extended. The outcomes dashboard and its coverage overlay were removed in 2026-10; the
-outcome-tag ratchet in the test suite is the only meter the vocabulary keeps.
+outcome-tag ratchet in the test suite is the only meter the vocabulary keeps. A bioconda
+"fast lane" tool was declined 2026-10-11: a draft-less `freeze(env_name, tools=[...])`
+already adopts the BioContainer by digest and validates in it, and
+`agent/operator_instructions.md` says so.
 
 ---
 
@@ -65,10 +67,13 @@ consciously waived — scope calls are the user's.
 
 1. **Type records at construction, seam by seam.** Runtime constructs typed observations
    (`extra="forbid"`, no defaults — the `ShippedBinary` discipline); retire seal-walk
-   clauses as types absorb them. Start with `pipeline_steps` (feeds I3/I7/I8). This is
-   the root-cause fix for the five compensating control systems (seal-time walk,
-   PATCHABLE_KEYS, core_data leaves, one-reading lint, render-parity tests). Parked until
-   re-scoped.
+   clauses as types absorb them. Typed so far: `ShippedBinary` and `ToolIdentity` at the
+   EnvCache write and the serve (WELL_FORMED), `PipelineStep`'s absolute-path and
+   resource-usage checks at construction (I6/I7), `ReferenceDatabase` at `patch_pipeline`,
+   `TestDataRef`/`TestSample` at the draft's `test_data` write. The draft itself is still
+   a dict: `pipeline_steps` as objects, constructed never merged, is the root-cause fix
+   for the compensating control systems (seal-time walk, PATCHABLE_KEYS, core_data
+   leaves, one-reading lint, render-parity tests). Parked until re-scoped.
 2. **Make observation-vs-claim structural.** Append-only observation log (runtime-only
    writer) + agent-writable claims overlay; a record is a fold of the two. Kills the
    anchor-laundering defect class by construction rather than by fill-only rules.

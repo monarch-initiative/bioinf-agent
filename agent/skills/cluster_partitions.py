@@ -307,8 +307,8 @@ def cluster_partitions(project_name: str,
     the output, returns one record per partition. Submits nothing, loads
     nothing, writes nothing.
 
-    Authorization: requires that `project` has a `compute_env_access` entry
-    for `compute_env_name` — the same shape as `cluster_module_avail`. No
+    Authorization: `project.compute_envs` must list `compute_env_name` — the
+    same check as `cluster_module_avail`. No
     per-directory permission (the filesystem is not touched), and SLURM's own
     ACLs scope what `sinfo` will report.
 

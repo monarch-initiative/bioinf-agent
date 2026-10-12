@@ -98,7 +98,7 @@ def perl_module_load(em, env_name: str, module: str) -> dict[str, Any]:
 
 def file_present(em, env_name: str, path: str, sha256: str | None = None) -> dict[str, Any]:
     """Filesystem presence: `path` exists as a file, and (if `sha256` is given)
-    its bytes hash to it. The anchor for the release-binary tier (I14) and any
+    its bytes hash to it. The anchor for the release-binary tier and any
     on-disk artifact — a recorded URL is a claim; a present file whose bytes
     match the recorded hash is proof the agent cannot fabricate.
 

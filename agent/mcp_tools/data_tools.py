@@ -797,7 +797,7 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
         for t in _tool_surface.positioned(_tool_surface.PRIMITIVE)
     ]
     protocol = [
-        "1. start_pipeline(name) — get pipeline_id; thread it through everything",
+        "1. start_pipeline(pipeline_name) — get pipeline_id; thread it through everything",
         "2. install_*_* primitives — compose the env for this tool; primitives handle category details",
         "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types). If you write a driver script, generate synthetic test data, or stage a transformed file (BAM/VCF/FASTA) outside MCP, call stage_authored_artifact for each — otherwise the I8 walk treats the file as an orphan input.",
         "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies are runtime-captured and CANNOT be hand-patched — they flow through their dedicated primitives.",

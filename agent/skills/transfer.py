@@ -43,9 +43,9 @@ Zones (routed by where `remote_abs_path` lives on the env)
 
   project_path     — anywhere else on the env
                      Authorization: explicit. The path must longest-
-                     prefix match an entry in `project.
-                     compute_env_access[].directories[]` whose
-                     `permissions:` includes the required token.
+                     prefix match an entry in `project.directories[]`
+                     (tagged with this env) whose `permissions:`
+                     includes the required token.
 
 A path that matches no zone is refused with PermissionDenied. The same
 absolute path can land in different zones across different envs — the
@@ -81,7 +81,7 @@ Trust contract
   paths validated BEFORE any subprocess (no metacharacter smuggling)
   remote overwrite refused (the `upload` token = "write NEW files only")
   local overwrite refused on download (no silent clobber)
-  size cap (5 GiB) for scp head-node path; Globus has no cap
+  size cap (5 GiB) on every upload, whatever the wire
 
 Manifest — every transfer is journaled
 --------------------------------------
@@ -116,10 +116,10 @@ from agent.skills.outcomes import proven, refused, broke
 # Constants
 # ---------------------------------------------------------------------------
 
-# Head-node transfer cap. Anything larger should go through Globus (set
-# the env's data_transfer.type to globus and use that endpoint) or a
-# SLURM-job data acquisition. Refusing keeps us a good citizen on the
-# shared head node.
+# Upload cap, applied on every wire. Anything larger is pulled by a compute
+# node (download_reference_database with compute_env, acquire_reference_via_recipe)
+# rather than pushed from here; refusing keeps us a good citizen on the shared
+# head node.
 _MAX_TRANSFER_BYTES: int = 5 * 1024 * 1024 * 1024  # 5 GiB
 
 # Absolute-path cap. Defense-in-depth against header-injection where the
@@ -234,10 +234,11 @@ def _validate_local_path_for_upload(local_path: str) -> Path:
             f"local_path {local_path!r} stat failed: {e}") from e
     if sz > _MAX_TRANSFER_BYTES:
         raise TransferError(
-            f"local_path {local_path!r} is {sz} bytes — exceeds head-node "
-            f"transfer cap of {_MAX_TRANSFER_BYTES} bytes "
-            f"({_MAX_TRANSFER_BYTES // (1024**3)} GiB). Configure "
-            f"data_transfer.type=globus in the env to remove this cap.")
+            f"local_path {local_path!r} is {sz} bytes — exceeds the upload "
+            f"cap of {_MAX_TRANSFER_BYTES} bytes "
+            f"({_MAX_TRANSFER_BYTES // (1024**3)} GiB). Have a compute node pull it "
+            f"instead: download_reference_database(compute_env=…) or "
+            f"acquire_reference_via_recipe.")
     return p
 
 

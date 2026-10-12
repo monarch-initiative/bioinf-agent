@@ -26,8 +26,9 @@ _NOT_TOOLS = {"pipeline_id", "outcome", "code", "result", "state", "job_id", "us
 _PROTOCOL_ORDER = ("agent_status", "interpret_request", "resolve_tool", "start_pipeline", "freeze",
                    "select_test_data", "run_pipeline_step", "patch_pipeline", "run_step_in_container",
                    "seal_workflow")
-#: The route order: the authors' machinery before a reconstruction.
-_ROUTE_ORDER = ("freeze_from_image", "build_env_from_authors_recipe", "install_conda_packages", "synth_fetch")
+#: The route order: one tool per resolver tier, in the resolver's order.
+_ROUTE_ORDER = ("freeze_from_image", "install_conda_packages", "build_env_from_authors_recipe", "synth_fetch")
+_ROUTE_TIERS = ("author_image", "conda", "authors_recipe", "synthesis")
 
 
 def _text() -> str:
@@ -61,6 +62,15 @@ def test_the_instructions_give_the_protocol_and_the_route_order_in_order():
                    "Never end your turn to wait", "Do not repeat the same call", "Report only what the records show",
                    "`check_job(job_id, wait_s=300)`", "`patches=[{file, find, replace, reason}]`"):
         assert phrase in text, phrase
+
+
+def test_the_route_order_is_the_resolvers():
+    """The instructions rank the routes the way `resolve_tool` does; a page that ranks
+    them otherwise sends the agent to a Dockerfile build for a tool the ecosystem has
+    already packaged and containerized."""
+    from agent.skills.resolver import TIER_ORDER
+    ranks = [TIER_ORDER.index(t) for t in _ROUTE_TIERS]
+    assert ranks == sorted(ranks), dict(zip(_ROUTE_TIERS, ranks))
 
 
 def test_every_tool_the_instructions_name_is_served():

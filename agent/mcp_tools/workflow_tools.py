@@ -526,8 +526,9 @@ def seal_workflow(
     write: bool = True,
     supersede: bool = False,
 ) -> dict:
-    """Seal the Layer-2 WORKFLOW: validate the run-side invariants, PIN the
-    frozen environment by digest, render the user guide, write the WorkflowSpec.
+    """Seal the Layer-2 WORKFLOW: validate the run-side invariants, self-test the
+    how-to, PIN the frozen environment by digest, write the WorkflowSpec and render
+    the RUN dashboard (the how-to panel is part of it).
 
     The two-layer split. Layer 1 (ENVIRONMENT) = finalize + freeze: a
     content-addressed, reusable artifact. Layer 2 (WORKFLOW) CONSUMES it. Call
@@ -1191,9 +1192,10 @@ def show_pipeline_draft(pipeline_id: str) -> dict:
 @mcp.tool()
 def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     """Deep-merge agent-authored patches into the draft. Accepts only the
-    keys no primitive produces directly: description, notes, final_summary,
-    conda_env, created_at, python_version, reference_free, runtime_environment,
-    runtime_configs, reference_databases, service_dependencies, usage.
+    keys no primitive produces directly (`PipelineState.PATCHABLE_KEYS`):
+    description, notes, final_summary, conda_env, created_at, python_version,
+    reference_free, runtime_environment, runtime_configs, reference_databases,
+    usage, accelerator, license_gated, licenses, redistributable.
 
     `usage` is validated against the WorkflowSpec schema on every patch and
     refused with the exact problems: {description, command_template, inputs:
@@ -1202,10 +1204,11 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     are required.
 
     Patches to runtime-captured or finalize-derived fields (pipeline_steps,
-    install_steps, packages, verifications, test_data, authored_artifacts,
-    docker, env_status, pipeline_status, docker_status, usage_verified,
-    lock_sha256) are rejected — use the dedicated primitive instead so the
-    spec stays anchored to observed reality.
+    install_steps, packages, verifications, search_cache, test_data,
+    authored_artifacts, service_dependencies, docker, env_status,
+    pipeline_status, docker_status, usage_verified, lock_sha256, frozen_as,
+    sealed_as) are rejected — use the dedicated primitive instead so the spec
+    stays anchored to observed reality.
 
     `reference_databases` merges by `name` (a patch adds or amends records and keeps
     the ones the download and acquire primitives wrote); every record must fit
@@ -1299,9 +1302,8 @@ def stage_authored_artifact(
     Honesty effect:
       - Path is added to the I8 universe of external sources, so downstream
         pipeline_steps can legally name it as an input.
-      - sha256 is re-verified at finalize (I9). If the on-disk content drifts
-        from the recorded sha256, the spec is refused — silent tampering is
-        impossible.
+      - sha256 is re-verified at seal (`I8.authored_artifact_mutated`). If the
+        on-disk content drifts from the recorded sha256, the seal is refused.
       - `authored_artifacts` is blocked from patch_pipeline, so the only path
         to record an artifact is this primitive (the sha256 anchor is
         compulsory).
