@@ -1062,8 +1062,10 @@ def install_jar_tool(
     freeze re-runs it as the in-image VALIDATED_IN_IMAGE evidence — letting a jar
     prove validated==ran, not merely that the wrapper + JRE resolve (the presence
     default). Freeze is the AUTHORITATIVE locus (it refuses if the evidence fails in
-    the shipped image), so a non-zero host rc here is DISCLOSED, never fatal. Empty ⇒
-    freeze falls back to the presence probe.
+    the shipped image), so a non-zero host rc here never fails the install: the record
+    comes back `degraded` (env_manager.jar_verify_failed) with the command, its exit code
+    and its output, and the freeze would fail on the same command. Empty ⇒ freeze falls
+    back to the presence probe.
 
     If pipeline_id is supplied, records an install_step (tool=jar, subcommand=install)
     with installed_packages=[{name=tool_name, channel=github (if URL host is github.com),
@@ -1080,11 +1082,13 @@ def install_jar_tool(
     )
     # Best-effort in-env smoke (non-gating: freeze is authoritative). Recorded below
     # into install_method.verify_command so freeze's _map_install threads it.
+    verify_rc = None
     if verify_command and result.get("success"):
         vr = _ms._env_mgr.run_in_env(env_name, verify_command, timeout=300)
+        verify_rc = vr.get("returncode")
         result["verify_command"]    = verify_command
-        result["verify_output"]     = (vr.get("stdout") or "")[-2000:]
-        result["verify_returncode"] = vr.get("returncode")
+        result["verify_output"]     = ((vr.get("stdout") or "") + (vr.get("stderr") or "")).strip()[-2000:]
+        result["verify_returncode"] = verify_rc
     if pipeline_id:
         from urllib.parse import urlparse
         from agent.skills.env_manager import parse_version_from_url
@@ -1125,8 +1129,8 @@ def install_jar_tool(
         idx = _ms._pipeline_state.add_install_step(pipeline_id, step_data, replace_step=step)
         # Cache the smoke output so the env report surfaces it (mirrors
         # install_git_repo). A jar's anchor is the sha256-pinned bytes + this run,
-        # not a registry-anchored verify().
-        if result.get("success") and result.get("verify_output"):
+        # not a registry-anchored verify(); a smoke that did not exit 0 verified nothing.
+        if result.get("success") and verify_rc == 0 and result.get("verify_output"):
             _ms._pipeline_state.cache_verification(pipeline_id, tool_name, {
                 "verify_command": result.get("verify_command"),
                 "verify_output":  result.get("verify_output"),
@@ -1136,6 +1140,16 @@ def install_jar_tool(
             if idx is not None else
             {"status": "unknown_pipeline_id", "pipeline_id": pipeline_id}
         )
+    if verify_rc not in (0, None):
+        result = degraded(
+            "env_manager.jar_verify_failed",
+            error=(f"`{verify_command}` exited {verify_rc} in {env_name}: "
+                   f"{last_informative_line(result.get('verify_output')) or 'nothing on stdout or stderr'}. "
+                   "The jar and its wrapper are on disk; freeze re-runs this command inside the shipped "
+                   "image as the tool's evidence, so the build fails on it as it stands. Record a verify "
+                   "that runs the tool and exits 0 (install_jar_tool again with verify_command=…), or fix "
+                   "the install it exposes."),
+            **{k: v for k, v in result.items() if k not in ("outcome", "code")})
     return _ms._shrink_stdio_for_response(result, label=f"jar.{env_name}.{tool_name}")
 
 

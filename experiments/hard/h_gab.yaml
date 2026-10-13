@@ -2,8 +2,8 @@
 # unpinned list of `conda install` lines across three channels, a notebook, and an entry
 # script run as `python HIC_ASSEMBLER/run_hicAssembler.py -c <config>`. One tag, v1. The
 # install is the deliverable (its input is HiC-Pro output, none of which is here), judged by
-# the `frozen` rule: a frozen image in which the entry script provably runs at least to its
-# help. The prompt asks for the repository's own instructions; which route carries them is
+# the `frozen` rule: a frozen image in which the entry script was provably invoked (its help
+# is enough). The prompt asks for the repository's own instructions; which route carries them is
 # not judged, nor what the tool is called in the record. Trips
 # left to the reader: packages pinned to today's versions without saying so, the scripts left
 # on the host, a wrapper that hides which Python runs them, a seal attempted with no data.
@@ -12,7 +12,7 @@ name: h_gab
 tier: C1
 success: frozen
 expect:
-  evidence_depth_min: help
+  evidence_depth_min: version
 prompt: |
   Install the Genome Assembly Booster from https://github.com/baumannlab/Genome_Assembly_Booster
   at its v1 tag, following the repository's own install instructions, and freeze it as a

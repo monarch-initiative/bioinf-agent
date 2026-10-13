@@ -1081,7 +1081,8 @@ def freeze_from_image(
     for a tool that is slow to start, and is recorded with each verification. Evidence
     that fails because the command is not there comes back with `where`: the image's PATH
     and every executable or console script carrying the tool's name — name that command
-    next, or `inspect_image` to look further. Writes the four Layer-1 deliverables
+    next (it counts as the tool's own command for the evidence, however it is spelled), or
+    `inspect_image` to look further. Writes the four Layer-1 deliverables
     (ENV.html, attestation.json, recipe.yaml, recipe.md) rendered PURELY from the verified
     record. Docker required."""
     _stop = _image_build_preflight()
