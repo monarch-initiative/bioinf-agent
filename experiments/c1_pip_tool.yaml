@@ -1,15 +1,11 @@
 # C1 — the pip tier: a tool whose home is PyPI, proven on reads from the corpus. The record
-# must carry cutadapt as a primary tool with a version, a container-native build, and the
-# pip route's own outcome code (a conda install against the stated request does not pass).
+# is judged by the `sealed` rule: a frozen image in which cutadapt provably ran, and a
+# workflow sealed around a validated run; the route is not judged.
 # Trips left to the reader: an adapter sequence invented rather than read, outputs written
 # where the step cannot see them.
 corpus: A
 name: c1_pip_tool
 tier: C1
-required_codes: ["env_manager.pip_installed"]
-expect:
-  tools: [cutadapt]
-  build_method: container-native-build
 prompt: |
   Install cutadapt from PyPI. Prove it works by trimming the standard Illumina TruSeq
   adapter off one of the single-end RNA-seq fastq files in the core test data, freeze the

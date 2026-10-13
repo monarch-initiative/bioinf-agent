@@ -1320,6 +1320,20 @@ def stage_authored_artifact(
         return refused("stage_artifact.path_not_absolute", error=f"path must be absolute, got: {path!r}")
 
     p = Path(path)
+    try:
+        corpus = _workspace.resources_root().resolve()
+        in_corpus = corpus == p.resolve() or corpus in p.resolve().parents
+    except Exception:
+        in_corpus = False
+    if in_corpus:
+        return refused(
+            "stage_artifact.path_in_resources",
+            error=f"{path} is under the resources corpus ({corpus}), which holds inputs, not files you "
+                  "wrote; an existing dataset file is recorded with select_test_data or "
+                  "download_reference_database(url='', local_path=…), and a file you author is "
+                  "written under the workspace",
+            path=path,
+        )
 
     if not content:
         # generated_by mode: the record construction lives in record_generated_artifact

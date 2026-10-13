@@ -495,7 +495,7 @@ def _runs_table(rows: list[dict]) -> str:
             + "</tr></thead><tbody>" + "".join(body) + "</tbody></table></div>"
             '<p class="note">verdict: pass · fail · invalid (no result record — the session never said how it ended; '
             'counted, and flagged for a re-run). gate: what the server did when an S or R scenario\'s gate was exercised — '
-            'held (refused with an expected code, nothing sealed around it) · no refusal · not exercised; agent: whether '
+            'held (refused with an expected code, nothing sealed by hand around it) · no refusal · not exercised; agent: whether '
             'the model declined (never called a gated tool) or tried. '
             'ladder, read off the bound deliverables only: F frozen · S sealed · V usage verified · E ENV report · R RUN report · '
             'P pipeline rendered. rev*: the checkout had uncommitted changes. An attempt beyond the first is a '

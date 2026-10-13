@@ -100,7 +100,7 @@ def test_a_built_file_is_registered_hashed_and_recorded(tools, tmp_path):
     assert (r["outcome"], r["code"], r["kind"]) == ("proven", "data.refdb_registered", "file")
     digest = hashlib.sha256(f.read_bytes()).hexdigest()
     assert r["sha256"] == digest and r["size_bytes"] == f.stat().st_size
-    assert (tmp_path / "chr22.gtf.source.sha256").read_text().split()[0] == digest
+    assert not (tmp_path / "chr22.gtf.source.sha256").exists()        # nothing is written beside the file
     [rec] = ps.get_draft(pid)["reference_databases"]
     assert rec["local_path"] == str(f) and rec["available"] is True and rec["sha256"] == digest
     assert "source_url" not in rec                       # no download origin is recorded as none

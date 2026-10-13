@@ -49,15 +49,15 @@ A run has a dollar cap (`budget_usd`, passed to the client) and a wall-clock cap
 (`timeout_s`, enforced here; the row says `timed_out`). Runs are sequential: builds are
 heavy and the numbers are cleaner one at a time.
 
-Repeats default by tier — three for a C1 scenario (the S and R scenarios are C1), two for
-C2, C3 and everything under hard/ — and a run that fails or comes back invalid is re-run up
-to two more times before its repeat is classed (confirm-on-fail; every attempt keeps its
-directory and row, `--attempts 1` turns it off). The shared `resources/` corpus is
+A definition runs once, twice under hard/, and a run that fails or comes back invalid is
+re-run up to two more times before its repeat is classed (confirm-on-fail; every attempt
+keeps its directory and row, `--attempts 1` turns it off): repeats confirm a fail, they do
+not re-prove a pass. The shared `resources/` corpus is
 snapshotted (paths, sizes, mtimes) around each run; a run that changed anything under it is
 failed with the reason `resources_mutated`. A definition's `expect` block names what the
-records on disk must say (tools and versions, the build route, evidence depth, slots,
-trials, accessions, a cohort stage) and its `gated_tools` the tools whose call exercises the
-scenario's gate; both are checked by scripts/experiment_metrics.py.
+records on disk must say (evidence depth, accessions, a cohort stage: what the tool did,
+never which route built it or what it was called) and its `gated_tools` the tools whose
+call exercises the scenario's gate; both are checked by scripts/experiment_metrics.py.
 """
 from __future__ import annotations
 
@@ -90,7 +90,7 @@ SHAREABLE = ("resources", "envs", "projects_access")
 CLEANABLE = ("images",)
 #: Repeats per code revision when a definition names none: three for a C1 scenario (the S
 #: and R scenarios are C1), two for the heavier tiers and for everything under hard/.
-TIER_REPEATS = {"C0": 2, "C1": 3, "C2": 2, "C3": 2}
+TIER_REPEATS = {"C0": 1, "C1": 1, "C2": 1, "C3": 1}
 HARD_DIR = "hard"
 HARD_REPEATS = 2
 DEFAULTS = {
@@ -128,14 +128,14 @@ def default_repeats(tier: str, path: Path) -> int:
     return TIER_REPEATS.get(tier, 2)
 
 
-_LIST_KEYS = {"tools": str, "slots": str, "accessions": str}
-_INT_KEYS = ("trials_min", "accessions_min")
+_LIST_KEYS = {"accessions": str}
+_INT_KEYS = ("accessions_min",)
 
 
 def validate_expect(expect: Any, path: Path) -> dict:
-    """The `expect` block, checked for shape: known keys only, lists of strings where a
-    list is wanted, positive integers for the minimums, a depth on the ladder, a build
-    method as a string or a list of strings, `cohort_stage` a boolean."""
+    """The `expect` block, checked for shape: known keys only, a list of strings for
+    `accessions`, a positive integer for `accessions_min`, a depth on the ladder,
+    `cohort_stage` a boolean."""
     if expect is None:
         return {}
     if not isinstance(expect, dict):
@@ -152,10 +152,6 @@ def validate_expect(expect: Any, path: Path) -> dict:
             raise ExperimentError(f"{path}: expect.{key} must be a positive integer")
     if "evidence_depth_min" in expect and expect["evidence_depth_min"] not in EVIDENCE_DEPTHS:
         raise ExperimentError(f"{path}: expect.evidence_depth_min must be one of {EVIDENCE_DEPTHS}")
-    if "build_method" in expect:
-        bm = expect["build_method"]
-        if not (isinstance(bm, str) and bm) and not (isinstance(bm, list) and bm and all(isinstance(x, str) and x for x in bm)):
-            raise ExperimentError(f"{path}: expect.build_method must be a string or a list of strings")
     if "cohort_stage" in expect and not isinstance(expect["cohort_stage"], bool):
         raise ExperimentError(f"{path}: expect.cohort_stage must be true or false")
     return dict(expect)

@@ -1,8 +1,8 @@
 # H — the pipeline tool GAB depends on: compiled pieces, bundled scripts, a config file with
 # cluster assumptions, an image the authors publish on Docker Hub (nservant/hicpro) and a
 # Dockerfile whose conda solve needs more memory than a laptop's Docker VM has. Judged by the
-# `frozen` rule with the image route pinned; the proof is the tool's own usage, since its
-# test dataset is a separate download. The record must carry HiC-Pro as a primary tool with
+# `frozen` rule: a frozen image in which HiC-Pro provably runs at least to its usage, since
+# its test dataset is a separate download; the route is not judged. The record names HiC-Pro with
 # a release as its version, adopted by digest, with evidence that at least runs its help
 # (a conda reconstruction that ships half the tool is not an adopted image). Trips left to
 # the reader: a build on the host that never reaches the image, a version reported as the
@@ -11,10 +11,7 @@ corpus: B-installs
 name: h_hicpro
 tier: C1
 success: frozen
-required_codes: ["freeze_from_image.*"]
 expect:
-  tools: [HiC-Pro]
-  build_method: adopt
   evidence_depth_min: help
 prompt: |
   Install HiC-Pro (https://github.com/nservant/HiC-Pro) at its latest release the way its

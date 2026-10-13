@@ -12,6 +12,7 @@ mcp_server.py (read via `_ms.X`) so this submodule stays purely a tool surface.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from typing import Optional
 
@@ -148,6 +149,55 @@ def _compact_verification(v: object) -> object:
             lines = [ln for ln in text.splitlines() if ln.strip()]
             v[key] = "\n".join(lines[:3])[:300] + f" … [{len(text)} chars in the record]"
     return v
+
+
+_NOT_FOUND_RE = re.compile(r"(?:bash|sh): line \d+: (\S+): command not found")
+#: The programs a synthesized command cannot call in the build image: conda is never there,
+#: and pip only inside the engine environment, which is on PATH only for an engine-coupled command.
+_PACKAGE_MANAGERS = frozenset({"conda", "mamba", "micromamba", "pip", "pip3", "pipx"})
+
+
+def _build_failure(br: dict, draft: object, conda_deps: list, rkey: str, adopt: dict, extra: dict) -> dict:
+    """A failed container-native build as the caller must read it. An image that BUILT and
+    failed only its in-image evidence is an evidence failure, named as one with every
+    contract violation in `error`; a failure inside the build keeps its stage and carries,
+    for the two failures an agent keeps walking into, the change that ends them."""
+    violations = [v for v in (br.get("honesty_violations") or []) if isinstance(v, dict)]
+    if br.get("image_digest") and violations:
+        return broke("freeze.evidence_failed", success=False, stage="evidence", request_key=rkey,
+                     error=" | ".join(str(v.get("message") or v.get("invariant") or "") for v in violations)[:1500],
+                     violations=violations,
+                     verifications=[_compact_verification(v) for v in (br.get("verifications") or [])],
+                     adopt_attempt=adopt, build=_build_for_return(br), **extra)
+    hint = _build_failure_hint(br, draft, conda_deps)
+    return broke("freeze.container_build_failed", success=False, stage="container_build", request_key=rkey,
+                 adopt_attempt=adopt, build=_build_for_return(br), **({"hint": hint} if hint else {}), **extra)
+
+
+def _build_failure_hint(br: dict, draft: object, conda_deps: list) -> str:
+    """What to change, for a build that failed in a way the record explains: a solve of the
+    tool's own name because no draft records its install, or a program a synthesized
+    command called that the build image does not have."""
+    stage = br.get("stage")
+    if stage in ("declare", "declare_locked") and not draft:
+        return ("no draft records how these tools were installed, so each name was solved as a conda package: "
+                "open a draft (start_pipeline) and record the install with its pipeline_id, or pass conda "
+                "specs in `tools`")
+    if stage != "install":
+        return ""
+    m = _NOT_FOUND_RE.search(" ".join(str(x) for x in (br.get("error"), br.get("stderr")) if x))
+    if not m:
+        return ""
+    prog = m.group(1).rsplit("/", 1)[-1]
+    if prog in _PACKAGE_MANAGERS:
+        return (f"`{prog}` is not in the build image: packages are declared with install_conda_packages or "
+                "install_pip_package and the build solves them; a synthesized command carries only the tool's "
+                "own build steps")
+    if conda_deps:
+        return (f"`{prog}` is on PATH only inside the engine environment, which a synthesized command does not "
+                "see unless it is marked engine_coupled: true (synth_build); the finished image has it on PATH")
+    return (f"`{prog}` is not in the build image: declare the package that provides it "
+            "(install_conda_packages) before the synthesized step that calls it")
 
 
 def _shipped_binary_entry(step: dict) -> dict:
@@ -534,9 +584,7 @@ def freeze(
                     extra["buildkit_prune"]["reason"] = (
                         f"free disk {free_gb:.1f} GB below soft threshold "
                         f"{soft_threshold:.0f} GB — pruning to avoid cascade")
-            return broke("freeze.container_build_failed", success=False,
-                    stage="container_build", request_key=rkey,
-                    adopt_attempt=adopt, build=_build_for_return(br), **extra)
+            return _build_failure(br, draft, conda_deps, rkey, adopt, extra)
         mode, build_method, image = "build", "container-native", br["image"]
         image_digest = br["image_digest"]
         build_cd = br.get("content_digest", "")   # the real, unique, reproducible anchor

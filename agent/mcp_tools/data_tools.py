@@ -58,8 +58,10 @@ def _register_local_reference(*, name: str, local_path: str, version: str, descr
     if target.is_file():
         size_bytes = target.stat().st_size
         if size_bytes <= _core_data.ANCHOR_HASH_CAP_BYTES:
+            # The record carries the digest; nothing is written beside the file. The
+            # sidecar is the cluster download's device (data_pins reads it over ssh), and a
+            # file registered here may sit in a read-only corpus.
             sha256 = _core_data.sha256_file(target)
-            Path(f"{target}.source.sha256").write_text(f"{sha256}  {target.name}\n")
     rdb = {
         "name":        name,
         "version":     version or "unknown",
@@ -107,8 +109,9 @@ def download_reference_database(
     reference you BUILT or STAGED on this machine — an aligner index from
     `hisat2-build`/`bwa index`, an annotation sliced from a larger file, a bundle
     copied in — is recorded as a reference database with no download origin
-    (source_url null; honest). A file is hashed now (sha256 + sidecar) so I5 can
-    pin it; a directory is recorded by path. This is the producer for "I made this
+    (source_url null; honest). A file is hashed now (the sha256 rides on the entry;
+    nothing is written beside the file) so I5 can pin it; a directory is recorded by
+    path. This is the producer for "I made this
     reference here" — not `stage_authored_artifact`, which is for files you WROTE.
 
     DIRECTED TO CLUSTER (compute_env set): render a SIMPLE resumable SLURM script

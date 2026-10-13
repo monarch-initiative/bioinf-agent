@@ -115,19 +115,28 @@ def derive_error(fields: dict, code: str) -> str:
     """What a failure terminal says when its builder set no `error`.
 
     In order: a prose field that already names the cause (`reason`, `message`,
-    `detail`), the first of its `violations`, the last informative line of its
-    stderr then stdout (one nested level too — a failed build carries them under
-    `build`), else the code and exit status. Never empty."""
+    `detail`), the first of its `violations` or `honesty_violations`, the same two
+    readings of a tagged failure nested one level down (a failed build rides under
+    `build`, and its own `error` is the cause), the last informative line of its
+    stderr then stdout (one nested level too), else the code and exit status. Never
+    empty."""
     text = _first_text(fields.get("reason"), fields.get("message"), fields.get("detail"))
     if text:
         return text[:ERROR_LINE_LIMIT]
-    text = _violations_summary(fields.get("violations"))
+    text = _violations_summary(fields.get("violations")) or _violations_summary(fields.get("honesty_violations"))
     if text:
         return text[:ERROR_LINE_LIMIT]
+    inners = [fields[k] for k in sorted(fields) if isinstance(fields[k], dict)]
+    for inner in inners:
+        err = inner.get("error")
+        if isinstance(err, str) and err.strip() and err.strip() != inner.get("code"):
+            return err.strip()[:ERROR_LINE_LIMIT]
+        text = _violations_summary(inner.get("violations")) or _violations_summary(inner.get("honesty_violations"))
+        if text:
+            return text[:ERROR_LINE_LIMIT]
     streams = [fields.get("stderr"), fields.get("stdout")]
-    for key in sorted(fields):
-        inner = fields[key]
-        if isinstance(inner, dict) and ("stderr" in inner or "stdout" in inner):
+    for inner in inners:
+        if "stderr" in inner or "stdout" in inner:
             streams += [inner.get("stderr"), inner.get("stdout")]
     for s in streams:
         line = last_informative_line(s)
