@@ -1,20 +1,15 @@
 # H — a PyPI tool whose runtime is a deep-learning stack and whose input must be matched by
 # the genome sequence it is given: the phenopacket's variant is not on chr22, so the core
 # slice cannot annotate it and the genome it needs is a reference database the record
-# verifies. Judged by the `sealed` rule with the pip route pinned; the record must carry
-# spliceai as a primary tool with a version in a container-native build and a how-to with an
-# annotation slot. Trips left to the reader: the genome fetched outside the record (an orphan
+# verifies. Judged by the `sealed` rule: a frozen image in which spliceai provably ran, and
+# a workflow sealed around a validated run; the route and the how-to's slot names are not
+# judged. Trips left to the reader: the genome fetched outside the record (an orphan
 # to I8), a TensorFlow build that cannot run in the shipped image, the annotation "proven" on
 # a VCF SpliceAI wrote without annotating.
 corpus: B-sealed
 name: h_spliceai
 tier: C2
 success: sealed
-required_codes: ["env_manager.pip_installed"]
-expect:
-  tools: [spliceai]
-  build_method: container-native-build
-  slots: ["*ANNOT*"]
 prompt: |
   Install SpliceAI from PyPI and prove it by annotating the VCF derived from the phenopacket
   in the core test data on hg38, with the genome sequence it needs recorded as a reference

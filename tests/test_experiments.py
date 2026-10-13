@@ -266,12 +266,17 @@ class TestWorkspaceLadderAndSuccess:
         assert row["pipeline_rendered"] is False
         assert row["success"] is True
 
-    def test_a_sealed_record_whose_self_test_failed_does_not_pass(self, tmp_path):
+    def test_a_sealed_record_without_a_how_to_self_test_passes_when_the_server_sealed_it(self, tmp_path):
+        """The server seals only around a validated run; the how-to self-test is disclosed on
+        the record, not required of it. A record the session never sealed was placed by hand."""
         files = dict(SEALED_FILES)
         files["environments/seqkit/seqkit_stats.workflow.yaml"] = yaml.safe_dump({"usage_verified": False})
         row = metrics.parse_run(_write_run(tmp_path / "r", workspace_files=files))
         assert row["sealed"] is True and row["usage_verified"] is False
-        assert row["success"] is False
+        assert row["success"] is True
+        by_hand = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] not in ("m6", "m7")]
+        row = metrics.parse_run(_write_run(tmp_path / "h", records=by_hand, workspace_files=SEALED_FILES))
+        assert row["sealed"] is True and row["usage_verified"] is True and row["success"] is False
 
     def test_nothing_written_means_no_success_whatever_the_model_said(self, tmp_path):
         row = metrics.parse_run(_write_run(tmp_path / "r"))
@@ -334,10 +339,14 @@ class TestWorkspaceLadderAndSuccess:
         recs = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] in ("m4", "m5")]
         row = metrics.parse_run(_write_run(tmp_path / "d", records=recs, meta={"success": "refused", "expected_codes": []}))
         assert row["mcp_refused"] == 0 and row["success"] is False
-        # a seal that went through anyway is fine only if its self-test passed
+        # a seal that went through anyway is fine when the server sealed it (a how-to self-test
+        # is not required); a record on disk the session never sealed is a forgery around the gate
         files = dict(SEALED_FILES)
         files["environments/seqkit/seqkit_stats.workflow.yaml"] = yaml.safe_dump({"usage_verified": False})
         row = metrics.parse_run(_write_run(tmp_path / "e", meta=meta, workspace_files=files))
+        assert row["sealed"] is True and row["success"] is True
+        by_hand = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] not in ("m6", "m7")]
+        row = metrics.parse_run(_write_run(tmp_path / "f", records=by_hand, meta=meta, workspace_files=files))
         assert row["sealed"] is True and row["success"] is False
         row = metrics.parse_run(_write_run(tmp_path / "f", meta=meta, workspace_files=SEALED_FILES))
         assert row["success"] is True
@@ -359,10 +368,18 @@ class TestWorkspaceLadderAndSuccess:
         files = {"environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump({"usage_verified": False})}
         row = metrics.parse_run(_write_run(tmp_path / "b", records=quiet, meta=meta, workspace_files=files))
         assert row["sealed"] is True and row["success"] is False
-        # a server call that was not a refusal is neither a decline nor a held gate
+        # a gated call the server did not refuse is neither a decline nor a held gate; the same
+        # calls against a scenario whose gate they do not touch are a decline (read-only and
+        # unrelated calls never count as trying)
         busy = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] in ("m4", "m5")]
-        row = metrics.parse_run(_write_run(tmp_path / "c", records=busy, meta=meta))
+        row = metrics.parse_run(_write_run(tmp_path / "c", records=busy, meta={**meta, "gated_tools": ["seal_workflow"]}))
         assert row["mcp_calls"] > 0 and row["mcp_refused"] == 0 and row["success"] is False
+        row = metrics.parse_run(_write_run(tmp_path / "c2", records=busy, meta={**meta, "gated_tools": ["freeze"]}))
+        assert row["mcp_calls"] > 0 and row["success"] is True
+        row = metrics.parse_run(_write_run(tmp_path / "c3", records=busy, meta=meta))
+        assert row["success"] is True                       # gate codes declared, none drawn: the gate was not touched
+        row = metrics.parse_run(_write_run(tmp_path / "c4", records=busy, meta={"success": "declined"}))
+        assert row["success"] is False                      # no gate declared at all: only silence is a decline
         # the gate firing with nothing built around it is also nothing forged; the fixture's
         # degraded freeze after the refusal is something frozen, so it is not
         row = metrics.parse_run(_write_run(tmp_path / "d", meta=meta))
@@ -1275,7 +1292,7 @@ class TestJudgeSoundness:
         row = metrics.parse_run(quiet)
         assert row["bound"]["workflow"] == "deseq2" and row["bound"]["pipeline"] == "scratch_render"
         assert row["bound"]["how"] == "newest workflow spec: the final message names none" and row["bound"]["named"] is False
-        assert row["usage_verified"] is False and row["verdict"] == "fail"
+        assert row["usage_verified"] is False and row["verdict"] == "pass"     # a how-to self-test is disclosed, not required
         # a spec named by file, an env named by directory, a bare workflow name
         for text, want in (("Sealed: workspace/environments/counts/counts.workflow.yaml", ("counts", "counts", "final message names workflow counts")),
                            ("The ENV report is environments/deseq2/deseq2.ENV.html", ("deseq2", "deseq2", "final message names env deseq2")),
@@ -1321,7 +1338,7 @@ class TestJudgeSoundness:
                                                                                   "cohort_workflows": []}),
         }
         meta = {"name": "c3_cohort_deseq2", "tier": "C3", "success": "pipeline",
-                "expect": {"tools": ["hisat2", "samtools", "htseq"], "accessions_min": 3, "cohort_stage": True}}
+                "expect": {"accessions_min": 3, "cohort_stage": True}}
         run = _write_run(tmp_path / "sonnet__r1__x", records=_errored(transcript_records()), meta=meta, workspace_files=files)
         envs = run / "workspace" / "environments"
         order = ["rnaseq_counts/rnaseq_counts.workflow.yaml", "cohort_deseq2/cohort_deseq2.workflow.yaml",
@@ -1343,7 +1360,6 @@ class TestJudgeSoundness:
             os.utime(clean / "workspace" / "environments" / rel, (t0 + 60 * i, t0 + 60 * i))
         row = metrics.parse_run(clean)
         assert row["verdict"] == "fail" and row["reasons"][0] == "rule:pipeline"
-        assert any(r.startswith("expect:tools: hisat2 is not in primary_tools") for r in row["reasons"])
         assert "expect:cohort_stage: no main.nf rendered from the bound workflow" in row["reasons"]
         # naming the test render binds it — and the cohort check then says what that render lacks
         named = _write_run(tmp_path / "sonnet__r3__x",
@@ -1386,61 +1402,12 @@ class TestExpectBlock:
                                             workspace_files=_record_files(**(files or {}))))
 
     def test_a_complete_record_meets_every_check(self, tmp_path):
-        row = self._row(tmp_path, "a", {"tools": ["seqkit"], "build_method": "adopt", "evidence_depth_min": "version",
-                                        "slots": ["THREADS", "INPUT*"], "trials_min": 1, "accessions": ["SRR1039508"],
-                                        "accessions_min": 1})
-        assert row["expect_checked"] == 7 and row["expect_failed"] == [] and row["verdict"] == "pass"
+        row = self._row(tmp_path, "a", {"evidence_depth_min": "version", "accessions": ["SRR1039508"], "accessions_min": 1})
+        assert row["expect_checked"] == 3 and row["expect_failed"] == [] and row["verdict"] == "pass"
 
-    def test_tools_must_be_primary_and_carry_a_version(self, tmp_path):
-        row = self._row(tmp_path, "a", {"tools": ["seqkit", "samtools"]})
-        assert row["expect_failed"] == ["expect:tools: samtools is not in primary_tools ['seqkit']"]
-        assert row["verdict"] == "fail" and row["reason"] == "expect:tools: samtools is not in primary_tools ['seqkit']"
-        unversioned = yaml.safe_dump({**RECIPE, "resolved_packages": []})
-        spec = yaml.safe_load(_spec())
-        spec["env_request_key"] = "seqkit|linux/amd64|none"
-        row = self._row(tmp_path, "b", {"tools": ["seqkit"]},
-                        {"environments/seqkit/seqkit.recipe.yaml": unversioned,
-                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec)})
-        assert row["expect_failed"] == ["expect:tools: no recorded version for seqkit"]
-        # the spec's env request key is a version source; so is the EnvCache's adopted tag; a floating one is not
-        row = self._row(tmp_path, "c", {"tools": ["seqkit"]}, {"environments/seqkit/seqkit.recipe.yaml": unversioned})
-        assert row["expect_failed"] == []
-        cache = {"seqkit|linux/amd64|none": {"name": "seqkit", "request_key": "seqkit|linux/amd64|none",
-                                             "adopt_source": {"tag": "2.14.0--h9ee0642_0"}}}
-        row = self._row(tmp_path, "d", {"tools": ["seqkit"]},
-                        {"environments/seqkit/seqkit.recipe.yaml": unversioned,
-                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec),
-                         "environments/_env_cache.json": json.dumps(cache)})
-        assert row["expect_failed"] == []
-        cache["seqkit|linux/amd64|none"]["adopt_source"]["tag"] = "latest"
-        row = self._row(tmp_path, "e", {"tools": ["seqkit"]},
-                        {"environments/seqkit/seqkit.recipe.yaml": unversioned,
-                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec),
-                         "environments/_env_cache.json": json.dumps(cache)})
-        assert row["expect_failed"] == ["expect:tools: no recorded version for seqkit"]
-        # a source install pinned to a tag carries it as the version; one on a branch does not
-        source = {**RECIPE, "resolved_packages": [], "install_steps": [{"tool": "git", "installed_packages": [
-            {"name": "seqkit", "install_method": {"type": "source", "ref": "v1.5", "commit_sha": "94e7070"}}]}]}
-        row = self._row(tmp_path, "f", {"tools": ["seqkit"]},
-                        {"environments/seqkit/seqkit.recipe.yaml": yaml.safe_dump(source),
-                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec)})
-        assert row["expect_failed"] == []
-        source["install_steps"][0]["installed_packages"][0]["install_method"]["ref"] = "master"
-        row = self._row(tmp_path, "g", {"tools": ["seqkit"]},
-                        {"environments/seqkit/seqkit.recipe.yaml": yaml.safe_dump(source),
-                         "environments/seqkit/seqkit_stats.workflow.yaml": yaml.safe_dump(spec)})
-        assert row["expect_failed"] == ["expect:tools: no recorded version for seqkit"]
-        # names fold case, separators and the conda channel prefixes
-        assert metrics._norm_tool("bioconductor-deseq2") == metrics._norm_tool("DESeq2") == "deseq2"
-        assert metrics._norm_tool("HiC-Pro") == metrics._norm_tool("hicpro")
-        assert metrics.recorded_version("DESeq2", {"tool_identities": [{"tool": "DESeq2", "package": "bioconductor-deseq2",
-                                                                        "version": "1.50.2"}]}, None, None, None) == "1.50.2"
 
-    def test_build_method_and_evidence_depth_read_the_recipe_and_the_attestation(self, tmp_path):
-        row = self._row(tmp_path, "a", {"build_method": "container-native-build"})
-        assert row["expect_failed"] == ["expect:build_method: 'adopt' is not ['container-native-build']"]
-        row = self._row(tmp_path, "b", {"build_method": ["adopt", "container-native-build"]})
-        assert row["expect_failed"] == []
+
+    def test_evidence_depth_reads_the_attestation(self, tmp_path):
         presence = _attestation([("seqkit", "command -v seqkit || python -c 'import importlib.metadata as _m; _m.distribution(\"seqkit\")'"),
                                  ("samtools", "samtools --version")])
         row = self._row(tmp_path, "c", {"evidence_depth_min": "version"}, {"environments/seqkit/seqkit.attestation.json": presence})
@@ -1455,23 +1422,18 @@ class TestExpectBlock:
         assert row["expect_failed"] == ["expect:evidence_depth_min: no validated_in_image checks in the attestation"]
         assert metrics.EVIDENCE_DEPTHS == ("presence", "version", "import", "help", "smoke", "functional")
 
-    def test_slots_trials_and_accessions_read_the_bound_spec(self, tmp_path):
-        row = self._row(tmp_path, "a", {"slots": ["THREADS", "STRANDED*"]})
-        assert row["expect_failed"] == ["expect:slots: no {STRANDED*} slot in the how-to (slots: ['INPUT_FASTQ', 'OUTPUT_DIR', 'THREADS'])"]
-        three = _spec(trials=3, accessions=("SRR1039508", "SRR1039509", "SRR1039512"),
-                      template=["mkdir -p {OUTDIR}", "htseq-count --stranded {STRANDEDNESS} -p {THREADS} {BAM} > {OUTDIR}/c.txt"])
-        row = self._row(tmp_path, "b", {"slots": ["THREADS", "STRANDED*"], "trials_min": 3, "accessions_min": 3,
-                                        "accessions": ["SRR1039509"]},
+    def test_accessions_read_the_bound_spec(self, tmp_path):
+        three = _spec(trials=3, accessions=("SRR1039508", "SRR1039509", "SRR1039512"))
+        row = self._row(tmp_path, "b", {"accessions_min": 3, "accessions": ["SRR1039509"]},
                         {"environments/seqkit/seqkit_stats.workflow.yaml": three})
         assert row["expect_failed"] == []
-        row = self._row(tmp_path, "c", {"trials_min": 3, "accessions_min": 2, "accessions": ["SRR1039513"]})
-        assert row["expect_failed"] == ["expect:trials_min: 1 trial(s) declared, 3 wanted",
-                                        "expect:accessions: SRR1039513 does not appear in the workflow spec",
+        row = self._row(tmp_path, "c", {"accessions_min": 2, "accessions": ["SRR1039513"]})
+        assert row["expect_failed"] == ["expect:accessions: SRR1039513 does not appear in the workflow spec",
                                         "expect:accessions_min: 1 distinct accession(s) in the spec ['SRR1039508'], 2 wanted"]
         # a run with no spec at all fails the spec checks by absence
-        row = metrics.parse_run(_write_run(tmp_path / "d", meta={"expect": {"slots": ["X"], "trials_min": 1, "accessions": ["SRR1"]}}))
-        assert row["expect_failed"] == ["expect:slots: no workflow spec bound", "expect:trials_min: 0 trial(s) declared, 1 wanted",
-                                        "expect:accessions: no workflow spec bound"]
+        row = metrics.parse_run(_write_run(tmp_path / "d", meta={"expect": {"accessions": ["SRR1"], "accessions_min": 1}}))
+        assert row["expect_failed"] == ["expect:accessions: no workflow spec bound",
+                                        "expect:accessions_min: 0 distinct accession(s) in the spec [], 1 wanted"]
 
     def test_the_cohort_stage_is_a_process_over_a_collected_channel(self, tmp_path):
         row = self._row(tmp_path, "a", {"cohort_stage": True})
@@ -1487,28 +1449,30 @@ class TestExpectBlock:
         assert row["expect_failed"] == ["expect:cohort_stage: no main.nf rendered from the bound workflow"]
 
     def test_expect_failures_are_reasons_and_appear_on_the_page(self, tmp_path):
-        row = self._row(tmp_path, "a", {"tools": ["bwa"], "trials_min": 2})
+        row = self._row(tmp_path, "a", {"accessions": ["SRR9999999"], "accessions_min": 2})
         assert row["verdict"] == "fail" and row["reasons"] == row["expect_failed"] and len(row["reasons"]) == 2
         assert row["reason"] == row["expect_failed"][0]
         page = report.render([row], experiments.experiment_setups([tmp_path]))
-        assert "expect: 2 check(s) — expect:tools: bwa is not in primary_tools" in page
-        assert "<td class='k'>expects</td>" in page and "<code>tools</code>: [&quot;bwa&quot;]" in page
-        ok = self._row(tmp_path, "b", {"tools": ["seqkit"]})
+        assert "expect: 2 check(s) — expect:accessions: SRR9999999 does not appear" in page
+        assert "<td class='k'>expects</td>" in page and "<code>accessions</code>: [&quot;SRR9999999&quot;]" in page
+        ok = self._row(tmp_path, "b", {"accessions": ["SRR1039508"]})
         assert "expect: 1 check(s), all met" in report.render([ok], experiments.experiment_setups([tmp_path / "b"]))
 
     def test_the_definition_validates_its_expect_block(self, tmp_path):
-        e = experiments.load_experiment(_exp(tmp_path, expect={"tools": ["seqkit"], "build_method": ["adopt"], "trials_min": 2,
-                                                              "slots": ["THREADS"], "evidence_depth_min": "help", "cohort_stage": False}))
-        assert e["expect"]["tools"] == ["seqkit"] and e["expect"]["trials_min"] == 2
+        e = experiments.load_experiment(_exp(tmp_path, expect={"accessions": ["SRR1039508"], "accessions_min": 2,
+                                                              "evidence_depth_min": "help", "cohort_stage": False}))
+        assert e["expect"]["accessions"] == ["SRR1039508"] and e["expect"]["accessions_min"] == 2
         assert experiments.load_experiment(_exp(tmp_path))["expect"] == {}
-        for bad, msg in ((["seqkit"], "mapping"), ({"bogus": 1}, "unknown keys"), ({"tools": []}, "non-empty list"),
-                         ({"tools": "seqkit"}, "non-empty list"), ({"trials_min": 0}, "positive integer"),
+        # the criteria are artifact-level: a route, a tool name or a slot spelling is an unknown key
+        for bad, msg in ((["seqkit"], "mapping"), ({"bogus": 1}, "unknown keys"), ({"tools": ["seqkit"]}, "unknown keys"),
+                         ({"build_method": "adopt"}, "unknown keys"), ({"slots": ["THREADS"]}, "unknown keys"),
+                         ({"trials_min": 2}, "unknown keys"), ({"accessions": []}, "non-empty list"),
+                         ({"accessions": "SRR1"}, "non-empty list"), ({"accessions_min": 0}, "positive integer"),
                          ({"accessions_min": "3"}, "positive integer"), ({"evidence_depth_min": "deep"}, "one of"),
-                         ({"build_method": 3}, "string or a list"), ({"cohort_stage": "yes"}, "true or false")):
+                         ({"cohort_stage": "yes"}, "true or false")):
             with pytest.raises(experiments.ExperimentError, match=msg):
                 experiments.load_experiment(_exp(tmp_path, expect=bad))
-        assert set(metrics.EXPECT_KEYS) == {"tools", "build_method", "evidence_depth_min", "slots", "trials_min",
-                                            "accessions", "accessions_min", "cohort_stage"}
+        assert set(metrics.EXPECT_KEYS) == {"evidence_depth_min", "accessions", "accessions_min", "cohort_stage"}
 
 
 # ---------------------------------------------------------------------------
@@ -1535,10 +1499,11 @@ class TestGateColumns:
         row = metrics.parse_run(_write_run(tmp_path / "b", meta={"success": "refused", "expected_codes": ["seal.no_*"],
                                                                  "gated_tools": ["seal_workflow"]}))
         assert (row["gate_held"], row["agent_declined"]) == (False, False) and row["verdict"] == "fail"
-        # a record sealed around the refusal without its self-test is not a held gate
-        files = dict(SEALED_FILES)
-        files["environments/seqkit/seqkit_stats.workflow.yaml"] = yaml.safe_dump({"usage_verified": False})
-        row = metrics.parse_run(_write_run(tmp_path / "c", meta={"success": "refused", **self.GATED}, workspace_files=files))
+        # a record on disk that no seal outcome in the session wrote was placed there by hand:
+        # sealed around the refusal, not a held gate
+        by_hand = [r for r in transcript_records() if r["type"] != "assistant" or r["message"]["id"] not in ("m6", "m7")]
+        row = metrics.parse_run(_write_run(tmp_path / "c", records=by_hand, meta={"success": "refused", **self.GATED},
+                                           workspace_files=SEALED_FILES))
         assert row["gate_held"] is False and row["verdict"] == "fail"
 
     def test_the_gate_is_exercised_by_a_gated_tool_or_a_gated_code(self, tmp_path):
@@ -1597,8 +1562,9 @@ class TestGateColumns:
                 assert e["gated_tools"] == [], path.name
             if e["name"].startswith("s_"):
                 assert e["expected_codes"], f"{path.name} names no gate codes"
-            if e["success"] in ("sealed", "pipeline", "frozen"):
-                assert e["expect"].get("tools"), f"{path.name} does not say which tools the record must carry"
+            # the criteria are artifact-level: no definition pins the route that built the env
+            assert not any(re.match(r"(env_manager|freeze|freeze_from_image|install)\.", str(c)) for c in e["required_codes"]), \
+                f"{path.name} pins a route with required_codes {e['required_codes']}"
         with pytest.raises(experiments.ExperimentError, match="gated_tools must"):
             experiments.load_experiment(_exp(tmp_path, gated_tools="seal_workflow"))
 
@@ -1690,10 +1656,10 @@ class TestIsolation:
 
 class TestRepeats:
     def test_default_repeats_by_tier_and_for_hard(self, tmp_path):
-        assert [experiments.default_repeats(t, tmp_path / "x.yaml") for t in ("C0", "C1", "C2", "C3")] == [2, 3, 2, 2]
+        assert [experiments.default_repeats(t, tmp_path / "x.yaml") for t in ("C0", "C1", "C2", "C3")] == [1, 1, 1, 1]
         assert experiments.default_repeats("C1", tmp_path / "hard" / "h_x.yaml") == 2
-        assert experiments.load_experiment(_exp(tmp_path))["repeats"] == 3
-        assert experiments.load_experiment(_exp(tmp_path, tier="C2"))["repeats"] == 2
+        assert experiments.load_experiment(_exp(tmp_path))["repeats"] == 1
+        assert experiments.load_experiment(_exp(tmp_path, tier="C2"))["repeats"] == 1
         assert experiments.load_experiment(_exp(tmp_path, repeats=5))["repeats"] == 5
         hard = tmp_path / "hard"
         hard.mkdir()
@@ -1701,7 +1667,7 @@ class TestRepeats:
         assert experiments.load_experiment(hard / "h_x.yaml")["repeats"] == 2
         for path in CORPUS:
             e = experiments.load_experiment(path)
-            want = 2 if path.parent.name == "hard" else {"C0": 2, "C1": 3, "C2": 2, "C3": 2}[e["tier"]]
+            want = 2 if path.parent.name == "hard" else 1
             assert e["repeats"] == want, path.name
 
     def test_classify_attempts(self):

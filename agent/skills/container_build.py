@@ -1024,7 +1024,10 @@ class ContainerBuild:
             r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image, "bash", "-c",
                           f'cd {here} 2>/dev/null || true; {c}'],
                          timeout=300)
-            results[c] = {"rc": r["returncode"], "out": (r["stdout"] or "").strip()[:200]}
+            # What the check said: its stdout, else the end of its stderr (an interpreter
+            # names a missing file or an exception on its last stderr line).
+            out = (r["stdout"] or "").strip()[:200] or (r["stderr"] or "").strip()[-200:]
+            results[c] = {"rc": r["returncode"], "out": out}
             ok = ok and r["returncode"] == 0
         banners: dict[str, str] = {}
         for tool in (probe_tools or []):

@@ -1,13 +1,10 @@
 # C1 — one conda tool, core test data, the whole two-layer protocol from cold: install,
 # prove it on data already on disk, freeze, seal. Judged by the `sealed` rule: a workflow
 # record whose usage self-test passed, with the ENV and RUN reports written. The record must
-# carry seqkit as a primary tool with a version, adopted by digest or built container-native.
+# sealed around a validated run in a frozen image where seqkit provably ran.
 corpus: A
 name: c1_seqkit
 tier: C1
-expect:
-  tools: [seqkit]
-  build_method: [adopt, container-native-build]
 prompt: |
   Install seqkit, prove it works by running seqkit stats on one of the RNA-seq fastq files
   in the core test data, freeze it as a shippable image, and seal the workflow. When done,

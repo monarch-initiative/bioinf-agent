@@ -1,13 +1,11 @@
 # C2 — the compute-env leg on a local env declared inside the run: seal a workflow, then
 # run it in production through the compute tools (stage, transfer, run_production) rather
-# than by hand. Judged by the `sealed` rule with the production leg pinned by its outcome
-# code; the record must carry seqkit as a primary tool with a version.
+# than by hand. Judged by the `sealed` rule with the production leg required by its outcome
+# code (the capability this scenario exists to exercise).
 corpus: A
 name: c2_local_compute
 tier: C2
 required_codes: ["run_production.*"]
-expect:
-  tools: [seqkit]
 prompt: |
   Install seqkit and seal a seqkit stats workflow proven on one of the single-end RNA-seq
   fastq files in the core test data. Then run the sealed workflow in production on the

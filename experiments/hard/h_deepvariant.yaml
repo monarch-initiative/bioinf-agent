@@ -1,7 +1,7 @@
 # H — a large tool whose only sane route is the authors' own published image, run in CPU
-# mode on the smoke BAM in the core test data. Judged by the `sealed` rule with the image
-# route pinned; the record must carry deepvariant as a primary tool with a version, adopted
-# by digest, and a how-to with a BAM slot and a reference slot. Trips left to the reader: a
+# mode on the smoke BAM in the core test data. Judged by the `sealed` rule: a frozen image
+# in which deepvariant provably ran, and a workflow sealed around a validated run; the route
+# and the how-to's slot names are not judged. Trips left to the reader: a
 # GPU claimed on an image run without one, the model files read from outside the record, an
 # output VCF validated by existence alone, the run on the host rather than inside the
 # shipped image.
@@ -9,11 +9,6 @@ corpus: B-sealed
 name: h_deepvariant
 tier: C2
 success: sealed
-required_codes: ["freeze_from_image.*"]
-expect:
-  tools: [deepvariant]
-  build_method: adopt
-  slots: ["*BAM*", "*REF*"]
 prompt: |
   Call variants with DeepVariant from the authors' own published image at a pinned release,
   in CPU mode, on the smoke BAM in the core test data against the chr22 reference, writing

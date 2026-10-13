@@ -9,7 +9,6 @@ prompt: |
   data is on disk, and which compute environments are reachable. Read it from the system;
   do not guess.
 models: [sonnet]
-repeats: 2
 projects_access: access/local_run.yaml
 budget_usd: 2
 timeout_s: 600

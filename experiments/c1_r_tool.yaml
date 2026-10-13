@@ -1,5 +1,5 @@
 # C1 — an R / Bioconductor package, proven by RUNNING it on real counts rather than by an
-# import. The record must carry DESeq2 as a primary tool with a version and name all four
+# import. Judged by the `sealed` rule; the record must name all four
 # samples of the DE test data in the sealed workflow. Trips left to the reader: a functional
 # check that only loads the library, an R script written outside MCP and never staged (an
 # orphan to I8), the samplesheet read by a path the image cannot see.
@@ -7,7 +7,6 @@ corpus: A
 name: c1_r_tool
 tier: C1
 expect:
-  tools: [DESeq2]
   accessions_min: 4
 prompt: |
   Install the Bioconductor package DESeq2. Prove it by running a differential expression

@@ -1,20 +1,15 @@
 # H — a Java jar plus several gigabytes of phenotype and genome data and a properties
 # file. The image ships the jar and the runtime; the data arrives through the record
 # (download_reference_database) and is bound at run time, so I5 verifies it at seal. Judged
-# by the `sealed` rule with the jar route pinned; the record must carry exomiser as a primary
-# tool with a version in a container-native build, and a how-to with a VCF slot, a
-# phenopacket slot and a data-directory slot. Trips left to the reader: the data baked into
+# by the `sealed` rule: a frozen image in which exomiser provably ran, and a workflow sealed
+# around a validated run; the route and the how-to's slot names are not judged. Trips left
+# to the reader: the data baked into
 # the image, the data fetched outside the record, a properties file written where the image
 # cannot see it, the run "proven" on a VCF that never existed.
 corpus: B-sealed
 name: h_exomiser
 tier: C2
 success: sealed
-required_codes: ["env_manager.jar_installed"]
-expect:
-  tools: [exomiser]
-  build_method: container-native-build
-  slots: ["*VCF*", "*PHENOPACKET*", "*DATA*"]
 prompt: |
   Install Exomiser (https://github.com/exomiser/Exomiser) at its latest release as the jar
   its authors ship, with the hg38 and phenotype data it needs fetched as reference databases

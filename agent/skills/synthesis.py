@@ -232,6 +232,40 @@ def verify_extracted(command: str, origin_text: str) -> dict[str, Any]:
                       "it is a paraphrase, not an extraction"}
 
 
+#: Programs a synthesized command cannot call: the build image has no conda, and pip only
+#: inside the engine environment. Their lines are declarations in disguise.
+_PACKAGE_MANAGERS = frozenset({"conda", "mamba", "micromamba", "pip", "pip3", "pipx"})
+_SEGMENT_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+
+
+def package_manager_lines(commands: list[dict]) -> list[dict]:
+    """The submitted commands that call a package manager, each with the manager named:
+    the command word of any segment (after `sudo` and leading environment assignments), or
+    `python -m pip`. A `conda install numba` line from the authors' notes is a package to
+    declare, not a build step to replay."""
+    out: list[dict] = []
+    for c in commands:
+        cmd = str((c or {}).get("command") or "") if isinstance(c, dict) else ""
+        manager = ""
+        for seg in _SEGMENT_SPLIT.split(cmd):
+            words = [w for w in seg.strip().split() if w]
+            while words and (words[0] == "sudo" or _ENV_ASSIGNMENT.match(words[0])):
+                words.pop(0)
+            if not words:
+                continue
+            head = words[0].rsplit("/", 1)[-1]
+            if head in _PACKAGE_MANAGERS:
+                manager = head
+            elif re.fullmatch(r"python[0-9.]*", head) and len(words) > 2 and words[1] == "-m" and words[2] == "pip":
+                manager = "pip"
+            if manager:
+                break
+        if manager:
+            out.append({"command": cmd, "manager": manager})
+    return out
+
+
 def validate_submission(fetch: dict, commands: list[dict]) -> dict[str, Any]:
     """The gate between the agent's submission and the build. `fetch` is what the
     runtime captured in synth_fetch ({commit, files:[{path,sha256,text}], corpus});

@@ -580,8 +580,20 @@ def synth_build(
     its sha256 — are ground truth by construction (we fetched exactly them), so a
     `git clone {url}` / `curl {url}` + `sha256sum -c` ground; every OTHER external
     reference must trace to the repo's files. Any violation → refused, no record. On
-    success it records ONE install_method (type='synthesized') into the draft; freeze()
-    replays it verbatim and the honesty contract proves the tool RUNS (`evidence`).
+    success it records ONE install_method (type='synthesized') into the draft named by
+    `pipeline_id` (required: without a draft nothing is recorded and the call is
+    refused); freeze() replays it verbatim and the honesty contract proves the tool RUNS
+    (`evidence`).
+
+    HOW THE COMMANDS RUN. freeze replays them verbatim in the build container as ONE
+    `set -eux` shell (a `cd` persists into the next command), on the pinned base image:
+    no conda, pip or python is there unless the draft declares the package. Packages the
+    authors install with conda or pip are declared through install_conda_packages /
+    install_pip_package (the build solves them; a `conda install` or `pip install` line
+    here is refused). A command that needs one of those packages' programs (`python
+    setup.py build`, a `make` against the environment's libraries) is marked
+    `engine_coupled: true`, which runs the whole sequence with the engine environment on
+    PATH. The evidence runs in the finished image, where the environment is on PATH.
 
     NOTE — runtime SERVICES (MongoDB/Postgres/Redis/Spark) are NOT installed here:
     synthesis bakes the TOOL only (install-time); a service is provisioned per-run via
@@ -600,6 +612,22 @@ def synth_build(
     gate = _workflow_gate_or_none(repo_url, commit or ref, tool=tool_name)
     if gate and gate["state"] == "workflow_only":
         return _refuse_workflow_repo(gate, stage="build")
+    if not pipeline_id:
+        return refused("install.synth_no_draft", success=False, stage="draft",
+                       error="synth_build records the install into a draft and no pipeline_id was given: "
+                             "nothing would be recorded, and the next freeze would solve the tool's name as "
+                             "a conda package. Open the draft with start_pipeline(name) and pass its pipeline_id.")
+    offending = _ms._synth.package_manager_lines(list(commands))
+    if offending:
+        managers = ", ".join(sorted({o["manager"] for o in offending}))
+        return refused("install.synth_package_manager_line", success=False, stage="validate_submission",
+                       commands=offending,
+                       error=f"{len(offending)} command(s) call a package manager ({managers}), which the build "
+                             "image does not have: conda is never in it, and pip only inside the engine "
+                             "environment. Declare the packages instead (install_conda_packages for the conda "
+                             "lines, install_pip_package for the pip lines, install_git_repo(build_command=…) "
+                             "for a `pip install -e .` of the repository itself; the build solves them) and "
+                             "keep only the tool's own build steps here.")
     fetch = _ms._env_mgr.fetch_build_source(
         repo_url, commit or ref, mode=mode, is_relevant=_ms._synth.is_build_relevant)
     if not fetch.get("success"):

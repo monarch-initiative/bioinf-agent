@@ -72,3 +72,22 @@ def test_last_informative_line_skips_punctuation_and_wrapper_lines():
 def test_derive_error_is_the_one_reading_and_is_capped():
     assert derive_error({"reason": "r" * 1000}, "c") == "r" * outcomes.ERROR_LINE_LIMIT
     assert derive_error({}, "a.b") == "a.b"
+
+
+def test_a_tagged_failure_nested_one_level_down_hands_up_its_error():
+    inner = broke("env_build.evidence_shape", stage="evidence_preflight",
+                  error="evidence 'python run.py -h' never references the tool token 'gab'")
+    r = broke("freeze.container_build_failed", build=inner)
+    assert r["error"] == "evidence 'python run.py -h' never references the tool token 'gab'"
+    # an inner error that is only its own code is no cause; the streams are read instead
+    r = broke("freeze.container_build_failed", build={"code": "x.y", "error": "x.y", "stderr": "error: no gcc\n"})
+    assert r["error"] == "error: no gcc"
+
+
+def test_honesty_violations_are_summarised_like_violations_at_either_level():
+    v = [{"invariant": "VALIDATED_IN_IMAGE.evidence_passed", "message": "gab: evidence did not pass (rc=2)"}]
+    assert broke("x", honesty_violations=v)["error"] == "1 violation; first: VALIDATED_IN_IMAGE.evidence_passed: gab: evidence did not pass (rc=2)"
+    assert broke("x", build={"honesty_violations": v, "success": False})["error"].endswith("gab: evidence did not pass (rc=2)")
+    # the builder's own text still wins over everything nested
+    assert broke("x", error="mine", build={"honesty_violations": v})["error"] == "mine"
+
