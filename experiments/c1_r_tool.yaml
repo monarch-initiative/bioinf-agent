@@ -1,13 +1,12 @@
 # C1 — an R / Bioconductor package, proven by RUNNING it on real counts rather than by an
-# import. Judged by the `sealed` rule; the record must name all four
-# samples of the DE test data in the sealed workflow. Trips left to the reader: a functional
+# import. Judged by the `sealed` rule: a frozen image in which DESeq2 provably ran and a
+# workflow sealed around a validated run over the DE test data; how the inputs are bound (four
+# files or the directory that holds them) is not judged. Trips left to the reader: a functional
 # check that only loads the library, an R script written outside MCP and never staged (an
 # orphan to I8), the samplesheet read by a path the image cannot see.
 corpus: A
 name: c1_r_tool
 tier: C1
-expect:
-  accessions_min: 4
 prompt: |
   Install the Bioconductor package DESeq2. Prove it by running a differential expression
   of dex against untrt over the per-sample counts tables and samples.csv under the

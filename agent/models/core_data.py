@@ -2016,6 +2016,27 @@ _DOUBLE_BRACE_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
 #: `${NAME}` — shell parameter syntax wrapped around a slot; the fill rewrites the inner
 #: `{NAME}`, so the shell then reads `$<value>` and expands an unset variable to nothing.
 _SHELL_VAR_SLOT_RE = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
+
+#: An absolute path written into a template or a filled command (`/data/idx/chr22`,
+#: `/Users/x/ref.fa`); a slot's own `{OUTPUT_DIR}/x.bam` is not one.
+ABS_PATH_RE = re.compile(r"(?<![\w{}])/(?:[\w.@%+-]+/)*[\w.@%+-]+")
+
+
+def machine_paths_in(template: str) -> list[str]:
+    """Absolute paths in a template that lie under this machine's workspace, resources or
+    conda envs: the zones a slot would be bound from. A path inside the image (`/opt/tool/db`)
+    is not one of them and is left alone."""
+    from agent.skills import workspace
+    roots: list[str] = []
+    for fn in (workspace.workspace_root, workspace.resources_root, workspace.conda_envs_dir):
+        try:
+            roots.append(str(fn()).rstrip("/"))
+        except Exception:
+            pass
+    return [tok for tok in dict.fromkeys(ABS_PATH_RE.findall(template))
+            if any(tok == r or tok.startswith(r + "/") for r in roots)]
+
+
 #: Stated once so every refusal and hint describes the same rule.
 OUTPUT_SLOT_RULE = ("a slot named {OUTPUT_DIR} or {OUTDIR}, or whose name contains OUTPUT, "
                     "is the output DIRECTORY: the self-test fills it with a fresh scratch "
@@ -2069,7 +2090,8 @@ def usage_slot_problems(usage: Any) -> list[str]:
     fill breaks it; a brace token in another case that the block itself treats as a slot
     is named with its rename; a template needs an output slot (OUTPUT_SLOT_RULE) and at
     least one slot at all; every other slot is declared under inputs[*].name, at least one
-    trial is declared, and every trial binds each of them and nothing the template lacks."""
+    trial is declared, and every trial binds each of them and nothing the template lacks;
+    a path on this machine written into the template is a slot that was not declared."""
     commands = usage_commands(usage)
     template = "\n".join(commands)
     if not template.strip():
@@ -2134,6 +2156,14 @@ def usage_slot_problems(usage: Any) -> list[str]:
         problems.append(f"{', '.join('{' + s + '}' for s in undeclared)} not declared under "
                         f"inputs[*].name — every slot but the output directory is an input "
                         f"(name, format, description); declared: {', '.join(input_names) or '(none)'}")
+    machine = machine_paths_in(template)
+    if machine:
+        named = ", ".join(f"`{m}`" for m in machine[:3])
+        problems.append(f"command_template names a path on this machine: {named} — the self-test runs "
+                        "the how-to at the image locus, where only the paths bound through slots are "
+                        "mounted, and a how-to that carries a machine path cannot be re-run anywhere "
+                        "else: write it as a slot (`{INDEX}`, `{GTF}`), declare it under inputs[*].name "
+                        "and bind the path in every trial's substitutions")
     stray = [n for n in input_names if n and n not in slots]
     if stray:
         problems.append(f"inputs[*].name {', '.join(repr(n) for n in stray)} match no slot in the "

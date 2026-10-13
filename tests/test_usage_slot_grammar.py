@@ -255,3 +255,31 @@ def test_an_is_a_directory_failure_names_the_output_slot_trap():
                             {"IN", "OUTPUT_DIR"}, [{"name": "o", "files": ["*.tsv"]}], _Dir(), "x",
                             {"pipeline_name": "p"}, None)
     assert res["ok"] is False and "{OUTPUT_DIR}/<name>" in res["hint"] and "{OUTPUT_DIR}" in res["hint"]
+
+
+# ── a machine path in the template is a slot that was not declared ─────────────────────
+def test_a_machine_path_in_the_template_is_refused_at_the_write_and_named():
+    """The self-test mounts only the paths bound through slots, so a how-to carrying an
+    absolute path from this machine's zones can never resolve at the image locus — and it
+    is not re-runnable anywhere else either. Caught at the write, with the slot remedy."""
+    from agent.skills import workspace
+    idx = str(workspace.workspace_root() / "common_data" / "hisat2_chr22_index" / "chr22")
+    ref = str(workspace.resources_root() / "core_test_data_hg38" / "genome" / "chr22.fa")
+    u = _usage(f"hisat2 -x {idx} -U {{INPUT_FASTQ}} | samtools sort -o {{OUTPUT_DIR}}/x.bam && "
+               f"samtools faidx {ref}",
+               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
+    problems = PS.usage_block_problems(u)
+    hit = [p for p in problems if "names a path on this machine" in p]
+    assert len(hit) == 1, problems
+    assert f"`{idx}`" in hit[0] and f"`{ref}`" in hit[0]
+    assert "write it as a slot" in hit[0] and "trial's substitutions" in hit[0]
+    assert CD.machine_paths_in(u["command_template"]) == [idx, ref]
+
+
+def test_paths_inside_the_image_and_slot_paths_are_not_machine_paths():
+    """`/opt/tool/db` lives in the image; `{OUTPUT_DIR}/x.bam` is a slot's own path."""
+    u = _usage("tool --db /opt/tool/db -i {INPUT_FASTQ} -o {OUTPUT_DIR}/x.bam 2>{OUTPUT_DIR}/x.log",
+               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
+    assert not any("names a path on this machine" in p for p in PS.usage_block_problems(u))
+    assert CD.machine_paths_in(u["command_template"]) == []
+    assert CD.ABS_PATH_RE.findall("x {OUTPUT_DIR}/s.bam -o /tmp/a.b -x=/data/idx") == ["/tmp/a.b", "/data/idx"]

@@ -85,11 +85,74 @@ def test_a_command_not_found_refusal_says_where_the_name_occurs(tmp_path, monkey
     assert out["not_found"] == [
         "HiC-Pro: no such command on the image's PATH (/usr/local/sbin:/usr/local/bin:/usr/bin); the name occurs at: "
         "/HiC-Pro_3.0.0/bin/HiC-Pro; /HiC-Pro_3.0.0/bin/utils/HiC-Pro_convert; "
-        "run_workflow = talos.cpg_internal_scripts.run_workflow:cli_main @ /talos/.venv/bin/run_workflow"]
+        "run_workflow = talos.cpg_internal_scripts.run_workflow:cli_main @ /talos/.venv/bin/run_workflow"
+        " — any of these names is accepted as the tool's own command in the evidence"]
     assert "/HiC-Pro_3.0.0/bin/HiC-Pro" in out["error"]
     probe = [c for c in seen if "---executables---" in c["command"]]
     assert len(probe) == 1 and probe[0]["timeout"] == F._PROBE_TIMEOUT_S
     assert "-iname '*HiC-Pro*'" in probe[0]["command"] and "entry_points.txt" in probe[0]["command"]
+
+
+def test_a_console_script_the_image_attributes_to_the_tool_is_the_tools_own_command(tmp_path, monkeypatch):
+    """The probe told the caller to name `run_workflow` next; the shape rule must then accept
+    it. The image is asked once, before the evidence runs, only because the evidence invokes
+    a name that is not the tool's; the names it attributes ride on the verification as
+    `tool_aliases`, where check_build reads them."""
+    mock_docker(monkeypatch)
+    seen: list = []
+    monkeypatch.setattr(F, "_run_in_image", _run_with_probe(0, "usage: run_workflow [-h] ...", seen))
+    out = F.freeze_from_image(image="img@sha256:abc", name="talos", version="12.2.0",
+                              tools=[{"name": "talos", "evidence": "run_workflow --help"}],
+                              build_method="adopt-image", env_cache=FakeCache(), env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    ver = out["verifications"][0]
+    assert "run_workflow" in ver["tool_aliases"] and ver["passed"] is True
+    probe = [c for c in seen if "---executables---" in c["command"]]
+    assert len(probe) == 1
+    assert seen.index(probe[0]) < seen.index(next(c for c in seen if c["command"] == "run_workflow --help"))
+
+
+def test_a_name_the_image_does_not_attribute_to_the_tool_is_still_a_shape_violation(tmp_path, monkeypatch):
+    mock_docker(monkeypatch)
+    seen: list = []
+    monkeypatch.setattr(F, "_run_in_image", _run_with_probe(0, "total 0", seen))
+    out = F.freeze_from_image(image="img@sha256:abc", name="talos", version="12.2.0",
+                              tools=[{"name": "talos", "evidence": "ls -l /opt"}],
+                              build_method="adopt-image", env_cache=FakeCache(), env_dir=tmp_path)
+    assert (out["outcome"], out["code"]) == ("refused", "freeze_from_image.honesty_violation")
+    assert any(v["invariant"] == "VALIDATED_IN_IMAGE.evidence_shape" for v in out["honesty_violations"])
+    assert out["verifications"][0]["tool_aliases"] == ["HiC-Pro", "HiC-Pro_convert", "run_workflow"]
+
+
+def test_an_evidence_that_names_the_tool_is_not_probed_first(tmp_path, monkeypatch):
+    mock_docker(monkeypatch)
+    seen: list = []
+    monkeypatch.setattr(F, "_run_in_image", _run_with_probe(0, "HiC-Pro 3.0.0", seen))
+    out = F.freeze_from_image(image="img@sha256:abc", name="HiC-Pro", version="3.0.0",
+                              tools=[{"name": "HiC-Pro", "evidence": "/HiC-Pro_3.0.0/bin/HiC-Pro -h"}],
+                              build_method="adopt-image", env_cache=FakeCache(), env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    assert out["verifications"][0]["tool_aliases"] == []
+    assert not [c for c in seen if "---executables---" in c["command"]]
+
+
+@pytest.mark.parametrize("evidence, word", [
+    ("run_workflow --help", "run_workflow"),
+    ("sudo X=1 env run_workflow -h", "run_workflow"),
+    ("/talos/.venv/bin/run_workflow -h", "run_workflow"),
+    ("bash -c 'run_workflow -h'", "bash"),
+    ("", ""),
+    ("unterminated 'quote", ""),
+])
+def test_the_command_word_is_the_program_the_evidence_invokes(evidence, word):
+    assert F._command_word(evidence) == word
+
+
+def test_attributed_names_are_the_basenames_and_console_script_names():
+    where = {"executables": ["/HiC-Pro_3.0.0/bin/HiC-Pro", "/opt/x/bin/HiC-Pro_convert"],
+             "console_scripts": ["run_workflow = talos.x:cli @ /v/bin/run_workflow", " = broken"]}
+    assert F._attributed_names(where) == ["HiC-Pro", "HiC-Pro_convert", "run_workflow"]
+    assert F._attributed_names({}) == []
 
 
 def test_an_evidence_that_fails_for_another_reason_is_not_probed(tmp_path, monkeypatch):

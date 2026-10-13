@@ -34,6 +34,9 @@ from agent.skills.outcomes import refused
 from agent.skills.pipeline_state import validation_covers as _validation_covers
 from agent.skills import workspace
 
+#: How long one self-test trial may run before the runner kills it.
+TRIAL_TIMEOUT_S = 600
+
 
 # ---------------------------------------------------------------------------
 # I8 external-source vocabulary — SINGLE-SOURCED.
@@ -313,6 +316,40 @@ def select_pipeline_step(spec: Any, step_number: int) -> Any:
         f"recorded step numbers are {available or '(none)'}")
 
 
+def _scratch_evidence(scratch: Path, max_files: int = 20, tail: int = 400) -> tuple[list[dict], dict[str, str]]:
+    """What a trial wrote into its scratch dir: every file (path, bytes) and the tail of each
+    small text file. The failure record carries it so a cause the template redirected into its
+    own log is read without a second run."""
+    files: list[dict] = []
+    tails: dict[str, str] = {}
+    try:
+        paths = sorted(x for x in scratch.rglob("*") if x.is_file())[:max_files]
+    except OSError:
+        return files, tails
+    for x in paths:
+        try:
+            size = x.stat().st_size
+        except OSError:
+            continue
+        rel = str(x.relative_to(scratch))
+        files.append({"path": rel, "bytes": size})
+        if 0 < size <= 65536 and x.suffix.lower() in (".log", ".txt", ".err", ".out", ".tsv", ""):
+            try:
+                tails[rel] = x.read_text(errors="replace")[-tail:]
+            except OSError:
+                pass
+    return files, tails
+
+
+def _unmounted_paths(command: str, roots: list[str]) -> list[str]:
+    """Absolute paths in a filled command that exist on this host but lie under none of the
+    mounted roots: invisible inside the image, however real they are here."""
+    import os
+    roots = [r.rstrip("/") for r in roots if r]
+    return [tok for tok in dict.fromkeys(_core_data.ABS_PATH_RE.findall(command))
+            if os.path.exists(tok) and not any(tok == r or tok.startswith(r + "/") for r in roots)]
+
+
 def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = None,
                     no_runner_reason: str = "") -> dict:
     """Execute usage.command_template with real test inputs and verify outputs.
@@ -556,7 +593,7 @@ def _run_one_trial(
     for i, raw in enumerate(commands, start=1):
         command = fill_slots(raw, subs)
         ran.append(command)
-        result = env_manager.run_in_env(env_name, command, timeout=600, watch_dir=str(scratch))
+        result = env_manager.run_in_env(env_name, command, timeout=TRIAL_TIMEOUT_S, watch_dir=str(scratch))
         rc = result.get("returncode")
         if rc != 0:
             # Stop at the first failure — a later command must never be allowed to
@@ -571,8 +608,25 @@ def _run_one_trial(
                 "stderr_tail": (result.get("stderr") or "")[-500:],
                 "substitutions": subs, "output_slots": output_slots,
             }
+            stderr = result.get("stderr") or ""
+            if rc == -1 and "killed: timeout" in stderr:
+                failed["killed_on_timeout"] = True
+                failed["reason"] = (f"{step} was killed at the self-test's {TRIAL_TIMEOUT_S} s limit; "
+                                    "it did not finish")
+            # What the trial left behind: a template that redirects a tool's stderr into its
+            # own log leaves the cause there, not in the runner's stderr.
+            failed["scratch_files"], failed["scratch_tails"] = _scratch_evidence(scratch)
+            mounts = getattr(env_manager, "mounts", None)
+            if mounts is not None:                  # image locus: the runner knows what it bound
+                unseen = _unmounted_paths(command, [m[0] for m in mounts] + [str(scratch)])
+                if unseen:
+                    failed["paths_not_in_image"] = unseen
+                    failed["hint"] = ("the image sees only the paths bound through slots and the trial "
+                                      "directory; these paths in the command are not among them: "
+                                      f"{', '.join(unseen[:3])} — write each as a slot, declare it under "
+                                      "inputs[*].name and bind it in the trial's substitutions")
             if re.search(r"is a directory", result.get("stderr") or "", re.I) and output_slots:
-                failed["hint"] = (
+                failed["hint"] = ((failed.get("hint") + " ") if failed.get("hint") else "") + (
                     f"the tool was handed a directory where it wants a file: every output slot "
                     f"({', '.join('{' + s + '}' for s in output_slots)}) is filled with the "
                     f"self-test's scratch directory. Write the file through it — "

@@ -199,11 +199,38 @@ def _image_probe(image: str, platform: str, tool: str) -> dict:
     return {"path": path, "executables": execs, "console_scripts": scripts, "probe_rc": r.get("rc")}
 
 
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*$")
+
+
+def _command_word(evidence: str) -> str:
+    """The program an evidence command invokes: its first word after leading `VAR=value`
+    assignments, `sudo`, `env` and `exec`; empty when the shell shape is not that simple."""
+    try:
+        words = shlex.split(evidence)
+    except ValueError:
+        return ""
+    for w in words:
+        if _ENV_ASSIGN_RE.match(w) or w in ("sudo", "env", "exec"):
+            continue
+        return w.rsplit("/", 1)[-1]
+    return ""
+
+
+def _attributed_names(where: dict) -> list[str]:
+    """The command names the image itself attributes to the tool: the basenames of the
+    executables carrying its name and the console scripts whose entry point mentions it."""
+    names = [str(x).rsplit("/", 1)[-1] for x in (where.get("executables") or [])]
+    for line in where.get("console_scripts") or []:
+        names.append(str(line).split("=", 1)[0].strip())
+    return sorted({n for n in names if n})
+
+
 def _where_summary(tool: str, where: dict) -> str:
     found = (where.get("executables") or []) + (where.get("console_scripts") or [])
     if found:
         return (f"{tool}: no such command on the image's PATH ({where.get('path') or '?'}); "
-                f"the name occurs at: {'; '.join(found[:8])}")
+                f"the name occurs at: {'; '.join(found[:8])} — any of these names is accepted as "
+                f"the tool's own command in the evidence")
     return (f"{tool}: no such command on the image's PATH ({where.get('path') or '?'}), and no "
             f"executable or console script in the image carries the name")
 
@@ -410,6 +437,14 @@ def freeze_from_image(
         if not tname or not ev:
             return refused("freeze_from_image.bad_tool",
                            error=f"each tool needs a name + evidence command (got {t!r})")
+        # A console script named differently from the project (`run_workflow` for talos) is
+        # the tool's own command when the image attributes it to the tool; the shape rule
+        # otherwise refuses an evidence that never says the tool's name. One probe, only
+        # when the evidence invokes a name that is not the tool's.
+        aliases: list[str] = []
+        word = _command_word(ev)
+        if word and tname.lower() not in word.lower():
+            aliases = _attributed_names(_image_probe(image, platform, tname))
         res = _run_in_image(image, platform, ev, timeout=ev_timeout)
         from agent.skills import env_honesty as _eh
         # THE DISCRIMINATING CHECK — only meaningful for evidence that PASSED. A failing
@@ -420,6 +455,7 @@ def freeze_from_image(
         if control == "vacuous":
             vacuous.append(f"{tname}: {ev!r} — {control_note}")
         verifications.append({"label": tname, "tool": tname, "check": ev,
+                              "tool_aliases": aliases,
                               "passed": res["rc"] == 0, "rc": res["rc"],
                               "out": res["out"],
                               # DISCLOSURE (not a gate): how deeply this evidence exercises

@@ -1,17 +1,17 @@
 # H — a name bioconda and PyPI ship under the wrong artifact class: the `apollo` packages
 # are the annotation editor's API client library, not the server the curators log into. The
 # authors publish the server as an image on Docker Hub (gmod/apollo, release tags); the right
-# end is that image frozen, judged by the `frozen` rule: a frozen image in which apollo
-# provably ran at least to its help; the route is not judged. The record names a release (a floating
-# `latest` is not one), adopted by digest, with evidence that at least runs the tool's own
-# help rather than proving a file exists. Trips left to the reader: the client library
+# end is that image frozen, judged by the `frozen` rule: a frozen image in which apollo was
+# provably invoked (its version or help is enough; a file's existence is not); the route is
+# not judged. The record names a release (a floating `latest` is not one), adopted by
+# digest. Trips left to the reader: the client library
 # installed and frozen as "Apollo", an image name guessed rather than read off the repository.
 corpus: B-installs
 name: h_apollo
 tier: C1
 success: frozen
 expect:
-  evidence_depth_min: help
+  evidence_depth_min: version
 prompt: |
   Install Apollo, the genome annotation editor our curators log into to edit gene models,
   and freeze it as a shippable image. Say which image or recipe you froze from, which
