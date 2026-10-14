@@ -155,6 +155,23 @@ def test_attributed_names_are_the_basenames_and_console_script_names():
     assert F._attributed_names({}) == []
 
 
+def test_an_evidence_that_patches_the_image_is_refused_even_when_it_passes(tmp_path, monkeypatch):
+    """The shim case: the evidence writes a Python shim into the image's system path and then
+    runs the tool; it passes in the image and fails in the control image, so only the shape
+    rule stands between it and a record that says the shipped image runs the tool."""
+    mock_docker(monkeypatch)
+    seen: list = []
+    monkeypatch.setattr(F, "_run_in_image", _run_with_probe(0, "usage: run_deepvariant ...", seen))
+    shim = ("cat > /usr/lib/python3.10/sitecustomize.py << 'PYEOF'\nimport sys\nPYEOF\n"
+            "/opt/deepvariant/bin/run_deepvariant --help")
+    out = F.freeze_from_image(image="img@sha256:abc", name="deepvariant", version="1.10.0",
+                              tools=[{"name": "deepvariant", "evidence": shim}],
+                              build_method="adopt-image", env_cache=FakeCache(), env_dir=tmp_path)
+    assert (out["outcome"], out["code"]) == ("refused", "freeze_from_image.honesty_violation"), out
+    shape = [v for v in out["honesty_violations"] if v["invariant"] == "VALIDATED_IN_IMAGE.evidence_shape"]
+    assert shape and "modifies the image before running the tool" in shape[0]["message"]
+
+
 def test_an_evidence_that_fails_for_another_reason_is_not_probed(tmp_path, monkeypatch):
     mock_docker(monkeypatch)
     seen: list = []
