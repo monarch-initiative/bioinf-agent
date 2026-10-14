@@ -283,3 +283,22 @@ def test_paths_inside_the_image_and_slot_paths_are_not_machine_paths():
     assert not any("names a path on this machine" in p for p in PS.usage_block_problems(u))
     assert CD.machine_paths_in(u["command_template"]) == []
     assert CD.ABS_PATH_RE.findall("x {OUTPUT_DIR}/s.bam -o /tmp/a.b -x=/data/idx") == ["/tmp/a.b", "/data/idx"]
+
+
+# ── a how-to that patches the image is not a how-to ────────────────────────────────────
+def test_a_template_that_modifies_the_image_is_refused_at_the_write_with_the_fragment():
+    """The shipped image must run the tool as it is. A template that writes a shim into the
+    image's system path or installs a package before invoking the tool proves the patched
+    container and degrades the tool anywhere else; refused at the write, remedy named."""
+    shim = ("cat > /usr/lib/python3.10/sitecustomize.py << 'PYEOF'\nimport sys\nPYEOF\n"
+            "/opt/deepvariant/bin/run_deepvariant --reads {INPUT_FASTQ} --output_vcf {OUTPUT_DIR}/out.vcf.gz")
+    u = _usage(shim, trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
+    hit = [p for p in PS.usage_block_problems(u) if "modifies the image before running the tool" in p]
+    assert len(hit) == 1, PS.usage_block_problems(u)
+    assert "`> /usr/lib/python3.10/sitecustomize.py`" in hit[0] and "Build the fix into the image" in hit[0]
+    u = _usage("pip install pyarrow && tool {INPUT_FASTQ} -o {OUTPUT_DIR}/x.txt",
+               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
+    assert any("`pip install`" in p for p in PS.usage_block_problems(u))
+    u = _usage("tool {INPUT_FASTQ} > {OUTPUT_DIR}/x.txt 2>&1",
+               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
+    assert not any("modifies the image" in p for p in PS.usage_block_problems(u))
