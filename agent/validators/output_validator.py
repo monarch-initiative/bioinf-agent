@@ -470,8 +470,10 @@ class OutputValidator:
             opener = gzip.open if path.suffix in (".gz", ".bgz") else open
             with opener(path, "rt", errors="replace") as f:
                 for line in f:
-                    s = line.rstrip("\n").rstrip()
-                    if not s or s.startswith(comment):
+                    # Only the line ending comes off: a trailing separator is an empty last
+                    # column, and stripping it would make a valid row look one field short.
+                    s = line.rstrip("\r\n")
+                    if not s.strip() or s.startswith(comment):
                         continue
                     out.append(s)
                     if len(out) >= n:
