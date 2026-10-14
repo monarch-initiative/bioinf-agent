@@ -382,6 +382,28 @@ def is_shallow_evidence(evidence: str, tool: str = "") -> bool:
     return evidence_depth(evidence, tool) in _SHALLOW_DEPTHS
 
 
+#: Writes into the image's own tree, or a package install, inside an evidence command. The
+#: shipped image must run the tool as it is: a patch applied at evidence time proves the patched
+#: container, not the image. A tool's ordinary output under /tmp, /var/tmp, /dev or a relative
+#: path is not a write into the image.
+_SYSTEM_PATH = r"(?:/(?:usr|opt|etc|lib|lib64|bin|sbin|srv|var/lib)/\S*|\S*(?:site|dist)-packages/\S*)"
+_IMAGE_REDIRECT = re.compile(r"(?:^|[^\w>])\d?>>?\s*(" + _SYSTEM_PATH + r")")
+_IMAGE_COPY = re.compile(r"\b(?:tee|cp|mv|install|ln)\b[^;&|\n]*?\s(" + _SYSTEM_PATH + r")(?=\s*(?:$|[;&|)\n]))")
+_PKG_INSTALL = re.compile(r"\b(?:(?:pip3?|pipx|conda|mamba|micromamba|apt(?:-get)?|apk|yum|dnf|npm|cargo|gem|cpanm?)"
+                          r"(?:\s+-{1,2}[\w=.-]+)*\s+install\b|uv\s+(?:pip\s+)?(?:install|sync)\b)")
+
+
+def image_mutation(evidence: str) -> str:
+    """The fragment of an evidence command that writes into the image or installs a package,
+    or '' when it does neither."""
+    ex = evidence or ""
+    for rx in (_IMAGE_REDIRECT, _IMAGE_COPY, _PKG_INSTALL):
+        m = rx.search(ex)
+        if m:
+            return m.group(0).strip()
+    return ""
+
+
 def evidence_shape_violation(evidence: str, tool: str = "",
                              aliases: Iterable[str] = ()) -> Optional[str]:
     """Return a reason string if `evidence` is a cheat shape, else None. Public so
@@ -419,6 +441,13 @@ def evidence_shape_violation(evidence: str, tool: str = "",
     if _RC_LAUNDERED.search(ex):
         return (f"evidence {ev!r} ends by forcing exit 0 — the recorded `passed` would be "
                 f"true whatever the tool did, so the check cannot fail and proves nothing")
+    if what := image_mutation(ex):
+        return (f"evidence {ev!r} modifies the image before running the tool ({what!r}): a patch "
+                f"applied at evidence time proves the patched container, not the image, and the "
+                f"shipped image must run the tool as it is. If the image needs the fix, build it in "
+                f"(build_env_from_authors_recipe with a patch, or a Dockerfile layer) and freeze that; "
+                f"if the tool cannot run on this host as shipped (an x86-only stack under emulation), "
+                f"say so — the proof belongs to the locus that can run it")
     if _PIPED.search(_top_level(ex)) and "pipefail" not in ex:
         # The FOURTH laundering shape, and the one a careful agent reaches for by
         # accident: a shell pipeline exits with its LAST stage's status, so

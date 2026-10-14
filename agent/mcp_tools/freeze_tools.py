@@ -1077,7 +1077,8 @@ def freeze_from_image(
     build_env_from_authors_recipe(patches=…), which records the build and the fix together.
 
     `tools`: [{name, evidence}] — evidence is a command that exercises the tool in-image
-    and exits 0; `evidence_timeout_s` (default 300, at most 1800) is how long it may take,
+    and exits 0, without modifying the image (a write into its system paths or a package
+    install is a patch, not evidence); `evidence_timeout_s` (default 300, at most 1800) is how long it may take,
     for a tool that is slow to start, and is recorded with each verification. Evidence
     that fails because the command is not there comes back with `where`: the image's PATH
     and every executable or console script carrying the tool's name — name that command
