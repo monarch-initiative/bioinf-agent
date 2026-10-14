@@ -91,3 +91,38 @@ def test_honesty_violations_are_summarised_like_violations_at_either_level():
     # the builder's own text still wins over everything nested
     assert broke("x", error="mine", build={"honesty_violations": v})["error"] == "mine"
 
+
+
+PIXI = """Error:   × failed to solve the pypi requirements of environment 'default' for
+  │ platform 'linux-64'
+  ├─▶ failed to resolve pypi dependencies
+  ╰─▶ Because you require setuptools==80.10.2 and setuptools==84.0.0, we can
+      conclude that your requirements are unsatisfiable.
+  help: The following PyPI packages have been pinned by the conda solve, and
+        this version may be causing a conflict:
+        setuptools==84.0.0
+        See https://pixi.sh/latest/concepts/conda_pypi/#pinned-package-
+        conflicts for more information.
+"""
+
+
+def test_a_solvers_cause_wins_over_the_advice_printed_after_it():
+    """The last line of a pixi report is "conflicts for more information."; the cause is the
+    wrapped sentence two entries up, read as one entry."""
+    assert outcomes.last_informative_line(PIXI) == (
+        "Because you require setuptools==80.10.2 and setuptools==84.0.0, we can conclude that "
+        "your requirements are unsatisfiable.")
+    assert outcomes.derive_error({"build": {"stderr": PIXI}}, "freeze.container_build_failed").startswith("Because you require")
+
+
+def test_a_tracebacks_final_line_and_a_shells_not_found_stay_the_cause():
+    tb = "Traceback (most recent call last):\n  File \"x.py\", line 3, in <module>\n    run()\nValueError: bad input\n"
+    assert outcomes.last_informative_line(tb) == "ValueError: bad input"
+    assert outcomes.last_informative_line("bash: line 1: python: command not found\n") == "bash: line 1: python: command not found"
+    assert outcomes.last_informative_line("Collecting packages\nResolvePackageNotFound:\n  - foo=9.9\n") == "ResolvePackageNotFound:"
+
+
+def test_a_tools_err_line_beats_its_sign_off_and_advice_alone_falls_back():
+    assert outcomes.last_informative_line('(ERR): "/x/idx/chr22" does not exist\nExiting now ...\n') == '(ERR): "/x/idx/chr22" does not exist'
+    assert outcomes.last_informative_line("note: nothing to do\nall good here\n") == "all good here"
+    assert outcomes.last_informative_line("") == "" and outcomes.last_informative_line(None) == ""
