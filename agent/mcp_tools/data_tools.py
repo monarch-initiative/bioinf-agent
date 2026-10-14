@@ -83,6 +83,10 @@ def _register_local_reference(*, name: str, local_path: str, version: str, descr
                         "not recorded — pass pipeline_id to anchor it in a draft"))
 
 
+# The archives download_reference_database unpacks when `extract` is set.
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar", ".zip")
+
+
 @mcp.tool()
 def download_reference_database(
     name: str,
@@ -154,10 +158,17 @@ def download_reference_database(
             extract=extract, pipeline_id=pipeline_id)
 
     # A local download lands in the local common-data zone unless the caller says
-    # where — the same place a cluster download lands on its env.
+    # where — the same place a cluster download lands on its env. An archive that is
+    # unpacked is recorded by the directory it unpacks into, named after the archive
+    # without its suffix; the archive itself is downloaded beside that directory.
     if not (local_path or "").strip():
         filename = url.rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0] or name
-        local_path = str(_workspace.common_data_dir() / name / filename)
+        stem = filename
+        for suffix in _ARCHIVE_SUFFIXES:
+            if extract and url.endswith(suffix):
+                stem = filename[: -len(suffix)] or name
+                break
+        local_path = str(_workspace.common_data_dir() / name / stem)
 
     target = Path(local_path)
     target.parent.mkdir(parents=True, exist_ok=True)
