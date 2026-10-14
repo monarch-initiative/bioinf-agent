@@ -482,12 +482,30 @@ class PipelineState:
         A key rule enforced at every call site is a key rule with N chances to
         differ; the store owns it, so passing a bare basename simply files it under
         that basename and a path files it under the path."""
+        return self.add_validations(pipeline_id, step, {path: validation_result})
+
+    def add_validations(
+        self,
+        pipeline_id: str,
+        step: int,
+        results: dict,
+    ) -> bool:
+        """File every output's validation result under the step in ONE write.
+
+        `results` is `{path: validation_result}`, keyed here by `validation_key` like
+        the single form. A step that writes a tree of outputs (a sweep leaving a file
+        per disease) has hundreds or thousands of them, and one draft write per file
+        re-reads and re-dumps the whole draft each time — a cost that grows with every
+        record already filed, so the thousandth write pays for the first nine hundred
+        and ninety-nine. One mutation files them all at the cost of one."""
         def _apply(draft):
             steps = draft.get("pipeline_steps", [])
             if step < 1 or step > len(steps):
                 return False
             s = steps[step - 1]
-            s.setdefault("validation", {})[validation_key(path)] = validation_result
+            bucket = s.setdefault("validation", {})
+            for path, result in results.items():
+                bucket[validation_key(path)] = result
             return True
         ok, hit = self._mutate(pipeline_id, _apply, default=False)
         return bool(ok and hit)

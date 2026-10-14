@@ -745,6 +745,7 @@ def run_step_on_cluster(
     validations: dict = {}
     output_types_used: set = set()
     if rc == 0 and step_index is not None:
+        by_path: dict = {}
         for path in downloaded:
             basename = Path(path).name
             ext = "".join(Path(path).suffixes).lower()
@@ -760,7 +761,9 @@ def run_step_on_cluster(
             # keyed by resolved PATH (see pipeline_state.validation_key) — a per-sample
             # cluster fan-out is precisely where two outputs share a basename.
             validations[_validation_key(path)] = v
-            _pipeline_state.add_validation(pipeline_id, step_index, path, v)
+            by_path[path] = v
+        # one draft write for every output, not one per file (a tree of outputs is thousands)
+        _pipeline_state.add_validations(pipeline_id, step_index, by_path)
     # Same disclosure as run_pipeline_step's: a key that bound to nothing is a
     # typo, a wrong extension, or a file the job never produced — and silently
     # dropping the caller's stated intent is how a wrong fallback takes over

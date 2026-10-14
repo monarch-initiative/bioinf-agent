@@ -95,3 +95,23 @@ def test_no_project_root_preserves_legacy_behavior(tmp_path):
 
     detected = EnvManager._diff_snapshot(before, watch_dir)   # no project_root
     assert any(Path(p).name == "anything.txt" for p in detected)
+
+
+@pytest.mark.integration
+def test_os_metadata_files_are_never_step_outputs(tmp_path):
+    """A file browser open on the watched directory writes `.DS_Store` (and AppleDouble
+    `._<name>` files on some volumes) while the step runs. Those are never the tool's
+    output: the diff drops them and keeps what the step wrote."""
+    from agent.skills.env_manager import is_os_metadata
+    watch_dir = tmp_path / "run"
+    (watch_dir / "results").mkdir(parents=True)
+    before = EnvManager._snapshot(watch_dir)
+    (watch_dir / "results" / "table.tsv").write_text("a\tb\n1\t2\n")
+    (watch_dir / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    (watch_dir / "results" / ".DS_Store").write_bytes(b"\x00\x00\x00\x01Bud1")
+    (watch_dir / "results" / "._table.tsv").write_bytes(b"\x00\x05\x16\x07")
+    time.sleep(0.01)
+
+    detected = sorted(Path(p).name for p in EnvManager._diff_snapshot(before, watch_dir, tmp_path))
+    assert detected == ["table.tsv"], detected
+    assert is_os_metadata(".DS_Store") and is_os_metadata("._x.bam") and not is_os_metadata("x.DS_Store.tsv")

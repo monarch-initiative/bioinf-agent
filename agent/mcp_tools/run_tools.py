@@ -19,6 +19,7 @@ from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
 from agent.models.core_data import PipelineStep, default_step_tool
 from agent.skills.pipeline_state import validation_key as _validation_key
+from agent.skills.env_manager import is_os_metadata
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke, last_informative_line
 
@@ -170,6 +171,7 @@ def run_pipeline_step(
     output_types_used: set[str] = set()
     validations: dict = {}
     if result.get("returncode") == 0 and idx is not None:
+        by_path: dict = {}
         for path in result.get("detected_outputs", []):
             basename = Path(path).name
             ext = "".join(Path(path).suffixes).lower()
@@ -199,7 +201,9 @@ def run_pipeline_step(
             # share a name, and the collision destroyed the earlier record (see
             # pipeline_state.validation_key).
             validations[_validation_key(path)] = v
-            _ms._pipeline_state.add_validation(pipeline_id, idx, path, v)
+            by_path[path] = v
+        # one draft write for every output, not one per file (a tree of outputs is thousands)
+        _ms._pipeline_state.add_validations(pipeline_id, idx, by_path)
 
     unmatched = sorted(set(output_types) - output_types_used)
     out = {
@@ -391,11 +395,17 @@ def run_step_in_container(
                 "data_dir as its path there. Note: Layer-1 freeze() validation runs natively on "
                 "a remote amd64 host with no change.")
     # An adopted biocontainer is referenced by digest — pull it local so it can run.
-    if _ms._docker._run(["docker", "image", "inspect", image])["returncode"] != 0:
+    inspect = _ms._docker._run(["docker", "image", "inspect", image])
+    if inspect["returncode"] != 0:
         pull = _ms._docker._run(["docker", "pull", "--platform", platform, image], timeout=900)
         if pull["returncode"] != 0:
+            # The inspect's own answer rides along: a local tag that cannot be pulled was
+            # only sent to the registry because the inspect said it was absent, and why it
+            # said so is the cause.
             return broke("run_container.image_pull_failed",
-                         error=f"could not pull image {image}: {(pull['stderr'] or '')[-300:]}")
+                         error=f"could not pull image {image}: {(pull['stderr'] or '')[-300:]}",
+                         inspect_returncode=inspect["returncode"],
+                         inspect_stderr=(inspect.get("stderr") or "")[-300:])
 
     ddir = (Path(data_dir) if data_dir else _workspace.resources_root()).resolve()
     mounts = [(str(ddir), str(ddir))]   # same-path mount → host abs paths work verbatim
@@ -424,7 +434,7 @@ def run_step_in_container(
     def _snap() -> dict:
         snap = {}
         for p in wdir.rglob("*"):
-            if p.is_file():
+            if p.is_file() and not is_os_metadata(p.name):
                 try:
                     stt = p.stat()
                     snap[str(p)] = (stt.st_mtime_ns, stt.st_size)
@@ -480,6 +490,7 @@ def run_step_in_container(
 
     validations: dict = {}
     if res.get("returncode") == 0 and idx is not None:
+        by_path: dict = {}
         for path in detected:
             basename = Path(path).name
             ext = "".join(Path(path).suffixes).lower()
@@ -487,7 +498,9 @@ def run_step_in_container(
                      or output_types.get(ext.lstrip(".")) or _infer_validator_type(basename))
             v = _ms._validator.validate(path, etype)
             validations[_validation_key(path)] = v
-            _ms._pipeline_state.add_validation(pipeline_id, idx, path, v)
+            by_path[path] = v
+        # one draft write for every output, not one per file (a tree of outputs is thousands)
+        _ms._pipeline_state.add_validations(pipeline_id, idx, by_path)
 
     # The verdict is whether the COMMAND ran and exited 0 — not whether its outputs
     # passed validation, which is reported separately in `validations` and gated at
