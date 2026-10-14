@@ -77,3 +77,20 @@ def test_reference_database_download_states_that_it_started(monkeypatch, tmp_pat
         name="gtf", url="https://example.org/a.gtf.gz", local_path=str(tmp_path / "a.gtf.gz"))
     assert (r["outcome"], r["code"]) == ("proven", "data.refdb_download_started")
     assert r["job_id"] == started["job_id"] and started["tool"] == "download_reference_database"
+
+
+def test_reference_database_download_treats_an_http_error_as_a_failed_download(monkeypatch, tmp_path):
+    """A 404 page saved under the archive's name is not a reference database: the download
+    must stop at curl with its own error, so nothing hashes, unpacks or resumes onto the stub."""
+    started = {}
+    def start(cmd, job_id="", tool=""):
+        started.update(cmd=cmd, job_id=job_id, tool=tool)
+        return {"job_id": job_id, "status_path": "s", "log_path": "l"}
+    monkeypatch.setattr(ms._job_manager, "start", start)
+    for url in ("https://example.org/2512_hg38.zip", "https://example.org/cache.tar.gz",
+                "https://example.org/bundle.tar", "https://example.org/a.gtf.gz"):
+        data_tools.download_reference_database(
+            name="db", url=url, local_path=str(tmp_path / "db"), extract=True)
+        curl = started["cmd"].split("&&")[0]
+        assert "--fail" in curl, curl
+        assert "-C -" in curl, "resume stays: a complete file answers 416, which --fail lets through"
