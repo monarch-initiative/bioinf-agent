@@ -73,14 +73,56 @@ _WRAPPER_LINE_RE = re.compile(
     r"^(ERROR conda\.cli\.main_run:execute|\(?See above for error|Traceback \(most recent call last\))")
 
 
+#: A line that names a cause, as the tools this project drives write them: a solver's
+#: "unsatisfiable", a shell's "command not found", a Python "Error:", a runner's "killed".
+_CAUSE_RE = re.compile(r"(?i)(?:\b(?:err|error|errors|failed|fatal|unsatisfiable|conflicts?|conflicting|cannot|"
+                       r"can't|could not|couldn't|not ?found|no such file|does not exist|traceback|exception|"
+                       r"denied|killed|timed? ?out|unresolvable|missing|invalid|refused)\b|notfound)")
+#: Advice that follows a cause and must not be mistaken for it.
+_ADVISORY_RE = re.compile(r"(?i)^(?:help|hint|note|warning|info|see)\b|^for more information\b|https?://")
+#: A node of a tree-shaped report (pixi, uv, cargo): `├─▶`, `╰─▶`, `└─`, and the `×` bullet.
+_TREE_NODE_RE = re.compile(r"^[│|]?\s*(?:[├╰└]─*▶?|×)\s*")
+_ENTRY_KEYWORD_RE = re.compile(r"(?i)^(?:error|errors|warning|help|hint|note|fatal|traceback|caused by)\b")
+
+
+def _entries(text: str) -> list[str]:
+    """A stream as the entries a reader sees: an indented line continues the tree node or
+    keyword line above it (a solver wraps its sentences), a node or keyword line starts a
+    new entry, and everything else stands alone (a traceback's frames stay separate)."""
+    out: list[str] = []
+    node: list[bool] = []
+    for raw in text.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        is_node = bool(_TREE_NODE_RE.match(s)) or bool(_ENTRY_KEYWORD_RE.match(s))
+        if out and node[-1] and raw[:1].isspace() and not is_node:
+            out[-1] = out[-1] + " " + s.lstrip("│| ").strip()
+        else:
+            out.append(s)
+            node.append(is_node)
+    return out
+
+
+def _clean_entry(entry: str) -> str:
+    return _TREE_NODE_RE.sub("", entry).strip()
+
+
 def last_informative_line(text: object, limit: int = ERROR_LINE_LIMIT) -> str:
     """The last line of a stream that names a cause.
 
-    Skips lines without letters (a stray `]` or `}`), and the wrapper lines a runner
-    prints after the real error. Falls back to the last non-empty line when nothing
-    better exists, and to "" for an empty stream."""
+    Reads the stream as entries (a wrapped solver sentence is one entry) and returns the
+    last one that names a cause — "unsatisfiable", "command not found", an `Error:` — never
+    the advice printed after it ("see ... for more information"). With no cause named, the
+    last line with letters that is not a runner's wrapper line; the last non-empty line when
+    nothing better exists; "" for an empty stream."""
     if not isinstance(text, str):
         return ""
+    entries = _entries(text)
+    causes = [e for e in entries
+              if _CAUSE_RE.search(e) and not _ADVISORY_RE.match(_clean_entry(e)) and not _WRAPPER_LINE_RE.match(e)]
+    if causes:
+        return _clean_entry(causes[-1])[:limit]
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     for ln in reversed(lines):
         if not re.search(r"[A-Za-z]", ln) or _WRAPPER_LINE_RE.match(ln):
