@@ -274,7 +274,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
                 inputs.append(pr.StageInput(name=f"artifact_{p:02d}.bam", origin="stage", from_stage=S[p],
                                             artifact=f"artifact_{p:02d}.bam"))
         consumers = [S[j] for j, ps in preds.items() if i in ps and j < n_stages]
-        outputs = [pr.StageOutput(artifact=f"artifact_{i:02d}.bam", observed=None, consumed_by=consumers,
+        outputs = [pr.StageOutput(artifact=f"artifact_{i:02d}.bam", observed=None, directory=False, consumed_by=consumers,
                                   declared_pattern="*.bam" if i % 3 == 0 else None)]
         for p in uses:
             params[p].used_by.append(name)

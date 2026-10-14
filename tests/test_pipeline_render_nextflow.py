@@ -990,6 +990,17 @@ class TestRefusals:
             render_nextflow(rec)
         assert "record.name" in str(e.value)
 
+    @pytest.mark.parametrize("slot", ["PACKAGE", "IN", "META", "TASK"])
+    def test_a_placeholder_named_like_a_groovy_keyword_or_a_process_variable_is_refused(self, slot):
+        """`path package` does not compile, and an input named `meta` or `task` would shadow
+        the names every rendered process binds: the render refuses and names the rename."""
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(), name="rnaseq_counts")
+        rec.param("GTF").name = slot
+        with pytest.raises(ValueError) as e:
+            render_nextflow(rec)
+        assert repr(slot.lower()) in str(e.value) and "keyword" in str(e.value)
+        assert "rename the placeholder" in str(e.value)
+
     def test_an_env_module_name_with_shell_metacharacters_is_refused(self):
         env = {**ENV, "apptainer_module": "apptainer/1.5.0; rm -rf /"}
         with pytest.raises(ValueError) as e:
@@ -1143,3 +1154,32 @@ class TestRealNextflow:
         run = _nextflow(d, "run", "main.nf", "-profile", "slurm", "-params-file", "params.yaml", "-preview")
         assert run.returncode != 0, run.stdout + run.stderr
         assert "process.container is empty" in run.stdout + run.stderr
+
+
+class TestDirectoryArtifacts:
+    """A tree-writing tool renders with directory artifacts: `path('<dir>')` in and out,
+    a copy staged where a stage rewrites a directory, and the bare slot bound to `.`."""
+
+    @staticmethod
+    def _main():
+        from pipeline_fixtures import sealed_tree_spec
+        rec = pr.derive_pipeline_record(sealed_tree_spec(), name="phenologs")
+        return render_nextflow(rec)["main.nf"]
+
+    def test_directories_are_staged_and_emitted_like_any_artifact(self):
+        main = self._main()
+        trials = _process_block(main, "TRIALS")
+        assert "tuple val(meta), path('species_data')" in trials
+        assert "tuple val(meta), path('random_trials'), emit: random_trials" in trials
+        assert "trials -p . -n ${params.n_trials}" in trials
+        assert "every artifact an earlier stage wrote is staged into its work dir" in main   # the stage comment
+
+    def test_the_rewriting_stage_copies_in_and_the_next_stage_takes_its_version(self):
+        main = self._main()
+        fdr = _process_block(main, "FDR")
+        assert "stageInMode 'copy'" in fdr
+        assert "path('phenologs_results')" in fdr
+        assert "tuple val(meta), path('phenologs_results'), emit: phenologs_results" in fdr
+        wf = _workflow_block(main)
+        assert "FDR(LN.out.species_data.join(TRIALS.out.random_trials).join(PHENOLOGS.out.phenologs_results))" in wf
+        assert "REPORT(LN.out.species_data.join(TRIALS.out.random_trials).join(FDR.out.phenologs_results))" in wf

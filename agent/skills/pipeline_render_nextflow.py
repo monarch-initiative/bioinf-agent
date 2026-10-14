@@ -87,6 +87,20 @@ from agent.skills.workflow_render import (_GPU_PLACEMENT_HEADER_NOTE, _MEM_RE, _
 
 #: A Groovy identifier — a process name, a params key, an emit name, a staged-input name.
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: Names that match _IDENT_RE and still cannot be a staged-input or params name: Groovy's
+#: keywords (`path package` does not compile), and the names every rendered process already
+#: binds or reads (`meta`, `task`, `params`, `workflow`, `nextflow`), which an input of the
+#: same name would shadow.
+_RESERVED = frozenset({
+    "abstract", "as", "assert", "boolean", "break", "byte", "case", "catch", "char", "class",
+    "const", "continue", "def", "default", "do", "double", "else", "enum", "extends", "false",
+    "final", "finally", "float", "for", "goto", "if", "implements", "import", "in",
+    "instanceof", "int", "interface", "long", "native", "new", "null", "package", "permits",
+    "private", "protected", "public", "record", "return", "sealed", "short", "static",
+    "strictfp", "super", "switch", "synchronized", "this", "threadsafe", "throw", "throws",
+    "trait", "transient", "true", "try", "var", "void", "volatile", "while", "yield",
+    "meta", "task", "params", "workflow", "nextflow",
+})
 #: An artifact as the record names it: a bare filename, a glob, or a templated name.
 _ARTIFACT_RE = re.compile(r"^[A-Za-z0-9_.\-*?{}]+$")
 #: A script's file name under bin/: a bare filename, nothing a shell or a path would read.
@@ -196,6 +210,9 @@ def _check_identifier(label: str, value: str, remedy: str) -> None:
     if not isinstance(value, str) or not _IDENT_RE.match(value):
         raise ValueError(f"{label} {value!r} is not a Groovy identifier (letters, digits, "
                          f"`_`, not starting with a digit); {remedy}")
+    if value in _RESERVED:
+        raise ValueError(f"{label} {value!r} is a Groovy keyword or a name every rendered process "
+                         f"already uses, so main.nf would not compile or would shadow it; {remedy}")
 
 
 def _check_artifact(stage: PipelineStage, artifact: str, known: set[str]) -> None:
@@ -559,8 +576,8 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     if measured:
         head.append(f"// {measured}")
     if stage.consumes_workdir:
-        head.append("// This stage names the output directory bare (`.` below); only the "
-                    "artifacts declared as its inputs are staged into its work dir.")
+        head.append("// This stage names the output directory bare (`.` below): every artifact an "
+                    "earlier stage wrote is staged into its work dir, as the sealed run had them.")
 
     body: list[str] = []
     # Closures, not strings: a directive that names a task input must be evaluated
