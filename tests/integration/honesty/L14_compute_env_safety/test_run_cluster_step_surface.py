@@ -156,6 +156,9 @@ class _FakePipelineState:
         return len(self.steps) - 1
     def add_validation(self, pipeline_id, idx, basename, v):
         self.validations.append((pipeline_id, idx, basename, v))
+    def add_validations(self, pipeline_id, idx, by_path):
+        for path, v in by_path.items():
+            self.add_validation(pipeline_id, idx, path, v)
 
 
 class _FakeValidator:
