@@ -17,7 +17,7 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
-from agent.models.core_data import PipelineStep, default_step_tool
+from agent.models.core_data import PipelineStep, default_step_tool, frozen_image_ref
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.skills.env_manager import is_os_metadata
 from agent.skills.backgroundable import backgroundable
@@ -394,16 +394,30 @@ def run_step_in_container(
                 "daemon for Layer-2 data steps, or stage the data on the remote host and pass "
                 "data_dir as its path there. Note: Layer-1 freeze() validation runs natively on "
                 "a remote amd64 host with no change.")
-    # An adopted biocontainer is referenced by digest — pull it local so it can run.
-    inspect = _ms._docker._run(["docker", "image", "inspect", image])
+    # The image runs by the handle its record pins (core_data.frozen_image_ref), never by
+    # a tag. Absent here, it is pulled by a pinned registry ref when the record has one;
+    # an image with only its local id comes back from its saved archive, or a new freeze.
+    ref = frozen_image_ref(image, rec.get("image_digest") or "")
+    inspect = _ms._docker._run(["docker", "image", "inspect", ref])
+    if inspect["returncode"] != 0 and "@sha256:" not in ref:
+        if not rec.get("image_by_digest"):
+            from agent.skills.freeze import tarball_path
+            tarball = tarball_path(rec)
+            return broke("run_container.image_missing",
+                         error=f"the frozen image {image} ({ref}) is not in the local Docker daemon",
+                         remedy=(f"docker load -i {tarball} (the image as it was frozen)"
+                                 if tarball and Path(tarball).is_file() else
+                                 "freeze the env again: nothing here or in a registry holds this image"),
+                         inspect_stderr=(inspect.get("stderr") or "")[-300:])
+        ref = rec["image_by_digest"]
     if inspect["returncode"] != 0:
-        pull = _ms._docker._run(["docker", "pull", "--platform", platform, image], timeout=900)
+        pull = _ms._docker._run(["docker", "pull", "--platform", platform, ref], timeout=900)
         if pull["returncode"] != 0:
             # The inspect's own answer rides along: a local tag that cannot be pulled was
             # only sent to the registry because the inspect said it was absent, and why it
             # said so is the cause.
             return broke("run_container.image_pull_failed",
-                         error=f"could not pull image {image}: {(pull['stderr'] or '')[-300:]}",
+                         error=f"could not pull image {ref}: {(pull['stderr'] or '')[-300:]}",
                          inspect_returncode=inspect["returncode"],
                          inspect_stderr=(inspect.get("stderr") or "")[-300:])
 
@@ -444,15 +458,14 @@ def run_step_in_container(
 
     # OBSERVE THE DIGEST OF WHAT IS ABOUT TO RUN — do not echo the one we were handed.
     # `seal_workflow` earns `validated_in_shipped_image` by matching each step's digest
-    # against the frozen env's; a step that copies the EnvCache's NOMINAL digest makes
-    # that check compare a value with itself, unable to catch a rebuilt or retagged tag.
-    # `docker image inspect` on the ref we are about to run is an independent observation
-    # of the daemon. If the inspect fails we keep NO digest rather than falling back to
-    # the nominal one — a fallback would restore exactly that tautology.
-    observed_digest = _ms._docker.image_digest(image)
+    # against the frozen env's. `docker image inspect` on the ref about to run is the
+    # daemon's own answer; for a ref that IS a digest it can only name that content,
+    # which is the point of running by one. If the inspect fails we keep NO digest
+    # rather than falling back to the nominal one, which would compare it with itself.
+    observed_digest = _ms._docker.image_digest(ref)
     nominal_digest = rec.get("image_digest") or ""
     before = _snap()
-    res = _ms._docker.run_in_container(image, command, mounts=mounts, workdir=str(wdir),
+    res = _ms._docker.run_in_container(ref, command, mounts=mounts, workdir=str(wdir),
                                        platform=platform, timeout=timeout_seconds)
     # I7 numbers measured under emulation are emulator artefacts, not real — stamp
     # whether they're authoritative (native locus) so the spec/guide never presents

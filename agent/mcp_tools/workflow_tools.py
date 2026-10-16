@@ -26,7 +26,8 @@ from typing import Any, Optional
 from agent import mcp_server as _ms
 from agent.models.core_data import (executed_commands as _executed_commands, key_packages as _key_packages,
                                     validated_in_shipped_image as _validated_in_shipped_image,
-                                    is_script_path as _is_script_path)
+                                    is_script_path as _is_script_path,
+                                    frozen_image_ref as _frozen_image_ref)
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import broke, degraded, proven, refused  # terminal outcome tags
@@ -218,19 +219,11 @@ def _image_usage_runner(fr: dict, draft: dict):
     mounts = _local_trial_mounts(draft)
     if mounts is None:
         return None                        # cluster-locus / missing input → not_attempted
+    image = _frozen_image_ref(image, (fr.get("image_digest") or "").strip())
     try:
         resolved = _ms._docker.image_digest(image)
     except Exception:
         resolved = None
-    if not resolved:
-        # A tag can rot while the pinned bytes remain; the digest is the same identity.
-        digest = (fr.get("image_digest") or "").strip()
-        if digest and digest != image:
-            try:
-                if _ms._docker.image_digest(digest):
-                    image, resolved = digest, digest
-            except Exception:
-                pass
     if not resolved:
         return None                        # not resolvable locally (adopted, or no daemon)
     return _ImageUsageRunner(image, _ms.docker_platform(fr.get("platform", "")), mounts)

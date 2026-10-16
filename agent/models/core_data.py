@@ -1272,6 +1272,13 @@ def is_script_path(path: object) -> bool:
     return isinstance(path, str) and path.lower().endswith(SCRIPT_SUFFIXES)
 
 
+def frozen_image_ref(image: str, image_digest: str) -> str:
+    """The handle a frozen image is run, inspected and saved by: a ref already pinned by
+    digest (`repo@sha256:…`) as it is; otherwise the image id the record pins, which no
+    later `docker tag`, rebuild or cleanup of a tag can move, as a tag can."""
+    return image if "@sha256:" in (image or "") else (image_digest or image)
+
+
 def staged_sif_steps(spec: Any) -> list:
     """THE one reading of "is this workflow's container already delivered to the
     cluster": every pipeline_step that records a cluster-staged .sif fingerprint.

@@ -74,7 +74,7 @@ from typing import Any, Mapping, Optional
 
 import yaml
 
-from agent.models.core_data import SLOT_RE
+from agent.models.core_data import SLOT_RE, frozen_image_ref
 from agent.skills import compute_access
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, MANAGER_JOB_REQUEST,
                                           NEXTFLOW_QUEUE_SIZE, NEXTFLOW_SUBMIT_RATE, SCRIPT_DIR, PipelineParam,
@@ -770,10 +770,7 @@ def _local_image(im: dict) -> str:
     by digest (`repo@sha256:…`) is used as it is; otherwise the image id the seal
     recorded, which docker runs directly and which no later `docker tag`, rebuild or
     cleanup of a `:latest` tag can move. The tag stays in the comment, for the reader."""
-    ref = im.get("ref") or ""
-    if "@sha256:" in ref:
-        return ref
-    return im.get("digest") or ref
+    return frozen_image_ref(im.get("ref") or "", im.get("digest") or "")
 
 
 def _render_config(record: PipelineRecord, ctx: _Context) -> str:

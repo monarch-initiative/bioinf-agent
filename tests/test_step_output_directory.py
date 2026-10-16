@@ -121,13 +121,14 @@ def container(monkeypatch):
     seen: dict = {}
 
     def _fake_run(image, command, mounts=None, workdir=None, platform=None, timeout=None, **kw):
-        seen.update(mounts=list(mounts or []), workdir=workdir)
+        seen.update(mounts=list(mounts or []), workdir=workdir, image=image)
         return {"returncode": 0, "stdout": "", "stderr": "",
                 "resource_usage": {"wall_seconds": 0.01, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0}}
     monkeypatch.setattr(m._docker, "run_in_container", _fake_run)
 
     def _run(**kw):
         return R.run_step_in_container(pipeline_id=pid, freeze_request_key="k", command="tool", **kw), seen
+    _run.rec = rec
     return _run
 
 
@@ -150,3 +151,69 @@ def test_run_step_in_container_runs_in_a_named_watch_dir(container, tmp_path):
     resp, seen = container(data_dir=str(data), watch_dir=str(out))
     assert seen["workdir"] == str(out.resolve()) and out.is_dir(), "created, and the cwd"
     assert resp["watch_dir"] == str(out.resolve()) and resp["watch_dir_created"] == str(out.resolve())
+
+
+def test_the_frozen_image_runs_by_the_digest_its_record_pins(container, tmp_path, monkeypatch):
+    """A tag is a name: it can move, and the daemon has failed to resolve a short one for
+    an image it held. The step runs the content the record pins."""
+    resp, seen = container(data_dir=str(tmp_path))
+    assert seen["image"] == container.rec["image_digest"] and resp.get("success"), resp
+
+
+def test_an_image_built_here_that_is_gone_is_named_and_never_pulled(container, tmp_path, monkeypatch):
+    calls = []
+
+    def daemon(argv, **kw):
+        calls.append(argv)
+        return {"returncode": 1, "stdout": "", "stderr": "Error: No such image"}
+    monkeypatch.setattr(m._docker, "_run", daemon)
+    resp, _ = container(data_dir=str(tmp_path))
+    assert (resp["outcome"], resp["code"]) == ("broke", "run_container.image_missing"), resp
+    assert "img:1" in resp["error"] and "freeze" in resp["remedy"]
+    assert all(argv[:2] != ["docker", "pull"] for argv in calls), "an image built here has no registry"
+
+
+def test_an_adopted_image_is_pulled_by_its_pinned_ref(container, tmp_path, monkeypatch):
+    pinned = "quay.io/biocontainers/samtools@sha256:" + "b" * 64
+    container.rec["image"] = pinned
+    calls = []
+
+    def daemon(argv, **kw):
+        calls.append(argv)
+        return {"returncode": 1 if argv[:3] == ["docker", "image", "inspect"] else 0, "stdout": "", "stderr": ""}
+    monkeypatch.setattr(m._docker, "_run", daemon)
+    resp, seen = container(data_dir=str(tmp_path))
+    assert ["docker", "pull", "--platform", "linux/amd64", pinned] in calls
+    assert seen["image"] == pinned
+
+
+def test_one_rule_names_the_frozen_image_everywhere_it_runs():
+    from agent.models.core_data import frozen_image_ref
+    assert frozen_image_ref("q.io/x@sha256:" + "b" * 64, "sha256:" + "c" * 64) == "q.io/x@sha256:" + "b" * 64
+    assert frozen_image_ref("x:latest", "sha256:" + "c" * 64) == "sha256:" + "c" * 64
+
+
+def test_a_pruned_registry_image_is_pulled_by_its_pinned_ref(container, tmp_path, monkeypatch):
+    pinned = "ghcr.io/lab/tool@sha256:" + "d" * 64
+    container.rec["image"] = "ghcr.io/lab/tool:1.2"
+    container.rec["image_by_digest"] = pinned
+    calls = []
+
+    def daemon(argv, **kw):
+        calls.append(argv)
+        return {"returncode": 1 if argv[:3] == ["docker", "image", "inspect"] else 0, "stdout": "", "stderr": ""}
+    monkeypatch.setattr(m._docker, "_run", daemon)
+    resp, seen = container(data_dir=str(tmp_path))
+    assert ["docker", "pull", "--platform", "linux/amd64", pinned] in calls and seen["image"] == pinned
+
+
+def test_a_missing_image_with_its_saved_archive_says_load_it_not_refreeze_it(container, tmp_path, monkeypatch):
+    """A new freeze makes a new digest and orphans every workflow sealed on this one;
+    the archive saved at freeze brings back the very image."""
+    from agent.skills import freeze
+    archive = tmp_path / "tool.tar"
+    archive.write_bytes(b"x")
+    monkeypatch.setattr(freeze, "tarball_path", lambda rec: str(archive))
+    monkeypatch.setattr(m._docker, "_run", lambda argv, **kw: {"returncode": 1, "stdout": "", "stderr": "No such image"})
+    resp, _ = container(data_dir=str(tmp_path))
+    assert resp["code"] == "run_container.image_missing" and resp["remedy"].startswith(f"docker load -i {archive}")

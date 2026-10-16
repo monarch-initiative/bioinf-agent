@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access, transfer
-from agent.models.core_data import record_is_gated as _record_is_gated
+from agent.models.core_data import frozen_image_ref, record_is_gated as _record_is_gated
 from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
@@ -137,7 +137,8 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
     elif tarball and Path(tarball).exists():
         pass                                             # freeze docker-save archive
     elif record.get("image"):
-        image_tag = record.get("image")                 # locally-built image tag
+        # the locally built image, by the handle its record pins: a tag may have moved
+        image_tag = frozen_image_ref(record["image"], record.get("image_digest") or "")
 
     if not (tarball and Path(str(tarball)).exists()) and not image_tag:
         return refused("stage.no_local_source",
