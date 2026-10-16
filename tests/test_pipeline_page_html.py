@@ -250,7 +250,7 @@ def _key_sheet(*samples: str) -> pr.Samplesheet:
         columns=[pr.SamplesheetColumn(name="sample", placeholder="SAMPLE", value_kind="value", format=None,
                                       description="the row key: it tags every task and names results/<sample>/",
                                       read_by=[])],
-        rows=[{"sample": s} for s in samples])
+        rows=[{"sample": s} for s in samples], rows_from="proven")
 
 
 def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
@@ -1177,6 +1177,22 @@ class _Balance(HTMLParser):
 _RECORDS = {"three_rows": _record, "one_row": _one_row, "wide": _wide_record, "cluster": _cluster,
             "two_images": _two_images, "local": _local, "local_no_nextflow": _local_no_nextflow,
             "cohort": _cohort, "threads": _threads}
+
+
+class TestRowsSayWhereTheyCameFrom:
+    def test_rows_the_self_test_ran_read_as_the_sealed_runs_own(self):
+        rec = _record()
+        assert rec.samplesheet.rows_from == "proven"
+        assert "not self-tested" not in _page(rec)
+
+    def test_rows_a_multi_image_how_to_only_declared_say_so(self):
+        """A how-to that spans two images cannot be self-tested (the self-test runs in
+        one), so its rows are what it was declared with. The render goes ahead, as it
+        must for a multi-env chain, and the page says which kind of rows these are."""
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(proven=False), name="rnaseq_counts",
+                                        spec_path=SPEC_PATH)
+        assert rec.samplesheet.rows_from == "declared"
+        assert "The how-to was not self-tested on them" in _page(rec)
 
 
 class TestPageShape:

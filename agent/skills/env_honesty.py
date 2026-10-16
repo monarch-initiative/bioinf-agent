@@ -1311,7 +1311,8 @@ def evaluate_build(result: dict) -> BuildContract:
     else:
         built_seen += 1
     coverage.append(ClauseCoverage("BUILT", ("BUILT",), CHECKED, built_seen,
-                                   f"{built_seen}/2 shipped-artifact handle(s) (image, image_digest) resolve"))
+                                   f"{built_seen}/2 shipped-artifact handle(s) (image, image_digest) "
+                                   f"recorded, as the daemon reported them at freeze"))
 
     # -- BUILT.platform ---------------------------------------------------
     # Does the artifact actually HAVE the architecture the record says it shipped?

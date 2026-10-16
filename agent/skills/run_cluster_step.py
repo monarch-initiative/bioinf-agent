@@ -273,6 +273,16 @@ def run_step_on_cluster(
         return refused("run_cluster.invalid_inputs",
             error=f"relative input path(s) {_rel[:5]} — recorded steps require "
                   f"absolute paths (they must reproduce from any CWD)")
+    # A file already where an output will be downloaded is an earlier attempt's;
+    # recording it as this job's output would validate bytes this job never made.
+    _dl = absolutize_download_dir(download_local_dir)
+    _stale = [str(_dl / fn) for fn in (outputs or {}).values() if (_dl / fn).exists()]
+    if _stale:
+        return refused("run_cluster.download_dir_not_fresh",
+            error=f"download_local_dir already holds {_stale[:3]}; this job's outputs "
+                  f"must land where nothing is yet",
+            remedy="pass a download_local_dir that holds none of the outputs, e.g. one "
+                   "named after this workflow_name")
 
     # Late-bind the singletons (preserves [[feedback-mcp-tools-conventions]]
     # monkeypatchability — tests inject overrides via the _* kwargs).
@@ -618,14 +628,9 @@ def run_step_on_cluster(
             local_path=local,
             access_path=access_path)
         if "error" in dl:
-            # Tolerate the local-already-exists case as a re-download skip;
-            # caller may have downloaded outputs in a prior partial run.
-            if "already exists" in (dl.get("error") or ""):
-                downloaded.append(local)
-            else:
-                download_errors.append({
-                    "placeholder": placeholder, "filename": filename,
-                    "error": dl["error"]})
+            download_errors.append({
+                "placeholder": placeholder, "filename": filename,
+                "local_path": local, "error": dl["error"]})
         else:
             downloaded.append(local)
 
@@ -664,12 +669,10 @@ def run_step_on_cluster(
         # input traces to nothing, and the honest options are to fake a lineage
         # or to give up on sealing. Recording the truth is neither.
         #
-        # Declared from `outputs`, which is what the job was TOLD to write and
-        # what the download loop just read back — not a guess about the remote
-        # filesystem. Empty when the step declared no outputs, so a step that
-        # produced nothing gains no phantom provenance.
-        "remote_outputs":         [f"{workflow_dir}/{fn}"
-                                   for fn in outputs.values()] or None,
+        # Only the outputs the download loop read back: a declared output that
+        # never arrived is not known to exist at the locus.
+        "remote_outputs":         [f"{workflow_dir}/{fn}" for fn in outputs.values()
+                                   if str(download_dir / fn) in downloaded] or None,
         "validation_locus":       "cluster",
         "cluster_job_id":         job_id,
         "cluster_workflow_dir":   workflow_dir,
@@ -753,6 +756,15 @@ def run_step_on_cluster(
             # cluster fan-out is precisely where two outputs share a basename.
             validations[_validation_key(path)] = v
             by_path[path] = v
+        # A declared output that never arrived fails its check, so the seal (I3)
+        # refuses a step that did not deliver what it was told to write.
+        for err in download_errors:
+            v = refused("run_cluster.output_not_fetched", passed=False,
+                        file=err["local_path"],
+                        error=f"declared output {err['filename']} was not fetched "
+                              f"from the cluster: {err['error']}")
+            validations[_validation_key(err["local_path"])] = v
+            by_path[err["local_path"]] = v
         # one draft write for every output, not one per file (a tree of outputs is thousands)
         _pipeline_state.add_validations(pipeline_id, step_index, by_path)
     # Same disclosure as run_pipeline_step's: a key that bound to nothing is a

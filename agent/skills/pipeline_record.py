@@ -187,6 +187,7 @@ class Samplesheet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     columns: list[SamplesheetColumn]           # `sample` first, always
     rows: list[dict[str, str]]                 # the seal's trials — the worked example
+    rows_from: Literal["proven", "declared"]   # proven: the I4 self-test ran them; declared: it did not (a multi-env how-to)
 
 
 class PipelineDefault(BaseModel):
@@ -1164,7 +1165,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         for c in cols[1:]:
             row[c.name] = str(subs.get(c.placeholder, ""))
         srows.append(row)
-    sheet = Samplesheet(columns=cols, rows=srows)
+    sheet = Samplesheet(columns=cols, rows=srows, rows_from=row_source)
     for p in params:
         if p.kind != "samplesheet" or _collected is not None:
             continue                     # an attached workflow extends the PIPELINE's sheet, in _attach_cohort

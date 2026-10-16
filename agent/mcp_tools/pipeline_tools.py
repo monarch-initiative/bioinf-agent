@@ -140,7 +140,7 @@ def render_pipeline(sealed_workflow: str,
     ``shared`` as above.
 
     **Refuses** (``refused``, with a remedy) when the seal cannot support the render: no
-    how-to, no proven trial, a placeholder no trial binds, an artifact no sealed step was
+    how-to, no trial, a placeholder no trial binds, an artifact no sealed step was
     observed writing, a stage cut that mixes images, a fan-in not declared or naming an
     artifact no per-sample stage writes, a placeholder both how-tos use; and when the
     target directory holds files edited since they were rendered (``pipeline.dir_edited``;

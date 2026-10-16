@@ -114,7 +114,7 @@ from typing import Optional
 
 from agent.skills import compute_access
 from agent.skills.backgroundable import detached
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.outcomes import proven, refused, broke, loop
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +369,15 @@ def _parse_tree_listing(stdout: str) -> tuple[dict[str, str], list[str]]:
         else:
             not_files.append(m[2])
     return sums, not_files
+
+
+def partial_path(abs_path: str) -> str:
+    """Where an upload lands until its bytes are verified: a hidden sibling of
+    the destination. Every transport renames it into place only after the
+    check passes, so a file under its final name is always a complete one and
+    an existence check can be trusted."""
+    parent, base = os.path.split(str(abs_path).rstrip("/"))
+    return f"{parent}/.{base}.partial"
 
 
 def _remote_sha256_cmd(remote_path: str) -> str:
@@ -652,6 +661,8 @@ _OUTCOME_VERB = {
     ("refused",  "download"): "refused",
     ("error",    "upload"):   "failed",
     ("error",    "download"): "failed",
+    ("waiting",  "upload"):   "still running",
+    ("waiting",  "download"): "still running",
 }
 
 _VERIFIED_PHRASE = {
@@ -677,6 +688,7 @@ def _write_transfer_manifest(*,
                               verified_method: Optional[str],
                               error_msg: Optional[str],
                               checksums: Optional[dict] = None,
+                              pending_rename: Optional[dict] = None,
                               ) -> Path:
     """Write a human-readable JSON record of one transfer under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_<direction>_<hash>.json`.
@@ -741,6 +753,10 @@ def _write_transfer_manifest(*,
         record["sha256"] = sha256
     if clean_err and outcome in ("failed", "refused"):
         record["reason"] = clean_err
+    if pending_rename:
+        # an upload still in flight lands under its partial name; whoever sees the
+        # task succeed renames it into place (resolve_globus_task)
+        record["pending_rename"] = pending_rename
     record["zone"] = zone
     record["project"] = project_name
     record["manifest_version"] = 2
@@ -780,6 +796,10 @@ def _summarize(*, outcome: str, direction: str, transport: Optional[str],
     if outcome == "refused":
         return (f"Refused: {reason or 'precondition not met'}. "
                 f"({direction} of {fname} to {compute_env})")
+    if outcome == "still running":
+        return (f"Still moving {fname}{size_part} {'to' if direction == 'upload' else 'from'} "
+                f"{compute_env}{via_part}: we stopped waiting, Globus did not "
+                f"(task {task_id}).")
     # failed
     return (f"Failed to {direction} {fname} to {compute_env}: "
             f"{reason or 'see logs'}.")
@@ -791,11 +811,11 @@ def _summarize(*, outcome: str, direction: str, transport: Optional[str],
 
 def _remote_existence_check(env: dict, abs_remote: str, timeout: int) -> dict:
     """ssh-mode test for whether abs_remote already exists. Returns
-    {exists: bool} or {error: str}."""
-    from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
-    exist_cmd = (f"test -e {shlex.quote(abs_remote)} "
-                 f"&& echo EXISTS || echo OK")
-    ex_argv = _ssh_argv(env, exist_cmd)
+    {exists: bool} or {error: str}. Through `seen`: a stale "not there" on
+    the login node would let an upload overwrite a file another node wrote."""
+    from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
+    body = _SEEN_FN + f"seen {shlex.quote(abs_remote)} && echo EXISTS || echo OK"
+    ex_argv = _ssh_argv(env, f"bash -c {shlex.quote(body)}")
     ex = subprocess.run(ex_argv, capture_output=True, text=True,
                          timeout=timeout)
     if ex.returncode != 0:
@@ -806,7 +826,7 @@ def _remote_existence_check(env: dict, abs_remote: str, timeout: int) -> dict:
         if hint:
             out["hint"] = hint
         return out
-    return {"exists": "EXISTS" in (ex.stdout or "")}
+    return {"exists": "EXISTS" in (ex.stdout or "").splitlines()}
 
 
 def _remote_mkdir_parent_ssh(env: dict, abs_remote: str,
@@ -911,7 +931,8 @@ def _do_transfer(*, direction: str,
                  bytes_transferred: Optional[int] = None,
                  sha256: Optional[str] = None,
                  verified_method: Optional[str] = None,
-                 checksums: Optional[dict] = None) -> Path:
+                 checksums: Optional[dict] = None,
+                 pending_rename: Optional[dict] = None) -> Path:
         """Write the manifest and return its path. Best-effort — a write
         failure is swallowed so a successful transfer isn't masked."""
         try:
@@ -933,6 +954,7 @@ def _do_transfer(*, direction: str,
                 verified_method=verified_method,
                 error_msg=error_msg,
                 checksums=checksums,
+                pending_rename=pending_rename,
             )
         except Exception:
             # Manifest write must not mask the real result.
@@ -1067,6 +1089,18 @@ def _do_transfer(*, direction: str,
                 env=env, abs_remote_path=normed_remote,
                 local_path=lp, timeout=timeout,
                 label=f"download {project_name} {Path(normed_remote).name}")
+        if pr.get("code") == "transfer.globus_sync_wait_exceeded":
+            # We stopped waiting; Globus did not. Not a failure, and the receipt
+            # must not say one: it carries the task, and for an upload the rename
+            # that completes it once the task succeeds.
+            pending = ({"from": pr["partial_path"], "to": normed_remote}
+                       if pr.get("partial_path") else None)
+            mpath = _journal(result="waiting", zone=zone,
+                transport=pr.get("provider") or transport_name,
+                command=pr.get("command"), task_id=pr.get("task_id"),
+                pending_rename=pending)
+            out = {k: v for k, v in pr.items() if k not in ("outcome", "code")}
+            return loop("transfer.globus_sync_wait_exceeded", **out, manifest=str(mpath))
         if "error" in pr:
             said_no = pr.get("outcome") == "refused"
             mpath = _journal(result="refused" if said_no else "error", zone=zone,
@@ -1164,18 +1198,72 @@ def _do_transfer(*, direction: str,
         return broke("transfer.timeout", error=msg, manifest=str(mpath))
 
 
+def resolve_globus_task(project_name: str, env: dict, task_id: str) -> dict:
+    """A Globus task's real end state, and the step a sync upload left undone:
+    an upload past the sync-wait cap lands under its partial name, and its
+    receipt names the rename that completes it. When the task has SUCCEEDED,
+    that rename is made here and the receipt says the upload finished."""
+    from agent.skills import transfer_providers
+    status = transfer_providers.globus_task_status(env, task_id)
+    if status.get("code") != "transfer.task_status_ok":
+        return status
+    found = _pending_receipt(project_name, task_id)
+    if found is None:
+        return status
+    path, rec = found
+    pending = rec["pending_rename"]
+    fields = {k: v for k, v in status.items() if k not in ("outcome", "code", "success")}
+    g = compute_access.get_globus_endpoints(env)
+    moved = transfer_providers.GlobusProvider(g).rename(pending["from"], pending["to"])
+    if "error" in moved:
+        return broke("transfer.task_rename_failed", success=False, error=moved["error"],
+                     partial_path=pending["from"], manifest=str(path), **fields)
+    rec.pop("pending_rename")
+    rec["outcome"] = "uploaded"
+    rec["summary"] = _summarize(
+        outcome="uploaded", direction="upload", transport="globus",
+        fname=rec.get("file", ""), size_h=rec.get("size"),
+        compute_env=env.get("name", "?"), remote_abs_path=pending["to"],
+        task_id=task_id, reason=None, files=rec.get("files"))
+    rec["verified"] = _VERIFIED_PHRASE["globus_end_to_end"]
+    try:
+        path.write_text(json.dumps(rec, indent=2))
+    except OSError:
+        pass
+    return proven("transfer.task_status_ok", success=True, renamed_to=pending["to"],
+                  manifest=str(path), **fields)
+
+
+def _pending_receipt(project_name: str, task_id: str) -> Optional[tuple[Path, dict]]:
+    """The receipt of an upload still waiting on `task_id` to be renamed into place."""
+    root = _record_root() / "transfer_history" / project_name
+    for p in sorted(root.glob("*/*.json"), reverse=True):
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if rec.get("globus_task_id") == task_id and rec.get("pending_rename"):
+            return p, rec
+    return None
+
+
 def _copy_local_tree(src: Path, dst: Path, *, source: Optional[dict]) -> dict:
     """A local-mode env's directory transfer, shaped like a provider's: copy
-    the tree, then read both sides back and compare every file's sha256."""
+    the tree to its partial name, read both sides back and compare every
+    file's sha256, then rename it into place."""
     source = source if source is not None else _scan_tree(src)[0]
     command = f"cp -R {shlex.quote(str(src))} {shlex.quote(str(dst))}"
-    shutil.copytree(src, dst)
-    copy, nbytes = _scan_tree(dst)
+    part = Path(partial_path(str(dst)))
+    shutil.rmtree(part, ignore_errors=True)
+    shutil.copytree(src, part)
+    copy, nbytes = _scan_tree(part)
     mismatch = _tree_mismatch(source, copy)
     if mismatch:
+        shutil.rmtree(part, ignore_errors=True)
         return broke("transfer.local_tree_mismatch",
-                     error=f"the copy at {dst} differs from {src}: {mismatch}",
+                     error=f"the copy of {src} differs from it: {mismatch}",
                      provider="local_copy", command=command)
+    os.rename(part, dst)
     return proven("transfer.local_tree_copied", success=True,
                   provider="local_copy", command=command,
                   bytes=nbytes, checksums=copy,
@@ -1191,9 +1279,11 @@ def _do_local_mode(*, direction: str,
     (sha256 both ends + size compare) but no wire-protocol provider."""
     cp_cmd_up = f"cp {shlex.quote(str(lp))} {shlex.quote(normed_remote)}"
     if direction == "upload":
-        shutil.copy(str(lp), normed_remote)
-        remote_sha = _compute_local_sha256(Path(normed_remote))
+        part = Path(partial_path(normed_remote))
+        shutil.copy(str(lp), part)
+        remote_sha = _compute_local_sha256(part)
         if remote_sha != local_sha:
+            part.unlink(missing_ok=True)
             mpath = journal(result="error", zone=zone,
                 transport="local_copy", command=cp_cmd_up,
                 error_msg=("sha256 round-trip mismatch on local-mode "
@@ -1201,9 +1291,9 @@ def _do_local_mode(*, direction: str,
             return broke("transfer.sha_mismatch_upload",
                 error=(
                 f"sha256 round-trip mismatch — local={local_sha} "
-                f"remote={remote_sha!r}. File at {normed_remote!r} "
-                f"may be corrupt."),
+                f"remote={remote_sha!r}; the copy was discarded."),
                 manifest=str(mpath))
+        os.rename(part, normed_remote)
         bytes_done = lp.stat().st_size
         mpath = journal(result="success", zone=zone,
             transport="local_copy", command=cp_cmd_up,
@@ -1237,13 +1327,11 @@ def _do_local_mode(*, direction: str,
             f"{normed_remote!r}"),
             manifest=str(mpath))
     remote_sha = _compute_local_sha256(Path(normed_remote))
-    shutil.copy(normed_remote, str(lp))
-    landed_sha = _compute_local_sha256(lp)
+    part = Path(partial_path(str(lp)))
+    shutil.copy(normed_remote, part)
+    landed_sha = _compute_local_sha256(part)
     if landed_sha != remote_sha:
-        try:
-            lp.unlink()
-        except OSError:
-            pass
+        part.unlink(missing_ok=True)
         mpath = journal(result="error", zone=zone, transport="local_copy",
             command=cp_cmd_dn,
             error_msg="sha256 mismatch on local-mode download")
@@ -1252,6 +1340,7 @@ def _do_local_mode(*, direction: str,
             f"sha256 mismatch on local-mode download: "
             f"source={remote_sha} landed={landed_sha}"),
             manifest=str(mpath))
+    os.rename(part, lp)
     bytes_done = lp.stat().st_size
     mpath = journal(result="success", zone=zone,
         transport="local_copy", command=cp_cmd_dn,

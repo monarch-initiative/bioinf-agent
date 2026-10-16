@@ -419,6 +419,20 @@ class TestLocalLaunch:
                        access=_local_access(tmp_path, str(d)))
         assert r["success"] and r["edited_since_render"] == ["params.yaml"]
 
+    @pytest.mark.integration
+    def test_a_relaunch_discloses_edits_in_the_run_directory_not_the_template(self, tmp_path, local_ok):
+        """What a re-launch runs is the run directory's copy; a hand edit there is
+        what the record must name, whatever the template looks like."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap)["success"]
+        (d / "run1" / "main.nf").write_text((d / "run1" / "main.nf").read_text() + "// tuned by hand\n")
+        again = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert again["reused_run_dir"] is True and again["edited_since_render"] == ["main.nf"]
+
 
 # ===========================================================================
 # The cluster: fakes for every remote probe; the sbatch tokens
@@ -451,7 +465,8 @@ class _Remote:
             missing = self.run_state["missing"]
             texts = {rel: self.run_state["texts"].get(rel, "") for rel in run_production._RUN_TEXTS}
             return {**self.run_state, "missing": list(rels) if missing is None else list(missing),
-                    "texts": texts, "live": self.run_state.get("live", [])}
+                    "texts": texts, "live": self.run_state.get("live", []),
+                    "sums": self.run_state.get("sums", {})}
         monkeypatch.setattr(run_production, "_remote_run_dir_state", run_dir_state)
         monkeypatch.setattr(run_production, "_write_remote",
                             lambda env, run_dir, texts, *, timeout: self.writes.update(

@@ -259,8 +259,7 @@ def globus_task_status(project_name: str,
 
     Every successful globus upload/download records its `globus_task_id`
     in the transfer manifest, so any transfer record is a valid input.
-    Pure-read — runs ONE `globus task show <id> --format json`
-    invocation; no submission.
+    Runs `globus task show <id> --format json`; no submission.
 
     Reach for this when `upload`/`download` returned
     `globus_sync_wait_exceeded`: we stopped waiting, but Globus did not
@@ -268,6 +267,9 @@ def globus_task_status(project_name: str,
     outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
     ACTIVE/INACTIVE -> loop (poll again). A directory task that SUCCEEDED
     but skipped files or left symlinks behind -> broke: not a whole copy.
+    An upload lands under a hidden partial name until it is verified; when
+    the task has SUCCEEDED, this call renames it into place (`renamed_to`)
+    and the upload's receipt says it finished.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.
@@ -286,14 +288,13 @@ def globus_task_status(project_name: str,
     files_transferred, files_skipped, symlinks, fatal_error, type, captured_at}
     on success. `status` is one of ACTIVE, INACTIVE, SUCCEEDED, FAILED.
     {"error": "..."} on failure (cli missing, auth, network)."""
-    from agent.skills import compute_access, transfer, transfer_providers
+    from agent.skills import compute_access, transfer
     from agent.skills.outcomes import refused
     try:
         access = compute_access.load_access(None)
         # _ad_hoc-aware resolve so the poll companion accepts the same
         # project name the async upload/download accepted.
-        project = transfer._get_project_or_ad_hoc(project_name, access)  # auth check
-        _ = project
+        project = transfer._get_project_or_ad_hoc(project_name, access)
         env = compute_access.get_compute_env(compute_env_name, access)
     except KeyError as e:
         # unknown project / compute_env → a clean auth failure, not a crash (C4).
@@ -303,7 +304,12 @@ def globus_task_status(project_name: str,
             FileNotFoundError) as e:
         return refused("globus_task_status.access_denied",
                        error=f"{type(e).__name__}: {e}", success=False)
-    return transfer_providers.globus_task_status(env, task_id)
+    if not any(isinstance(b, dict) and b.get("compute_env") == compute_env_name
+               for b in (project.get("compute_env_access") or [])):
+        return refused("globus_task_status.access_denied", success=False,
+                       error=f"PermissionDenied: project {project_name!r} does not "
+                             f"list compute_env {compute_env_name!r}")
+    return transfer.resolve_globus_task(project_name, env, task_id)
 
 
 @mcp.tool()
@@ -323,7 +329,9 @@ def cluster_job_status(project_name: str,
     returned). The job is then its manager, and `pipeline` reports the work:
     every finished task from the run's trace, every task submitted and not
     finished with the scheduler's state for it (PENDING and why, RUNNING where
-    and for how long), and a verdict over the tasks.
+    and for how long), and a verdict over the tasks: succeeded, failed, running,
+    not_started (the manager is queued) or unobserved (the manager ended and left no
+    task record in run_dir — check that run_dir is where it was launched).
 
     `wait_s`: block up to that many seconds (capped at 540) until something
     changes — the job's state, or a task starting or finishing — so ONE call

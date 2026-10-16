@@ -186,7 +186,7 @@ class TestCheckClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 12345,
-                                             "sha256": "a" * 64})
+                                             "sha256": "a" * 64, "complete": True})
         assert acquire_data.check_cluster_reference_db(_cluster_rdb()) == []
 
     def test_missing_on_cluster(self, monkeypatch):
@@ -206,6 +206,21 @@ class TestCheckClusterReferenceDb:
                                              "sha256": None})
         v = acquire_data.check_cluster_reference_db(_cluster_rdb())
         assert v[0]["invariant"] == "I5.reference_database_empty"
+
+    def test_a_fetch_that_did_not_finish_is_not_a_reference(self, monkeypatch):
+        """Exists and non-empty is also what a download killed at its walltime looks
+        like, and a recipe directory always holds our own launcher; the job's own
+        marker, written last and only on success, is what says it finished."""
+        monkeypatch.setattr(compute_access, "load_access",
+                            lambda *_a, **_k: _FAKE_ACCESS)
+        asked = {}
+        monkeypatch.setattr(acquire_data, "_probe_cluster_path",
+                            lambda env, path, **k: asked.update(k) or {
+                                "exists": True, "size_bytes": 4096, "sha256": None,
+                                "complete": False})
+        v = acquire_data.check_cluster_reference_db(_cluster_rdb())
+        assert v[0]["invariant"] == "I5.reference_database_incomplete"
+        assert asked["marker"] == acquire_data.acquired_marker(_cluster_rdb()["name"])
 
     def test_ssh_failure_unverifiable(self, monkeypatch):
         monkeypatch.setattr(compute_access, "load_access",
@@ -229,7 +244,7 @@ class TestCheckClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 10,
-                                             "sha256": "b" * 64})
+                                             "sha256": "b" * 64, "complete": True})
         v = acquire_data.check_cluster_reference_db(_cluster_rdb(sha256="a" * 64))
         assert len(v) == 1 and v[0]["invariant"] == "I5.reference_database_mutated"
         assert v[0]["recorded_sha256"] == "a" * 64
@@ -240,7 +255,7 @@ class TestCheckClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 10,
-                                             "sha256": "A" * 64})   # case-insensitive
+                                             "sha256": "A" * 64, "complete": True})   # case-insensitive
         assert acquire_data.check_cluster_reference_db(_cluster_rdb(sha256="a" * 64)) == []
 
     @pytest.mark.parametrize("recorded,observed", [
@@ -258,7 +273,7 @@ class TestCheckClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 10,
-                                             "sha256": observed})
+                                             "sha256": observed, "complete": True})
         assert acquire_data.check_cluster_reference_db(_cluster_rdb(sha256=recorded)) == []
 
 
@@ -325,7 +340,7 @@ class TestRefreshClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 10,
-                                             "sha256": "b" * 64})
+                                             "sha256": "b" * 64, "complete": True})
         refreshed = workflow_tools._refresh_reference_databases(
             [_cluster_rdb(sha256="a" * 64)])
         assert refreshed[0]["sha256"] == "a" * 64, "refresh laundered the anchor"

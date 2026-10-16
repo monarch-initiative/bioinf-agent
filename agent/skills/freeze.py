@@ -663,7 +663,9 @@ class EnvCache:
         rec = self.lookup(key)
         if not rec:
             return None
-        ref = rec.get("image") or rec.get("image_digest") or ""
+        # by the pinned id, never a tag a later build or `docker tag` can move
+        from agent.models.core_data import frozen_image_ref
+        ref = frozen_image_ref(rec.get("image") or "", rec.get("image_digest") or "")
         if not (ref and image_present(ref)):
             return None
         return None if self.contract_violations(rec) else rec

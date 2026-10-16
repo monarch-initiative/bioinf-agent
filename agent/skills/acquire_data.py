@@ -37,6 +37,8 @@ I8 composition walk's path/basename match works unchanged) plus `locus:
 """
 from __future__ import annotations
 
+import posixpath
+import re
 import shlex
 import subprocess
 from datetime import datetime, timezone
@@ -63,6 +65,13 @@ _PROBE_TIMEOUT = 120
 # ---------------------------------------------------------------------------
 # The simple SLURM download-script renderer
 # ---------------------------------------------------------------------------
+
+def acquired_marker(name: str) -> str:
+    """The file an acquisition job writes in its directory as its LAST act, and
+    only when it succeeded (each run removes it first). A directory that exists
+    and is non-empty may still be a job that died midway; this says it finished."""
+    return f".acquired_{name}"
+
 
 def render_download_script(*, name: str, url: str, dest_filename: str,
                            extract: bool, slurm_v: dict, email: str) -> str:
@@ -120,10 +129,12 @@ def render_download_script(*, name: str, url: str, dest_filename: str,
         f"# SLURM stages the script into /var/spool/slurmd/...; $SLURM_SUBMIT_DIR\n"
         f"# is the dir we `sbatch`ed from (the acquisition dir the files live in).\n"
         f'cd "${{SLURM_SUBMIT_DIR:-$(dirname "$(readlink -f "$0")")}}"\n'
+        f"rm -f {acquired_marker(name)}\n"
         f"\n"
         f"{fetch}"
         f"{hasher}"
         f"{extract_block}"
+        f"touch {acquired_marker(name)}\n"
         f'echo "acquire_{name}: DONE"\n'
     )
 
@@ -145,9 +156,14 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
     takes its batch path — e.g. tmux: a download-manager recipe re-execs into a
     DETACHED tmux server that SLURM kills at job end; masking tmux makes the
     recipe's own `[ -z $TMX ]` branch run the downloads inline (+ `wait`)."""
+    # Both are pasted into the job script, inside double quotes and a `case`.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", recipe_filename or ""):
+        raise ValueError(f"recipe file name {recipe_filename!r} must be letters, digits and ._- only")
+    bad = [t for t in (mask_tools or ()) if not compute_access._is_safe_token(str(t))]
+    if bad:
+        raise ValueError(f"mask_tools {bad} must be bare command names (alnum + '_-')")
     q_recipe = shlex.quote(recipe_filename)
     mask = " ".join(mask_tools or ())
-    q_mask = shlex.quote(mask)
 
     # Force the recipe's non-interactive path: mirror the full PATH into a shim
     # dir MINUS the masked tools (recipe-agnostic — nothing legitimate is lost,
@@ -202,18 +218,24 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
         f"# files already present).\n"
         f"\n"
         f'cd "${{SLURM_SUBMIT_DIR:-$(dirname "$(readlink -f "$0")")}}"\n'
+        f"rm -f {acquired_marker(name)}\n"
         f"\n"
         f"{mask_block}"
         f'echo "[acquire] running recipe: {recipe_filename}"\n'
         f"{run_line}"
         f'recipe_rc=$?\n'
         f'echo "[acquire] recipe exited rc=$recipe_rc"\n'
+        f'if [ "$recipe_rc" -ne 0 ]; then\n'
+        f'  echo "acquire_{name}: recipe FAILED (rc=$recipe_rc); nothing hashed, re-submit to resume"\n'
+        f'  exit $recipe_rc\n'
+        f'fi\n'
         f"\n"
         f"# Provenance sweep (recipe-agnostic): sha256 every FINAL produced file, at any\n"
         f"# depth, beside it. The recipe doesn't write checksums; this is our\n"
         f"# reproducibility anchor. This job's own logs are still being written: skipped.\n"
         f'echo "[acquire] hashing produced files for provenance..."\n'
         f"find . \\( -type f -o -type l \\) ! -name '*.source.sha256' ! -name '*.part' "
+        f"! -name '.acquired_*' "
         f"! -path ./launcher.sh ! -path {shlex.quote('./' + recipe_filename)} "
         f"! -path {shlex.quote(f'./acquire_{name}-*.out')} "
         f"! -path {shlex.quote(f'./acquire_{name}-*.err')} -print0 |\n"
@@ -223,8 +245,8 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
         f"| awk '{{print $1}}' > \"$f.source.sha256\"\n"
         f'done\n'
         f"\n"
-        f'echo "acquire_{name}: recipe DONE (rc=$recipe_rc)"\n'
-        f'exit $recipe_rc\n'
+        f"touch {acquired_marker(name)}\n"
+        f'echo "acquire_{name}: recipe DONE"\n'
     )
 
 
@@ -526,7 +548,7 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str = "", compute_env: s
                 workflow_render._check_module("apptainer_module", module)
             except ValueError as e:
                 return refused("acquire.bad_module", error=str(e))
-        digest = record.get("content_digest") or record.get("image_digest") or ""
+        digest = record.get("image_digest") or record.get("content_digest") or ""
         env_name = record.get("name") or freeze_request_key.split("|", 1)[0]
         recipe_filename = "run_in_image.sh"
         recipe_text = render_image_recipe(command=command, sif=sif, env_name=env_name, digest=digest,
@@ -670,21 +692,29 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str = "", compute_env: s
 # Seal-side: probe + verify a cluster-resident reference DB over ssh
 # ---------------------------------------------------------------------------
 
-def _probe_cluster_path(env: dict, path: str, *,
+def _probe_cluster_path(env: dict, path: str, *, marker: str = "",
                         timeout: int = _PROBE_TIMEOUT) -> dict:
-    """ONE ssh hop that reports {exists, size_bytes, sha256} for a cluster path
-    (file OR directory). size via `du -sb`; sha256 read from a `<path>.source.sha256`
-    sidecar if present (the reproducibility anchor written by the download job).
+    """ONE ssh hop that reports {exists, size_bytes, sha256, complete} for a cluster
+    path (file OR directory). size via `du -sb`; sha256 read from a
+    `<path>.source.sha256` sidecar if present (the reproducibility anchor written by
+    the download job); `complete` when `marker` (an acquisition's completion file) is
+    in the path's directory, or in the path itself when it is one.
     Returns {"error": ...} if the ssh itself fails (session down / unreachable)."""
     from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
     q = shlex.quote(path)
     q_side = shlex.quote(f"{path}.source.sha256")
-    # Emit three tagged lines so a MOTD banner can't confuse the parse.
+    done = ""
+    if marker:
+        q_in, q_beside = (shlex.quote(f"{path.rstrip('/')}/{marker}"),
+                          shlex.quote(f"{posixpath.dirname(path.rstrip('/'))}/{marker}"))
+        done = f"; if seen {q_in} || seen {q_beside}; then echo DONE=1; fi"
+    # Emit tagged lines so a MOTD banner can't confuse the parse.
     body = (
         _SEEN_FN + f"if seen {q}; then echo EXISTS=1; else echo EXISTS=0; fi; "
         f"if [ -e {q} ]; then du -sb {q} 2>/dev/null | cut -f1 | "
         f"sed \"s/^/SIZE=/\"; fi; "
         f"if seen {q_side}; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi"
+        f"{done}"
     )
     probe = f"bash -lc {shlex.quote(body)}"
     argv = _ssh_argv(env, probe)
@@ -703,8 +733,8 @@ def _probe_cluster_path(env: dict, path: str, *,
     exists = False
     size_bytes: Optional[int] = None
     sha256: Optional[str] = None
-    for line in (res.stdout or "").splitlines():
-        line = line.strip()
+    lines = [ln.strip() for ln in (res.stdout or "").splitlines()]
+    for line in lines:
         if line.startswith("EXISTS="):
             exists = line.endswith("1")
         elif line.startswith("SIZE="):
@@ -716,7 +746,10 @@ def _probe_cluster_path(env: dict, path: str, *,
             tok = line[len("SHA="):].strip()
             if len(tok) == 64 and all(c in "0123456789abcdef" for c in tok.lower()):
                 sha256 = tok.lower()
-    return {"exists": exists, "size_bytes": size_bytes, "sha256": sha256}
+    out = {"exists": exists, "size_bytes": size_bytes, "sha256": sha256}
+    if marker:
+        out["complete"] = "DONE=1" in lines
+    return out
 
 
 def _resolve_env_for_rdb(rdb: dict, access_path: Optional[str]):
@@ -799,7 +832,7 @@ def check_cluster_reference_db(rdb: dict, *,
             "message":   f"cluster reference_database '{name}' cannot be verified: {err}",
             "where":     where, "path": path,
         }]
-    probe = _probe_cluster_path(env, path)
+    probe = _probe_cluster_path(env, path, marker=acquired_marker(name))
     if "error" in probe:
         return [{
             "invariant": "I5.reference_database_unverifiable",
@@ -823,6 +856,18 @@ def check_cluster_reference_db(rdb: dict, *,
             "message":   f"cluster reference_database '{name}' exists on "
                          f"{rdb.get('compute_env')!r} but is empty at {path} "
                          f"(partial/failed download?)",
+            "where":     where, "path": path,
+        }]
+    if not probe.get("complete"):
+        # A cluster reference is only ever made by an acquisition job (a download or
+        # the tool's recipe), and that job writes its marker last, on success.
+        return [{
+            "invariant": "I5.reference_database_incomplete",
+            "message":   f"cluster reference_database '{name}' is at {path} on "
+                         f"{rdb.get('compute_env')!r}, but the job that fetched it has not "
+                         f"reported finishing (no {acquired_marker(name)} beside it): it is "
+                         f"still running, or it died midway and what is there is partial. "
+                         f"Check cluster_job_status; re-submit the acquisition to resume.",
             "where":     where, "path": path,
         }]
     recorded = str(rdb.get("sha256") or "").strip().lower()

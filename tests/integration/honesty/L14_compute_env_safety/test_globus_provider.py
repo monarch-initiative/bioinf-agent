@@ -94,9 +94,12 @@ class TestSubmitArgvShape:
         # argv[0] is `globus`, argv[1] is `transfer`
         assert argv[0] == "globus"
         assert argv[1] == "transfer"
-        # Source is the LOCAL endpoint, destination is REMOTE.
+        # Source is the LOCAL endpoint, destination is REMOTE — under the
+        # partial name, renamed into place once the task SUCCEEDED.
         assert argv[2] == f"{_LOCAL_EP}:{f}"
-        assert argv[3] == f"{_REMOTE_EP}:/work/u/x.txt"
+        assert argv[3] == f"{_REMOTE_EP}:/work/u/.x.txt.partial"
+        assert captured[-1] == ["globus", "rename", _REMOTE_EP,
+                                "/work/u/.x.txt.partial", "/work/u/x.txt"]
         # Encrypted by default + JSON output for parsing.
         assert "--encrypt-data" in argv
         assert "--format" in argv
@@ -141,6 +144,8 @@ class TestSyncWait:
             mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
             if argv[1] == "transfer":
                 mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            elif argv[1] == "rename":
+                mock.stdout = ""
             else:
                 mock.stdout = _json.dumps(next(task_states))
             return mock
@@ -542,6 +547,8 @@ class TestPermissionDeniedClassifier:
             mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
             if argv[1] == "transfer":
                 mock.stdout = f'{{"task_id": "{_TASK_ID}"}}'
+            elif argv[1] == "rename":
+                mock.stdout = ""
             else:
                 mock.stdout = _json.dumps(next(states))
             return mock
@@ -563,58 +570,54 @@ class TestPermissionDeniedClassifier:
 
 class TestGlobusPreflightIsSshFree:
     """The whole point of the clean fix: a Globus transfer makes ZERO
-    ssh calls. The no-overwrite check goes through `globus ls`, and the
+    ssh calls. The no-overwrite check goes through `globus stat`, and the
     parent-dir prep is a no-op (Globus auto-creates the tree). These
     tests pin that the provider never shells `ssh` and that the `globus
-    ls` existence logic is correct."""
+    stat` existence logic is correct."""
 
     @pytest.mark.integration
-    def test_remote_exists_true_when_basename_in_listing(self, monkeypatch):
+    def test_remote_exists_true_when_stat_finds_the_path(self, monkeypatch):
         import json as _json
         captured = []
         def fake_run(argv, *a, **kw):
             captured.append(argv)
             mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
-            mock.stdout = _json.dumps({"DATA": [
-                {"name": "other.tar", "type": "file"},
-                {"name": "hifiasm.tar", "type": "file"},
-            ]})
+            mock.stdout = _json.dumps({"name": "hifiasm.tar", "type": "file",
+                                       "size": 10})
             return mock
         monkeypatch.setattr(subprocess, "run", fake_run)
         out = _provider().remote_exists(
             env=_env_ssh(),
             abs_remote_path="/work/u/CONTAINERS/hifiasm.tar", timeout=30)
         assert out == {"exists": True}
-        # It used `globus ls` on the PARENT dir, never ssh.
-        argv = captured[0]
-        assert argv[0] == "globus" and argv[1] == "ls"
-        assert argv[2] == f"{_REMOTE_EP}:/work/u/CONTAINERS/"
+        # It used `globus stat` on the path itself, never ssh.
+        assert captured[0][:3] == ["globus", "stat",
+                                   f"{_REMOTE_EP}:/work/u/CONTAINERS/hifiasm.tar"]
         assert all(a != "ssh" for call in captured for a in call)
 
     @pytest.mark.integration
-    def test_remote_exists_false_when_basename_absent(self, monkeypatch):
+    def test_a_hidden_name_is_seen(self, monkeypatch):
+        # A listing without --all leaves dot-files out; stat asks about the
+        # path itself, so an existing `.name` is never overwritten.
         import json as _json
         def fake_run(argv, *a, **kw):
             mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
-            mock.stdout = _json.dumps({"DATA": [
-                {"name": "something_else.tar", "type": "file"}]})
+            mock.stdout = _json.dumps({"name": ".hidden", "type": "file"})
             return mock
         monkeypatch.setattr(subprocess, "run", fake_run)
         out = _provider().remote_exists(
-            env=_env_ssh(),
-            abs_remote_path="/work/u/CONTAINERS/hifiasm.tar", timeout=30)
-        assert out == {"exists": False}
+            env=_env_ssh(), abs_remote_path="/work/u/.hidden", timeout=30)
+        assert out == {"exists": True}
 
     @pytest.mark.integration
-    def test_remote_exists_false_when_parent_dir_missing(self, monkeypatch):
-        # globus ls errors with a NotFound — the parent dir doesn't exist
-        # yet, so the target can't either. Not an overwrite; Globus will
-        # create the tree on transfer.
+    def test_remote_exists_false_only_on_not_found(self, monkeypatch):
+        # `globus stat` prints the API's NotFound body (exit 0) only when
+        # nothing is at the path — the one answer that means "absent".
+        import json as _json
         def fake_run(argv, *a, **kw):
-            mock = MagicMock(); mock.returncode = 1
-            mock.stdout = ""
-            mock.stderr = ("GlobusAPIError: ClientError.NotFound: "
-                           "Directory not found")
+            mock = MagicMock(); mock.returncode = 0; mock.stderr = ""
+            mock.stdout = _json.dumps({"code": "NotFound",
+                                       "message": "Path not found"})
             return mock
         monkeypatch.setattr(subprocess, "run", fake_run)
         out = _provider().remote_exists(

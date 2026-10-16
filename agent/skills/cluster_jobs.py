@@ -471,9 +471,11 @@ def _task_view(row: dict) -> dict:
 
 
 def _pipeline_verdict(tasks: list[dict], manager_rows: list[dict]) -> str:
-    """succeeded | failed | running | not_started — over the TASKS, with the manager
-    consulted to tell a finished run from one still submitting, and a manager that
-    died (it can no longer submit what is left) from one that finished."""
+    """succeeded | failed | running | not_started | unobserved — over the TASKS, with
+    the manager consulted to tell a finished run from one still submitting, a manager
+    that died (it can no longer submit what is left) from one that finished, and a
+    queued manager from one at work. `unobserved`: the manager ended and no task of
+    it is on record in the run directory, so nothing says what the run did."""
     statuses = [t.get("status") for t in tasks]
     if any(s == TASK_FAILED for s in statuses):
         return "failed"
@@ -482,7 +484,11 @@ def _pipeline_verdict(tasks: list[dict], manager_rows: list[dict]) -> str:
         return "failed"
     if tasks and all(s in TASK_DONE for s in statuses) and manager_over:
         return "succeeded"
-    return "running" if (tasks or not manager_over) else "not_started"
+    if manager_over:
+        return "running" if tasks else "unobserved"
+    queued = not manager_rows or all(str(r.get("state", "")).startswith("PENDING")
+                                     for r in manager_rows)
+    return "not_started" if queued and not tasks else "running"
 
 
 def _block(lines: list[str], tag: str) -> list[str]:
@@ -510,8 +516,15 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
                      **({"hint": hint} if hint else {}))
     lines = (res.stdout or "").splitlines()
     if "NOOUT" in lines:
-        return {"run_dir": run_dir, "verdict": "not_started", "tasks": [], "task_summary": {},
-                "note": f"no manager log (<pipeline>-{job_id}.out) in {run_dir} yet: the job has not started"}
+        verdict = _pipeline_verdict([], manager_rows)
+        note = {
+            "not_started": "the job has not started",
+            "running": "the manager job is running; its log is not visible here yet",
+            "failed": "the manager job ended without writing it: it died before Nextflow started",
+        }.get(verdict, "the manager job ended and left no log here: check that run_dir is "
+                       "the directory it was launched in")
+        return {"run_dir": run_dir, "verdict": verdict, "tasks": [], "task_summary": {},
+                "note": f"no manager log (<pipeline>-{job_id}.out) in {run_dir}: {note}"}
     stamp = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("STAMP=")), "")
     out_log = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("OUT=")), "")
     trace_rows = _parse_trace("\n".join(_block(lines, "TRACE")))

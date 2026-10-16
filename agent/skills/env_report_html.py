@@ -700,8 +700,8 @@ def _tools_line(requested: int, passed: int, total: int, is_adopt: bool, shallow
 # given plain ones here.
 _PLAIN_GAP = {
     "WELL_FORMED.shipped_binaries":
-        "a pre-built biocontainer carries no list of the binaries it shipped, so that "
-        "part of the record is empty",
+        "the record carries no list of the binaries the image ships (it predates that "
+        "field), so that part of the record is empty",
     "WELL_FORMED.tool_identities":
         "the record does not say what each tool calls itself, so the page cannot "
         "describe the tools' own identities",
@@ -725,8 +725,9 @@ _PLAIN_GAP = {
 _PLAIN_GUARANTEE = {
     "BUILT": (
         "The image exists",
-        "The image is present in the local Docker daemon under the recorded checksum, and "
-        "its CPU architecture is the one the record claims."),
+        "The image was built and its checksum read from the Docker daemon when it was "
+        "frozen, and its CPU architecture is the one the record claims. Whether it is "
+        "still in this machine's daemon is asked when it is used."),
     "VALIDATED_IN_IMAGE": (
         "The tools work in the shipped image",
         "Every requested tool's check was re-run inside the image that ships, and each "
@@ -795,8 +796,7 @@ def _status_line(contract) -> str:
         parts.append("This limits what was proved. Re-freeze with "
                      "<code>evidence={tool: &lt;command that runs the tool&gt;}</code> to close it.")
     if any(c.establishes != ASSURANCE for c in gaps):
-        parts.append("This is expected on this install path and limits what the report "
-                     "describes, not what it proved.")
+        parts.append("This limits what the report describes, not what it proved.")
     parts.append('Coverage tag: <code>degraded</code>.')
     return " ".join(parts)
 

@@ -541,8 +541,9 @@ def _disclose(result: dict, reference_check: Mapping, value_check: Mapping) -> d
 
 def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: int) -> dict:
     """What `run_dir` holds on the cluster: whether it exists, which of the carried
-    files `rels` it lacks, whether it holds a samplesheet, and the text of each of
-    `_RUN_TEXTS` there ("" when absent). One ssh hop."""
+    files `rels` it lacks and the sha256 of those it holds, whether it holds a
+    samplesheet, and the text of each of `_RUN_TEXTS` there ("" when absent). One
+    ssh hop."""
     q = shlex.quote
     script = (_SEEN_FN + f'seen {q(run_dir)} && echo EXISTS=1 || echo EXISTS=0; '
               + "".join(f'seen {q(run_dir + "/" + rel)} || echo {q("MISSING=" + rel)}; ' for rel in rels)
@@ -550,6 +551,8 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
               # `echo` after `cat` ends a file that has no last newline before the END line
               + "".join(f'echo {q("BEGIN " + rel)}; cat {q(run_dir + "/" + rel)} 2>/dev/null; echo; '
                         f'echo {q("END " + rel)}; ' for rel in _RUN_TEXTS)
+              + f"( cd {q(run_dir)} 2>/dev/null && sha256sum -- {' '.join(q(r) for r in rels)} "
+                f"2>/dev/null | sed 's/^/SUM /' ); "
               # the run's own jobs the scheduler still holds: sbatch ran in run_dir
               + f"squeue -h -u \"$USER\" -o '%i %T %Z' 2>/dev/null | "
                 f"awk -v d={q(run_dir)} '$3 == d {{print \"LIVE=\" $1 \" \" $2}}'")
@@ -565,9 +568,10 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
     for rel in _RUN_TEXTS:
         a, b = lines.index(f"BEGIN {rel}"), lines.index(f"END {rel}")
         texts[rel] = "\n".join(lines[a + 1:b])
+    sums = {m[2]: m[1] for m in (re.fullmatch(r"SUM ([0-9a-f]{64})  (.+)", ln) for ln in lines) if m}
     return {"exists": "EXISTS=1" in lines,
             "missing": [ln[len("MISSING="):] for ln in lines if ln.startswith("MISSING=")],
-            "samplesheet": "SHEET=1" in lines, "texts": texts,
+            "samplesheet": "SHEET=1" in lines, "texts": texts, "sums": sums,
             "live": [ln[len("LIVE="):] for ln in lines if ln.startswith("LIVE=")]}
 
 
@@ -577,6 +581,8 @@ def _local_run_dir_state(run_dir: Path, rels: list[str]) -> dict:
             "samplesheet": (run_dir / SAMPLESHEET_FILENAME).is_file(),
             "texts": {rel: (run_dir / rel).read_text() if (run_dir / rel).is_file() else ""
                       for rel in _RUN_TEXTS},
+            "sums": {rel: core_data.sha256_file(run_dir / rel) for rel in rels
+                     if (run_dir / rel).is_file()},
             "live": []}
 
 
@@ -776,6 +782,13 @@ def run_production_pipeline(project_name: str,
                  else _local_run_dir_state(Path(normed_dir), rels))
         reused = _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=normed_dir,
                                   samplesheet=samplesheet)
+        if reused:
+            # What runs is the run directory's copy, not the template it came from. The
+            # two files a launch writes itself are reported by what they hold (`params`,
+            # `walltime`), not as edits.
+            edited = sorted(rel for rel, digest in manifest.items()
+                            if rel not in (_PARAMS_FILE, _LAUNCHER)
+                            and rel in state["sums"] and state["sums"][rel] != digest)
         base = ({rel: state["texts"][rel] for rel in (_PARAMS_FILE, _LAUNCHER)} if reused
                 else {rel: (pdir / rel).read_text() for rel in (_PARAMS_FILE, _LAUNCHER)})
         where = {rel: f"{normed_dir}/{rel}" if reused else str(pdir / rel) for rel in base}

@@ -67,7 +67,28 @@ def test_the_verdict_is_over_the_tasks_never_the_manager():
     assert cj._pipeline_verdict(ok, manager_done) == "succeeded"
     assert cj._pipeline_verdict([], manager_running) == "running"
     assert cj._pipeline_verdict([], [{"verdict": cj.DIED}]) == "failed"
-    assert cj._pipeline_verdict([], manager_done) == "not_started"
+    assert cj._pipeline_verdict([], [{"verdict": cj.RUNNING, "state": "PENDING"}]) == "not_started"
+    # a manager that ended with no task on record did not "not start": nothing says what it did
+    assert cj._pipeline_verdict([], manager_done) == "unobserved"
+
+
+def test_a_run_with_no_manager_log_reads_the_managers_own_row(monkeypatch):
+    """No `<pipeline>-<id>.out` in run_dir is what a queued job looks like, and also
+    what a job cancelled in the queue, a node that failed to boot, or a wrong run_dir
+    look like. The manager's SLURM row tells them apart."""
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, 0, stdout="NOOUT\n", stderr=""))
+    env = {"type": "ssh", "host": "h", "user": "u"}
+    queued = cj._read_pipeline_run(env, "/w/run1", "4242",
+                                   [{"verdict": cj.RUNNING, "state": "PENDING"}], timeout=5)
+    died = cj._read_pipeline_run(env, "/w/run1", "4242",
+                                 [{"verdict": cj.DIED, "state": "CANCELLED by 1234"}], timeout=5)
+    ended = cj._read_pipeline_run(env, "/w/run1", "4242", [{"verdict": cj.SUCCEEDED,
+                                                            "state": "COMPLETED"}], timeout=5)
+    assert queued["verdict"] == "not_started" and "has not started" in queued["note"]
+    assert died["verdict"] == "failed"
+    assert ended["verdict"] == "unobserved" and "check that run_dir" in ended["note"]
 
 
 def test_the_remote_script_is_built_from_validated_tokens_only():

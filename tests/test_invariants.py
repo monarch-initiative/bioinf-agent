@@ -3703,6 +3703,19 @@ def test_envcache_lookup_anchored_treats_evicted_image_as_miss(tmp_path):
     assert cache.lookup_anchored("missing", image_present=lambda ref: True) is None
 
 
+def test_envcache_lookup_anchored_asks_for_the_pinned_image_not_its_tag(tmp_path):
+    """A tag moves (a rebuild, a `docker tag`); the record's image id does not. A hit
+    answered by whatever the tag points at now would serve another image's bytes."""
+    from agent.skills.freeze import EnvCache
+    from env_records import env_record
+    cache = EnvCache(tmp_path / "envcache.json")
+    rec = env_record()
+    cache.register("k", rec)
+    asked = []
+    cache.lookup_anchored("k", image_present=lambda ref: asked.append(ref) or True)
+    assert asked == [rec["image_digest"]] and rec["image"] != rec["image_digest"]
+
+
 def test_envcache_hit_must_still_satisfy_the_honesty_contract(tmp_path):
     """A hit re-anchors the WHOLE contract, not just image presence.
 

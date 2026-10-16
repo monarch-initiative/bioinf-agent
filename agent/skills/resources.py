@@ -363,7 +363,9 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
 
     Layer 1 — `envs`: the frozen, content-addressed envs in the EnvCache. These
     are the reusable "solved components": ask for one of these tools again and
-    freeze serves it by digest instead of re-solving.
+    freeze serves it by digest instead of re-solving, while its image is still in
+    the local Docker daemon (otherwise it rebuilds). `contract_ok` judges the
+    record; the daemon is asked when the image is used.
     Layer 2 — `workflows`: the sealed WorkflowSpecs (`*.workflow.yaml`), each
     pinning its env BY DIGEST.
 

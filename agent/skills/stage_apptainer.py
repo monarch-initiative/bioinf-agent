@@ -53,8 +53,9 @@ spill into `agent_common_data_target` (that zone is for reference
 data). The user defines the rails; we don't paper over a missing one.
 
 env_name is the freeze record's env name (so multiple frozen envs
-coexist); digest is the short content_digest so a re-freeze with a
-different result doesn't clobber the old .sif.
+coexist); digest is the short IMAGE digest, so a .sif's name says which
+image it holds: a rebuild is a new image and gets a new .sif, never the
+old one found under the same name.
 
 Caller may override the .sif subpath via `sif_subpath`; we still
 resolve it against `container_upload_target.path` (so the file stays
@@ -85,16 +86,16 @@ import yaml
 from agent.skills import compute_access, transfer, workspace
 from agent.models.core_data import frozen_image_ref, record_is_gated as _record_is_gated, sha256_file
 from agent.skills.freeze import canon_platform as _canon_platform
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.outcomes import proven, refused, broke, loop
 from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
 
-def _short_digest(content_digest: str) -> str:
+def _short_digest(digest: str) -> str:
     """Take the first 12 hex chars of a sha256:abcd... digest so the
     filename stays readable while keeping enough entropy to dedupe."""
-    if not isinstance(content_digest, str) or ":" not in content_digest:
+    if not isinstance(digest, str) or ":" not in digest:
         return "unknown"
-    hexdigest = content_digest.split(":", 1)[1]
+    hexdigest = digest.split(":", 1)[1]
     return hexdigest[:12] if hexdigest else "unknown"
 
 
@@ -102,10 +103,12 @@ def _short_digest(content_digest: str) -> str:
 
 def sif_remote_path(env: dict, record: dict, freeze_request_key: str, sif_subpath: str = "") -> str:
     """Where a frozen env's .sif lands on `env`: the container zone itself (no
-    extra prefix), as `<env_name>_<digest12>.sif` unless a subpath is given."""
+    extra prefix), as `<env_name>_<image digest12>.sif` unless a subpath is given.
+    Named by the image, not the build inputs: a rebuild from the same inputs is
+    a different image, and must not find the old .sif waiting under its name."""
     ct_path = ((env.get("container_upload_target") or {}).get("path") or "").rstrip("/")
     name = record.get("name") or freeze_request_key.split("|", 1)[0]
-    digest = record.get("content_digest") or record.get("image_digest", "")
+    digest = record.get("image_digest") or record.get("content_digest", "")
     return f"{ct_path}/{sif_subpath or f'{name}_{_short_digest(digest)}.sif'}"
 
 
@@ -209,7 +212,23 @@ def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_na
         local_path=str(local_sif_path), remote_abs_path=sif_remote_abs,
         access_path=str(Path(access_path)) if access_path else None,
         timeout=timeout)
-    if "error" in up and "already exists" not in (up.get("error") or ""):
+    if up.get("code") == "transfer.globus_sync_wait_exceeded":
+        return loop("stage.sif_upload_still_running", success=False,
+            error=up["error"], task_id=up.get("task_id"), sif_path=sif_remote_abs,
+            local_sif=str(local_sif_path),
+            remedy=f"globus_task_status(task_id={up.get('task_id')!r}) until SUCCEEDED (it puts "
+                   f"the .sif in place), then stage_apptainer_image again: it finds the "
+                   f".sif and sends the record")
+    if up.get("code") == "transfer.remote_exists":
+        # An upload lands under its final name only once verified, so a .sif there
+        # is a whole one: the same answer the probe at the top gives.
+        return proven("stage.skipped", success=True,
+            compute_env=compute_env_name, mode=mode,
+            sif_path=sif_remote_abs, image_digest=image_digest,
+            request_key=freeze_request_key, skipped=True,
+            staged_at=datetime.now(timezone.utc).isoformat(),
+            env_record=_stage_record(**record_kw))
+    if "error" in up:
         return broke("stage.sif_upload_failed",
             error=f"upload of the locally-built .sif to container_upload_target "
                   f"failed: {up['error']}",
@@ -376,10 +395,8 @@ def inspect_staged_sif(env: dict, sif_remote_abs: str,
                 **({"hint": hint} if hint else {}))
 
     head, _, tail = out.partition("---INSPECT---")
-    # First whitespace token of the first non-empty line = the hash (drops the
-    # trailing `  <filename>` sha256sum appends).
-    first_line = next((ln for ln in head.splitlines() if ln.strip()), "")
-    sif_sha256 = (first_line.split() or [""])[0]
+    # the one sha256sum reader: a login shell's banner lines are not the hash
+    sif_sha256 = transfer._parse_sha256sum_output(head)
     inspect_body = tail.strip()
     inspect: Optional[dict] = None
     apptainer_inspect_ok = False

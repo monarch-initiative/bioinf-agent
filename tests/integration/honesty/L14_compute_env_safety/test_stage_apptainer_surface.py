@@ -640,3 +640,55 @@ def test_the_remote_record_probe_reads_checksums_or_says_none(tmp_path, monkeypa
     import hashlib
     assert got == {"samtools.ENV.html": hashlib.sha256(b"x").hexdigest()}
     assert stage_apptainer._remote_record(env, str(tmp_path / "absent"), timeout=10) is None
+
+
+# ===========================================================================
+# A .sif's name says which image it holds, and "already there" is decided by
+# a file that only ever arrives whole (uploads are renamed into place once
+# verified), never by a stand-in for that.
+# ===========================================================================
+
+class TestTheSifIsTheImage:
+    _ENV = {"container_upload_target": {"path": "/work/u/CLAUDE_CONTAINERS"}}
+
+    @pytest.mark.integration
+    def test_a_rebuild_from_the_same_inputs_gets_a_sif_of_its_own(self):
+        first = {"name": "rnaseq", "content_digest": "sha256:" + "0281" * 16,
+                 "image_digest": "sha256:" + "822c" * 16}
+        rebuilt = {**first, "image_digest": "sha256:" + "9f1e" * 16}
+        a = stage_apptainer.sif_remote_path(self._ENV, first, "k")
+        b = stage_apptainer.sif_remote_path(self._ENV, rebuilt, "k")
+        assert a == "/work/u/CLAUDE_CONTAINERS/rnaseq_822c822c822c.sif"
+        assert a != b, "the old image's .sif must not answer for the new image"
+
+    @pytest.mark.integration
+    def test_a_banner_line_is_never_taken_for_the_sifs_checksum(self, monkeypatch):
+        out = ("Lmod has detected the following error: module not loaded\n"
+               + "c" * 64 + "  /work/u/CLAUDE_CONTAINERS/x.sif\n---INSPECT---\n{}\n")
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: _cp(out))
+        r = stage_apptainer.inspect_staged_sif(_ENV, "/work/u/CLAUDE_CONTAINERS/x.sif")
+        assert r["sif_sha256"] == "c" * 64
+
+    def _stage(self, tmp_path, monkeypatch, upload_answer):
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(
+            image_digest="sha256:23cda33a3a4212587276", content_digest="sha256:23cda33a3a4212587276")})
+        _install_local_build_mocks(monkeypatch, remote_exists=False)
+        monkeypatch.setattr(stage_apptainer.transfer, "upload", lambda **kw: upload_answer)
+        return stage_apptainer.stage_apptainer_image(
+            project_name="demo", compute_env_name="fakehpc",
+            freeze_request_key="samtools|linux/amd64|none",
+            env_cache=cache, access_path=str(_good_access(tmp_path)))
+
+    @pytest.mark.integration
+    def test_a_sif_found_at_upload_time_is_reported_as_already_staged(self, tmp_path, monkeypatch):
+        r = self._stage(tmp_path, monkeypatch, {"outcome": "refused", "code": "transfer.remote_exists",
+                                                "error": "remote path already exists"})
+        assert (r["outcome"], r["code"], r["skipped"]) == ("proven", "stage.skipped", True), r
+
+    @pytest.mark.integration
+    def test_a_globus_transfer_still_running_is_handed_back_not_failed(self, tmp_path, monkeypatch):
+        r = self._stage(tmp_path, monkeypatch, {
+            "outcome": "loop", "code": "transfer.globus_sync_wait_exceeded",
+            "error": "we stopped waiting", "task_id": "33333333-3333-3333-3333-333333333333"})
+        assert (r["outcome"], r["code"]) == ("loop", "stage.sif_upload_still_running"), r
+        assert "globus_task_status" in r["remedy"] and r["task_id"].startswith("3333")
