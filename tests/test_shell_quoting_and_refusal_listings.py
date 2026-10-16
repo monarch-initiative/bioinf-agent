@@ -401,3 +401,10 @@ def test_walltime_lands_on_the_time_line_or_is_refused_naming_the_launcher():
         raise AssertionError("a launcher without a time line must be refused")
     except rp._Refusal as e:
         assert "/w/run1/launcher.sh" in str(e)
+
+
+def test_params_can_leave_an_option_empty():
+    from agent.skills import run_production as rp
+    text, effective = rp._with_params("# c\nxtaxon_ids: '9606'\nsamplesheet: samples.csv\n",
+                                      {"xtaxon_ids": ""}, "/w/params.yaml")
+    assert "\nxtaxon_ids: ''\n" in text and effective["xtaxon_ids"] == ""

@@ -365,3 +365,19 @@ class TestDirectoryArtifacts:
         assert "directory" in text
         loaded = pr.PipelineRecord.model_validate_json(text) if text.lstrip().startswith("{") else pr.load_record(p)
         assert loaded.stages[0].outputs[0].directory is True
+
+
+def test_an_empty_value_leaves_the_sealed_steps_matched():
+    """`-s {STRANDED}` with STRANDED="" runs as `-s -o …`: the value is literal text,
+    collapsed with the text around it, so the stage still finds its sealed steps."""
+    rec = pr.derive_pipeline_record(sealed_rnaseq_spec(stranded=""), name="rnaseq_counts")
+    assert all(s.sealed_steps for s in rec.stages), [(s.name, s.sealed_steps) for s in rec.stages]
+
+
+def test_an_optional_file_input_is_refused_at_render_not_rendered_unrunnable():
+    spec = sealed_rnaseq_spec().model_dump()
+    trials = spec["usage_verification"]["trials"]
+    trials[1]["substitutions"]["GTF"] = ""
+    with pytest.raises(pr.PipelineDerivationError) as e:
+        pr.derive_pipeline_record(type(sealed_rnaseq_spec()).model_validate(spec), name="rnaseq_counts")
+    assert e.value.code == "pipeline.optional_path" and "GTF" in e.value.error

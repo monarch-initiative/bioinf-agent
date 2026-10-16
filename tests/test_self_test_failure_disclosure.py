@@ -83,3 +83,25 @@ def test_a_plain_failure_is_not_called_a_kill():
                                _Runner())["trials"][0]
     assert "killed_on_timeout" not in trial and "rc=2" in trial["reason"]
     assert trial["scratch_files"] == [] and trial["scratch_tails"] == {}
+
+
+def test_a_slot_bound_to_an_empty_value_is_filled_not_refused():
+    """"No restriction" is a blank cell: the slot is filled with the empty string the trial
+    bound, quoted in the template so the tool still receives the empty argument."""
+    class Runner:
+        is_image_runner = False
+        commands: list = []
+
+        def run_in_env(self, env_name, command, timeout=None, watch_dir=None, **kw):
+            self.commands.append(command)
+            (Path(watch_dir) / "S1.txt").write_text("ok\n")
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+    spec = {"usage": {"description": "d", "command_template": "tool -x '{XTAXON_IDS}' -o {OUTPUT_DIR}/{SAMPLE}.txt",
+                      "inputs": [{"name": "XTAXON_IDS"}, {"name": "SAMPLE"}],
+                      "outputs": [{"name": "t", "files": ["{OUTPUT_DIR}/{SAMPLE}.txt"]}],
+                      "trials": [{"name": "all_species", "substitutions": {"XTAXON_IDS": "", "SAMPLE": "S1"}}]},
+            "conda_env": "e"}
+    runner = Runner()
+    r = SW.self_test_usage(spec, runner)
+    assert r["ok"] is True, r
+    assert "tool -x '' -o " in runner.commands[0]

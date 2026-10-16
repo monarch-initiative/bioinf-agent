@@ -624,8 +624,9 @@ def _subs_table(subs: dict, output_slots: list, proven: bool) -> str:
             rows.append(f'<tr><td>{{{_e(slot)}}}</td><td><code>{_e(val)}</code></td>'
                         f'<td>{note}</td></tr>')
         else:
-            rows.append(f'<tr><td>{{{_e(slot)}}}</td><td><code>{_e(val)}</code></td>'
-                        f'<td></td></tr>')
+            shown, note = (_e(val), "") if val != "" else ("&#39;&#39;", "empty")
+            rows.append(f'<tr><td>{{{_e(slot)}}}</td><td><code>{shown}</code></td>'
+                        f'<td>{note}</td></tr>')
     if not rows:
         return ""
     return ('<div class="tbl-wrap"><table>'

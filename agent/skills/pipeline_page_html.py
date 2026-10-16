@@ -299,7 +299,7 @@ def picture_layout(record: PipelineRecord) -> _Layout:
         if p.kind != "shared":
             continue                      # a samplesheet column (drawn above) or a thread slot (the stage's own cpus)
         tip = (f"{_key(p)} · {_VALUE_KIND.get(p.value_kind, p.value_kind)}"
-               + (f" · example {p.default}" if p.default is not None else "")
+               + (f" · example {p.default or chr(39) * 2}" if p.default is not None else "")
                + (f" — {p.description}" if p.description else ""))
         params.append(_Node(id=f"p:{p.name}", kind="param", name=p.name, line1=_key(p),
                             line2=p.value_kind, tooltip=tip))

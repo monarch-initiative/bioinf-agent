@@ -51,7 +51,7 @@ from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
 #: A params= value: a path, a word, a number. Nextflow pastes params into the pipeline's
 #: shell commands, so a value never carries a character a shell would act on.
-_VALUE_RE = re.compile(r"^[A-Za-z0-9_./+:,=@%-]{1,4096}$")
+_VALUE_RE = re.compile(r"^[A-Za-z0-9_./+:,=@%-]{0,4096}$")
 #: A SLURM walltime: minutes, M:S, H:M:S, D-H, D-H:M, D-H:M:S.
 _WALLTIME_RE = re.compile(r"^(\d+|\d+:\d{2}|\d+:\d{2}:\d{2}|\d+-\d+|\d+-\d+:\d{2}|\d+-\d+:\d{2}:\d{2})$")
 _SAMPLE_KEY = "sample"

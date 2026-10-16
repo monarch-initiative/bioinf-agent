@@ -580,7 +580,8 @@ def _run_one_trial(
     for slot in output_slots:
         subs[slot] = str(scratch)
 
-    missing = [s for s in placeholders if s not in subs or not subs[s]]
+    # An empty value is a value ("no restriction"); only a slot the trial leaves unbound is missing.
+    missing = [s for s in placeholders if subs.get(s) is None]
     if missing:
         shutil.rmtree(scratch, ignore_errors=True)
         return {

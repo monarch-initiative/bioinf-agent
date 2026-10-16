@@ -314,10 +314,13 @@ def _template_regex(template: str, subs: Mapping[str, str], out_slots: set[str])
     parts: list[str] = []
     pos = 0
     groups: dict[str, str] = {}
+    text = ""            # literal text and input values, collapsed together (an empty value leaves one space)
     for m in SLOT_RE.finditer(template):
-        parts.append(re.escape(_collapse(template[pos:m.start()])))
+        text += template[pos:m.start()]
         name = m.group(1)
         if name in out_slots:
+            parts.append(re.escape(_collapse(text)))
+            text = ""
             if name in groups:
                 parts.append(f"(?P={groups[name]})")
             else:
@@ -326,9 +329,9 @@ def _template_regex(template: str, subs: Mapping[str, str], out_slots: set[str])
         else:
             if name not in subs:
                 raise KeyError(name)
-            parts.append(re.escape(_ws(subs[name])))
+            text += _ws(subs[name])
         pos = m.end()
-    parts.append(re.escape(_collapse(template[pos:])))
+    parts.append(re.escape(_collapse(text + template[pos:])))
     return re.compile("".join(parts))
 
 
@@ -654,7 +657,14 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             notes.append(f"{ph}: collected ({params[-1].reason})")
             continue
         kind, why = classify(ph)
-        value_kind = "path" if core_data.is_path_like(v0) else "value"
+        given = [v for v in values if v != ""]
+        value_kind = "path" if any(core_data.is_path_like(v) for v in given) else "value"
+        if value_kind == "path" and len(given) < len(values):
+            raise PipelineDerivationError(
+                "pipeline.optional_path",
+                f"{ph} is a path in one trial and empty in another: an optional file input, which "
+                f"the render cannot stage",
+                "bind a file in every trial, or make the option a value (a flag the command reads)")
         source = "usage_input" if ph in declared_inputs else "literal"
         if value_kind == "value":
             source = "literal"
