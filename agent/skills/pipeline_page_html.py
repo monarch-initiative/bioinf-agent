@@ -351,11 +351,11 @@ def picture_layout(record: PipelineRecord) -> _Layout:
                   extra={"data-index": str(st.index), "data-rank": str(rank[st.name])})
         r = st.resources
         if r.requested_by == "default":
-            req = "unsized (default request)"
+            req = "unsized (default cluster request)"
         elif r.requested_by == "seal":
-            req = f"request cpus {r.cpus}, the sealed thread count · mem and time default · gpus {r.gpus}"
+            req = f"cluster request cpus {r.cpus}, the sealed thread count · mem and time default · gpus {r.gpus}"
         else:
-            req = f"request cpus {r.cpus} · mem {r.mem} · time {r.time} · gpus {r.gpus}"
+            req = f"cluster request cpus {r.cpus} · mem {r.mem} · time {r.time} · gpus {r.gpus}"
         runs = "once per sample" if st.scope == "per_sample" else "once over the cohort"
         n.tooltip = (f"stage {st.index + 1} {st.name} · {st.tool} · runs {runs} · "
                      f"image {_short_digest(st.image_digest) or 'unrecorded'} · {req} · "
@@ -991,7 +991,7 @@ def _stages_section(record: PipelineRecord) -> str:
     single = len(imgs) == 1
     cohort = any(s.scope == "cohort" for s in stages)
     headers = (["Stage", "Tool"] + (["Runs"] if cohort else []) + ["Command, as main.nf runs it"]
-               + ([] if single else ["Image"]) + ["Request", "Measured"])
+               + ([] if single else ["Image"]) + ["Cluster request", "Measured"])
     rows: list[list[str]] = []
     for st in stages:
         row = [f"<code>{_e(st.name)}</code>", _e(st.tool)]
@@ -1007,6 +1007,8 @@ def _stages_section(record: PipelineRecord) -> str:
     body = ("<style>" + _STAGES_STYLE + (_RUNS_NOWRAP if cohort else "") + "</style>"
             + (f'<p class="note">Every stage runs inside {_image_cell(imgs[0])}.</p>' if single else ""))
     body += _table(headers, rows)
+    body += ('<p class="note">The request is the cluster\'s (the <code>slurm</code> profile). A local run '
+             'asks each stage for its cpus only, at most this machine\'s, with no memory or time limit.</p>')
     untrusted = [st.name for st in stages if st.resources.measured_authority in _UNTRUSTED_AUTHORITY]
     if untrusted:
         body += (f'<p class="warn-note">{_e(", ".join(untrusted))}: measured under emulation, or of unrecorded '

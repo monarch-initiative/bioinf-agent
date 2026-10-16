@@ -37,7 +37,8 @@ The binding table — how a how-to placeholder reaches a process script
   per-sample path column     {READS}         ->  ${reads}        `path(reads)` inside the meta tuple
   per-sample value column    {SAMPLE}        ->  ${meta.sample}
   thread slot                {THREADS}       ->  ${task.cpus}    the stage's cpus request
-                                                 (format: threads; the sealed count unless sized)
+                                                 (format: threads; the sealed count unless sized;
+                                                 locally at most this machine's cpus)
   samplesheet slot           {SHEET}         ->  ${sheet}        staged: `path sheet`
                                                  <- file(params.samplesheet) (format: samplesheet)
   collected input            {COUNTS_DIR}    ->  counts_dir      staged: `path 'counts_dir/*'` <-
@@ -699,6 +700,45 @@ def _render_main(record: PipelineRecord, ctx: _Context) -> str:
 # ── nextflow.config ────────────────────────────────────────────────────────
 
 
+def _stage_blocks(record: PipelineRecord, lines_of, comment=None) -> list[str]:
+    """One `withName` block per stage that has lines in a profile's process scope."""
+    out: list[str] = []
+    for s in record.stages:
+        lines = lines_of(s)
+        if not lines:
+            continue
+        note = comment(s) if comment else ""
+        out.append(f"{_INDENT * 3}withName: '{s.name}' {{" + (f"   // {note}" if note else ""))
+        out += [f"{_INDENT * 4}{x}" for x in lines]
+        out.append(f"{_INDENT * 3}}}")
+    return out
+
+
+def _local_stage_lines(stage: PipelineStage, ctx: _Context) -> list[str]:
+    """A stage on this machine: its own image when the pipeline has several, and its
+    cpus — capped at this machine's by the profile's resourceLimits — but never the
+    cluster's memory or time, which a laptop could not meet."""
+    out = []
+    if len(ctx.images) > 1:
+        im = ctx.image_of[stage.name]
+        out.append(f"container = {_nf_quote(_local_image(im))}   // {im['ref']}")
+    if stage.resources.cpus is not None:
+        out.append(f"cpus = {int(stage.resources.cpus)}"
+                   + ("   // the thread count the command runs with, through task.cpus"
+                      if stage.resources.threads_slot else ""))
+    return out
+
+
+def _slurm_stage_lines(stage: PipelineStage, ctx: _Context) -> list[str]:
+    """A stage on the cluster: its .sif when the pipeline has several, its request,
+    and its GPU placement."""
+    out = _sif_lines(ctx.image_of[stage.name], ctx) if len(ctx.images) > 1 else []
+    out += _sizing_lines(stage)
+    if stage.resources.gpus > 0:
+        out += _gpu_lines(stage, ctx)
+    return out
+
+
 def _fully_sized(stage: PipelineStage) -> bool:
     r = stage.resources
     return r.cpus is not None and r.mem is not None and r.time is not None
@@ -782,11 +822,9 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
         im = ctx.images[0]
         L.append(f"{_INDENT * 3}// the frozen image by its immutable id; docker knows it here as {im['ref']}")
         L.append(f"{_INDENT * 3}container = {_nf_quote(_local_image(im))}")
-    else:
-        for s in record.stages:
-            im = ctx.image_of[s.name]
-            L.append(f"{_INDENT * 3}withName: '{s.name}' {{ container = "
-                     f"{_nf_quote(_local_image(im))} }}   // {im['ref']}")
+    L.append(f"{_INDENT * 3}resourceLimits = [cpus: Runtime.runtime.availableProcessors()]"
+             f"   // no request beyond this machine's cpus")
+    L += _stage_blocks(record, lambda s: _local_stage_lines(s, ctx))
     L += [f"{_INDENT * 2}}}", f"{_INDENT}}}", f"{_INDENT}slurm {{",
           f"{_INDENT * 2}apptainer.enabled = true",
           f"{_INDENT * 2}apptainer.autoMounts = true",
@@ -810,38 +848,23 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
         L.append(f"{_INDENT * 3}queue = '{ctx.cpu_partition}'")
     if ctx.account:
         L.append(f"{_INDENT * 3}clusterOptions = '--account={ctx.account}'")
-    for s in record.stages:
-        block: list[str] = []
-        if len(ctx.images) > 1:
-            block += _sif_lines(ctx.image_of[s.name], ctx)
-        if s.resources.gpus > 0:
-            block += _gpu_lines(s, ctx)
-        if block:
-            L.append(f"{_INDENT * 3}withName: '{s.name}' {{")
-            L += [f"{_INDENT * 4}{b}" for b in block]
-            L.append(f"{_INDENT * 3}}}")
+    # The cluster's sizing lives here, never in the local profile: a stage sized for a
+    # compute node (128 cpus) would not run on a laptop.
+    if not all(_fully_sized(s) for s in record.stages):
+        d = DEFAULT_STAGE_REQUEST
+        L += [f"{_INDENT * 3}// DEFAULT request — not sized for your data",
+              f"{_INDENT * 3}cpus = {int(d['cpus'])}",
+              f"{_INDENT * 3}memory = {_nf_memory(str(d['mem']))}",
+              f"{_INDENT * 3}time = {_nf_time(str(d['time']))}"]
+    L += _stage_blocks(record, lambda s: _slurm_stage_lines(s, ctx),
+                       comment=lambda s: _measured_comment(s) if _sizing_lines(s) else "")
     L += [f"{_INDENT * 2}}}", f"{_INDENT}}}", "}", ""]
 
-    # resources
     L += ["process {",
           f"{_INDENT}// One failing sample stops nothing already running: in-flight tasks complete, nothing",
           f"{_INDENT}// new is submitted, and -resume re-runs the failed tasks and what follows them.",
-          f"{_INDENT}errorStrategy = 'finish'"]
-    if not all(_fully_sized(s) for s in record.stages):
-        d = DEFAULT_STAGE_REQUEST
-        L += [f"{_INDENT}// DEFAULT request — not sized for your data",
-              f"{_INDENT}cpus = {int(d['cpus'])}",
-              f"{_INDENT}memory = {_nf_memory(str(d['mem']))}",
-              f"{_INDENT}time = {_nf_time(str(d['time']))}"]
-    for s in record.stages:
-        sizing = _sizing_lines(s)
-        if not sizing:
-            continue
-        measured = _measured_comment(s)
-        L.append(f"{_INDENT}withName: '{s.name}' {{" + (f"   // {measured}" if measured else ""))
-        L += [f"{_INDENT * 2}{x}" for x in sizing]
-        L.append(f"{_INDENT}}}")
-    L += ["}", ""]
+          f"{_INDENT}errorStrategy = 'finish'",
+          "}", ""]
 
     L.append(RUN_RECORD_CONFIG)
     return "\n".join(L) + "\n"

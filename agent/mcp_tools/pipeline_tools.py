@@ -117,8 +117,11 @@ def render_pipeline(sealed_workflow: str,
     default (one trial: sample id and reads per-sample, the rest shared). Override with
     ``per_sample=`` / ``shared=``. ``stages=`` groups how-to commands by 1-based number
     (``[[1, 2], [3]]``); the default is one stage per command. ``stage_names=`` names them.
-    ``resources={STAGE: {cpus, mem, time, gpus}}`` sizes a stage; an unsized stage carries a
-    labelled default beside the sealed run's measurement. ``env=`` names a compute env in
+    ``resources={STAGE: {cpus, mem, time, gpus}}`` sizes a stage on the cluster (the
+    ``slurm`` profile); an unsized stage carries a labelled default beside the sealed run's
+    measurement there. The ``local`` profile asks for no cluster sizing — a stage with a
+    thread slot runs with the sealed run's count — so one render runs on a laptop and on
+    the cluster alike. ``env=`` names a compute env in
     projects_access.yaml: the launcher carries its SLURM policy and modules, and the
     ``slurm`` profile's container is the path ``stage_apptainer_image`` writes there.
 

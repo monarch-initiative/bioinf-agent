@@ -556,9 +556,9 @@ class TestThePicture:
         assert by["s:HISAT2"].line2 == "hisat2 · per sample"
         assert by["s:HTSEQ_COUNT"].line2 == "htseq-count · per sample"
         assert by["s:HISAT2"].tooltip == ("stage 1 HISAT2 · hisat2 · runs once per sample · image aaaa1111aaaa · "
-                                          "unsized (default request) · measured authority authoritative")
+                                          "unsized (default cluster request) · measured authority authoritative")
         sized = _record(resources={"HISAT2": {"cpus": 8, "mem": "32G", "time": "4:00:00"}})
-        assert "request cpus 8 · mem 32G · time 4:00:00 · gpus 0" in picture_layout(sized).nodes[5].tooltip
+        assert "cluster request cpus 8 · mem 32G · time 4:00:00 · gpus 0" in picture_layout(sized).nodes[5].tooltip
         by = {n.id: n for n in picture_layout(_cohort()).nodes}
         assert by["s:STAGE_01"].line2 == "tool1 · cohort" and by["s:STAGE_00"].line2 == "tool0 · per sample"
         assert "runs once over the cohort" in by["s:STAGE_01"].tooltip
@@ -714,7 +714,7 @@ class TestThePicture:
         svg = _svg(_page(_threads()))
         assert "THREADS" not in svg
         assert re.findall(r'data-node="param" data-id="([^"]+)"', svg) == ["p:HISAT2_INDEX", "p:STRANDED", "p:GTF"]
-        assert "request cpus 4, the sealed thread count · mem and time default · gpus 0" in svg
+        assert "cluster request cpus 4, the sealed thread count · mem and time default · gpus 0" in svg
         assert 'class="node stage unsized"' not in _svg(_page(_threads())).split('data-id="s:HISAT2"')[0].rsplit("<g", 1)[1]
 
 
@@ -978,7 +978,7 @@ class TestStages:
     def test_one_row_per_stage_in_execution_order_with_the_tool_and_the_command_main_nf_runs(self):
         rec, html = _record(), _page()
         sec = _section(html, "stages")
-        assert ("<tr><th>Stage</th><th>Tool</th><th>Command, as main.nf runs it</th><th>Request</th>"
+        assert ("<tr><th>Stage</th><th>Tool</th><th>Command, as main.nf runs it</th><th>Cluster request</th>"
                 "<th>Measured</th></tr>") in sec
         assert sec.count("<tr><td><code>") == len(rec.stages) == 3
         names = ("HISAT2", "SAMTOOLS", "HTSEQ_COUNT")
@@ -1021,7 +1021,7 @@ class TestStages:
     def test_with_several_images_the_image_column_returns_between_command_and_request(self):
         html = _page(_two_images())
         sec = _section(html, "stages")
-        assert ("<tr><th>Stage</th><th>Tool</th><th>Command, as main.nf runs it</th><th>Image</th><th>Request</th>"
+        assert ("<tr><th>Stage</th><th>Tool</th><th>Command, as main.nf runs it</th><th>Image</th><th>Cluster request</th>"
                 "<th>Measured</th></tr>") in sec
         assert "Every stage runs inside" not in sec
         assert (f'</pre></td><td><code>bioinf_rnaseq_cli:latest</code> <span class="muted" title="{DIGEST}">'

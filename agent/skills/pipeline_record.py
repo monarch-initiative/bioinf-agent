@@ -24,6 +24,7 @@ Vocabulary
              flag takes. It binds to the stage's CPU request (`task.cpus`), never to
              params.yaml, and the sealed run's count IS that request unless the
              caller sizes the stage — so the command and the request cannot disagree
+             (a local run caps it at the machine's cpus)
   samplesheet slot  a how-to input declared `format: samplesheet`: the pipeline's own
              samples.csv, handed to the stage as a file. The seal's trial file shows
              which columns the stage reads; columns the per-sample inputs do not

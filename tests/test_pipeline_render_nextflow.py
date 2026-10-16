@@ -502,6 +502,10 @@ class TestLaunchRecord:
 # ===========================================================================
 
 
+#: the measurement comment a sized stage's slurm block carries
+M = ("measured on 3 sealed steps on the workflow's test data: wall 68 s · peak RSS 1570 MB · max CPU 100% (authoritative) — a measurement, never the request")
+
+
 class TestConfig:
     def test_the_two_profiles(self):
         cfg = render_nextflow(_record(), env=ENV)["nextflow.config"]
@@ -513,6 +517,7 @@ class TestConfig:
                 "            executor = 'local'\n"
                 "            // the frozen image by its immutable id; docker knows it here as bioinf_rnaseq_cli:latest\n"
                 f"            container = '{DIGEST}'\n"
+                "            resourceLimits = [cpus: Runtime.runtime.availableProcessors()]   // no request beyond this machine's cpus\n"
                 "        }\n"
                 "    }\n"
                 "    slurm {\n"
@@ -627,27 +632,34 @@ class TestConfig:
         assert "beforeScript" not in cfg
 
     def test_unsized_stages_share_the_default_request_and_say_so(self):
+        """The default request is the cluster's: a laptop runs a task with what it has."""
         cfg = render_nextflow(_record())["nextflow.config"]
         assert ("process {\n"
                 "    // One failing sample stops nothing already running: in-flight tasks complete, nothing\n"
                 "    // new is submitted, and -resume re-runs the failed tasks and what follows them.\n"
                 "    errorStrategy = 'finish'\n"
-                "    // DEFAULT request — not sized for your data\n"
-                "    cpus = 1\n"
-                "    memory = '8 GB'\n"
-                "    time = '4h'\n"
                 "}") in cfg
+        assert ("            cache = 'lenient'\n"
+                "            // DEFAULT request — not sized for your data\n"
+                "            cpus = 1\n"
+                "            memory = '8 GB'\n"
+                "            time = '4h'\n") in _profile(cfg, "slurm")
+        assert "DEFAULT request" not in _profile(cfg, "local") and "memory" not in _profile(cfg, "local")
         assert "withName" not in cfg
 
     def test_a_caller_sized_stage_gets_a_with_name_block_quoting_the_measurement(self):
+        """resources= sizes the cluster: the same render still runs on a laptop, where a
+        request sized for a compute node could not be met."""
         cfg = render_nextflow(_record(resources=SIZED))["nextflow.config"]
-        assert ("    withName: 'HISAT2' {   // measured on 3 sealed steps on the workflow's test data: "
-                "wall 68 s · peak RSS 1570 MB · max CPU 100% (authoritative) — a measurement, never the request\n"
-                "        cpus = 8\n"
-                "        memory = '32 GB'\n"
-                "        time = '4h'\n"
-                "    }\n") in cfg
+        assert (f"            withName: 'HISAT2' {{   // {M}\n"
+                "                cpus = 8\n"
+                "                memory = '32 GB'\n"
+                "                time = '4h'\n"
+                "            }\n") in _profile(cfg, "slurm")
         assert "// DEFAULT request — not sized for your data" in cfg   # the other two stages
+        local = _profile(cfg, "local")     # its cpus, capped at the machine's; never memory or time
+        assert "            withName: 'HISAT2' {\n                cpus = 8\n            }\n" in local
+        assert "memory" not in local and "time =" not in local
 
     def test_when_every_stage_is_sized_there_is_no_default_block_and_units_convert(self):
         cfg = render_nextflow(_record(resources=ALL_SIZED))["nextflow.config"]
@@ -658,7 +670,10 @@ class TestConfig:
 
     def test_a_gpu_stage_asks_for_the_device_and_binds_the_driver_in(self):
         cfg = render_nextflow(_record(resources=GPU), env=ENV)["nextflow.config"]
-        assert ("            withName: 'HISAT2' {\n"
+        assert (f"            withName: 'HISAT2' {{   // {M}\n"
+                "                cpus = 8\n"
+                "                memory = '32 GB'\n"
+                "                time = '4h'\n"
                 "                queue = 'gpu'\n"
                 "                clusterOptions = '--gres=gpu:1 --qos=gpu_access --account=acct'\n"
                 "                containerOptions = '--nv'\n"
@@ -682,13 +697,24 @@ class TestConfig:
         local, slurm = _profile(cfg, "local"), _profile(cfg, "slurm")
         assert ("        process {\n"
                 "            executor = 'local'\n"
-                f"            withName: 'HISAT2' {{ container = '{DIGEST}' }}   // bioinf_rnaseq_cli:latest\n"
-                f"            withName: 'SAMTOOLS' {{ container = '{DIGEST}' }}   // bioinf_rnaseq_cli:latest\n"
-                f"            withName: 'HTSEQ_COUNT' {{ container = '{OTHER}' }}   // bioinf_counts:latest\n"
+                "            resourceLimits = [cpus: Runtime.runtime.availableProcessors()]   // no request beyond this machine's cpus\n"
+                "            withName: 'HISAT2' {\n"
+                f"                container = '{DIGEST}'   // bioinf_rnaseq_cli:latest\n"
+                "            }\n"
+                "            withName: 'SAMTOOLS' {\n"
+                f"                container = '{DIGEST}'   // bioinf_rnaseq_cli:latest\n"
+                "            }\n"
+                "            withName: 'HTSEQ_COUNT' {\n"
+                f"                container = '{OTHER}'   // bioinf_counts:latest\n"
+                "            }\n"
                 "        }\n") in local
         assert "\n            container =" not in local
         assert ("            executor = 'slurm'\n"
                 "            cache = 'lenient'\n"
+                "            // DEFAULT request — not sized for your data\n"
+                "            cpus = 1\n"
+                "            memory = '8 GB'\n"
+                "            time = '4h'\n"
                 "            withName: 'HISAT2' {\n"
                 + _set_me(DIGEST, 16) +
                 "            }\n"
@@ -722,8 +748,11 @@ class TestConfig:
     def test_a_gpu_stage_in_a_multi_image_chain_keeps_its_container_and_placement_in_one_block(self):
         slurm = _profile(render_nextflow(_two_images(_record(resources=GPU)), env=ENV)["nextflow.config"],
                          "slurm")
-        assert ("            withName: 'HISAT2' {\n"
+        assert (f"            withName: 'HISAT2' {{   // {M}\n"
                 + _set_me(DIGEST, 16) +
+                "                cpus = 8\n"
+                "                memory = '32 GB'\n"
+                "                time = '4h'\n"
                 "                queue = 'gpu'\n"
                 "                clusterOptions = '--gres=gpu:1 --qos=gpu_access --account=acct'\n"
                 "                containerOptions = '--nv'\n"
@@ -786,10 +815,14 @@ class TestThreadSlot:
         files = render_nextflow(rec)
         assert _script_lines(files["main.nf"], "HISAT2") == [ALIGN_LINE.replace("-p 4", "-p ${task.cpus}")]
         assert bound_commands(rec, rec.stage("HISAT2")) == _script_lines(files["main.nf"], "HISAT2")
-        assert ("    withName: 'HISAT2' {   // measured on 3 sealed steps on the workflow's test data: "
-                "wall 68 s · peak RSS 1570 MB · max CPU 100% (authoritative) — a measurement, never the request\n"
-                "        cpus = 4   // the thread count the command runs with, through task.cpus; the sealed run used 4\n"
-                "    }\n") in files["nextflow.config"]
+        cfg = files["nextflow.config"]
+        assert (f"            withName: 'HISAT2' {{   // {M}\n"
+                "                cpus = 4   // the thread count the command runs with, through task.cpus; "
+                "the sealed run used 4\n"
+                "            }\n") in _profile(cfg, "slurm")
+        assert ("            withName: 'HISAT2' {\n"
+                "                cpus = 4   // the thread count the command runs with, through task.cpus\n"
+                "            }\n") in _profile(cfg, "local")
         assert "// DEFAULT request — not sized for your data" in files["nextflow.config"]   # mem and time still default
         assert "THREADS" not in "".join(files.values())
         assert "threads" not in files["params.yaml"] and "params.threads" not in files["main.nf"]

@@ -269,7 +269,7 @@ class TestNextflow:
     def test_the_config_names_each_stages_image_and_the_guard_names_every_stage(self):
         files = render_nextflow(_composed())
         for st, img in (("HISAT2", DIGEST), ("MERGE_COUNTS", DIGEST_DE), ("DESEQ2", DIGEST_DE)):
-            assert f"withName: '{st}' {{ container = '{img}' }}" in files["nextflow.config"]
+            assert f"withName: '{st}' {{\n                container = '{img}'" in files["nextflow.config"]
         assert "['HISAT2', 'SAMTOOLS', 'HTSEQ_COUNT', 'MERGE_COUNTS', 'DESEQ2'].every" in files["main.nf"]
 
     def test_the_samplesheet_is_the_records_rendering_with_the_design_columns(self):
