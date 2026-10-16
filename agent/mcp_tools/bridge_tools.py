@@ -310,14 +310,24 @@ def globus_task_status(project_name: str,
 def cluster_job_status(project_name: str,
                        compute_env_name: str,
                        job_id: str,
-                       run_dir: str = "") -> dict:
+                       run_dir: str = "",
+                       wait_s: int = 0) -> dict:
     """Look up SLURM state for `job_id` on `compute_env_name` so the
     agent can poll a submitted job to completion.
 
-    Pure-read: runs ONE ssh invocation of
-    `bash -lc 'sacct -j <id> -P --noheader -X -o <fields>'`, parses
-    the pipe-delimited output, returns a list of row-dicts. Does not
-    submit, cancel, or modify anything.
+    Pure-read: runs `bash -lc 'sacct -j <id> -P --noheader -X -o <fields>'`
+    over ssh, parses the pipe-delimited output, returns a list of row-dicts.
+    Does not submit, cancel, or modify anything.
+
+    `run_dir`: a pipeline's launch directory (what `run_production_pipeline`
+    returned). The job is then its manager, and `pipeline` reports the work:
+    every finished task from the run's trace, every task submitted and not
+    finished with the scheduler's state for it (PENDING and why, RUNNING where
+    and for how long), and a verdict over the tasks.
+
+    `wait_s`: block up to that many seconds (capped at 540) until something
+    changes — the job's state, or a task starting or finishing — so ONE call
+    replaces a poll loop. Prefer `wait_s=300` over calling this repeatedly.
 
     Authorization: the project's `compute_envs` must list
     `compute_env_name`. No per-directory permission needed. SLURM's
@@ -328,8 +338,9 @@ def cluster_job_status(project_name: str,
     any ssh — a smuggled `12345; rm -rf /` never reaches the cluster.
 
     Returns {compute_env, job_id, jobs: [{job_id, state, elapsed,
-    exit_code, nodelist, reason, start, end}, ...], captured_at} on
-    success; {"error": "...", "hint": ...} on failure. Empty `jobs`
+    exit_code, nodelist, reason, start, end, verdict}, ...], captured_at,
+    pipeline?, waited_s?} on success; {"error": "...", "hint": ...} on
+    failure. Empty `jobs`
     means sacct doesn't recognize the id — caller distinguishes "not
     yet in slurmdbd" from "never existed" with a short retry."""
     from agent.skills import cluster_jobs
@@ -338,6 +349,7 @@ def cluster_job_status(project_name: str,
         compute_env_name=compute_env_name,
         job_id=job_id,
         run_dir=run_dir or "",
+        wait_s=wait_s,
         access_path=_resolve_access_path(),
     )
 
