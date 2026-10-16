@@ -437,6 +437,12 @@ def stage_apptainer_image(project_name: str,
       .sif: `<env.container_upload_target>/<env_name>_<digest>.sif`
       Override the subpath via `sif_subpath` (relative, no `..`); it still
       resolves against `container_upload_target`.
+      Beside it, `<env_name>_<digest>/` holds the env's record (ENV report,
+      attestation, both recipe forms), so the cluster copy says what it holds
+      and how it was proven; sent once, also for a .sif staged before.
+      `env_record.status` says sent / already_there (its checksums match) /
+      differs / not_this_image (the record here is of a later freeze under the
+      same name) / not_sent (never fatal to the .sif) / none_here.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare a `container_upload_target` with
@@ -446,7 +452,7 @@ def stage_apptainer_image(project_name: str,
     [[project-container-artifacts-routing]]).
 
     Returns {success, mode, sif_path, image_digest, request_key,
-    skipped, staged_at, local_sif?, builder_image?} on success;
+    skipped, staged_at, env_record, local_sif?, builder_image?} on success;
     {"error": ..., hint?, ...} on failure. `skipped: true` means the .sif
     already existed — re-stages are intentionally idempotent. `mode` is the
     EnvCache record's mode with a `_local_sif` suffix when a build actually

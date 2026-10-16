@@ -98,7 +98,7 @@ Compose these. The agent picks the right primitive; the primitive enforces its c
 | `upload` / `download` | **HPC bridge — the transfer surface.** A file or a whole directory, auto-routed by where the remote path falls (scratch / common_data / container_upload / pipelines / project_path). Blocks until the bytes are verified |
 | `globus_task_status` | Resolve a Globus task's real end state. Reach for it after `transfer.globus_sync_wait_exceeded` — that means WE stopped waiting, not that Globus stopped |
 | `cluster_job_status` | **HPC bridge.** SLURM state query. Read `verdict`, not the exit code — a scheduler-killed job reports rc=0. Pass `run_dir=` for a pipeline run: the answer gains every task, finished or still pending/running, and the manager job is never reported as the work; `wait_s=` blocks until something changes |
-| `stage_apptainer_image` | **HPC bridge.** Deliver a frozen env to the cluster as a `.sif`. Idempotent. Never builds on the head node |
+| `stage_apptainer_image` | **HPC bridge.** Deliver a frozen env to the cluster as a `.sif`, with its record (ENV report, attestation, recipe) beside it. Idempotent. Never builds on the head node |
 | `run_production_pipeline` | **Run a RENDERED pipeline in production — ONE verb, swap the env.** Copies the pipeline directory into `run_dir` on the env named, uses your samplesheet, checks the images and every bound path at the locus and the references against the seal, then `sbatch launcher.sh` (ssh) or a background `nextflow run … -profile local` (local). Submit-and-document: a manifest, no polling |
 | `run_step_on_cluster` | **Cluster VALIDATION/seal.** Runs in the agent's scratch sandbox, polls, fetches, validates, records a cluster-locus step. Use a FRESH `workflow_name` per attempt |
 

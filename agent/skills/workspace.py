@@ -149,6 +149,17 @@ def env_dir(name: str) -> Path:
     return _zone(environments_dir() / name)
 
 
+#: A frozen env's record: what it holds and how it was proven (the ENV report),
+#: where it came from (the attestation), and how to rebuild it (both recipe forms).
+ENV_RECORD_SUFFIXES = (".ENV.html", ".attestation.json", ".recipe.yaml", ".recipe.md")
+
+
+def env_record_files(name: str) -> list[Path]:
+    """The files of frozen env `name`'s record that exist in its directory."""
+    d = environments_dir() / name
+    return [d / f"{name}{s}" for s in ENV_RECORD_SUFFIXES if (d / f"{name}{s}").is_file()]
+
+
 def env_cache_path() -> Path:
     """The registry of frozen envs (the EnvCache file)."""
     return environments_dir() / ENV_CACHE_FILE

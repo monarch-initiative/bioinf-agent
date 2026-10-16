@@ -88,13 +88,11 @@ def _frozen_envs_summary(env_cache) -> list[dict]:
     row per EnvCache entry."""
     try:
         out: list[dict] = []
-        envs_root = Path(workspace.zones()["environments"])
         for req_key, rec in (env_cache.all() or {}).items():
             name = rec.get("name") or rec.get("env_name") or req_key.split("|")[0]
-            env_reports_dir = envs_root / name
-            html = env_reports_dir / f"{name}.ENV.html"
-            attest = env_reports_dir / f"{name}.attestation.json"
-            recipe = env_reports_dir / f"{name}.recipe.yaml"
+            present = {f.name: str(f) for f in workspace.env_record_files(name)}
+            record_files = {key: present.get(f"{name}{suffix}") for key, suffix in
+                            zip(("env_report", "attestation", "recipe", "recipe_md"), workspace.ENV_RECORD_SUFFIXES)}
             out.append({
                 "request_key":     req_key,
                 "name":            name,
@@ -107,11 +105,7 @@ def _frozen_envs_summary(env_cache) -> list[dict]:
                 # not a misleading null 'unknown build method'.
                 "build_method":    rec.get("build_method") or rec.get("mode"),
                 "image_size_bytes": rec.get("image_size_bytes"),
-                "env_report":      str(html) if html.exists() else None,
-                "attestation":     str(attest) if attest.exists() else None,
-                "recipe":          str(recipe) if recipe.exists() else None,
-                "recipe_md":       (str(env_reports_dir / f"{name}.recipe.md")
-                                    if (env_reports_dir / f"{name}.recipe.md").exists() else None),
+                **record_files,
             })
         return out
     except Exception as e:

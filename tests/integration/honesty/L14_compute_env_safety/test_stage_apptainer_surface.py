@@ -540,3 +540,103 @@ class TestExtractSourceDigests:
     @pytest.mark.integration
     def test_none_inspect_is_safe(self):
         assert stage_apptainer._extract_source_digests(None) == set()
+
+
+# ===========================================================================
+# The env's record travels with its image
+# ===========================================================================
+
+class TestEnvRecordBesideTheSif:
+    """On the cluster a .sif alone cannot say what it holds or how it was proven. The
+    ENV report, attestation and both recipe forms go beside it, in a directory of the
+    .sif's own name, as one transfer — only when the record here names this image, and
+    a copy already there counts only when its checksums match."""
+
+    KEY = "samtools|linux/amd64|none"
+    DIGEST = "sha256:23cda33a3a4212587276"
+
+    def _stage(self, tmp_path, monkeypatch, *, remote_exists=False, there=None, record_digest=None,
+               upload_answer=None, sif_subpath=""):
+        from agent.skills import workspace
+        d = workspace.environments_dir() / "samtools"
+        d.mkdir(parents=True, exist_ok=True)
+        for suffix in workspace.ENV_RECORD_SUFFIXES:
+            (d / f"samtools{suffix}").write_text(f"record {suffix}\n")
+        (d / "samtools.recipe.yaml").write_text(f"name: samtools\ncontent_digest: {record_digest or self.DIGEST}\n")
+        _install_local_build_mocks(monkeypatch, remote_exists=remote_exists)
+        monkeypatch.setattr(stage_apptainer, "_remote_record", lambda env, remote, *, timeout: there)
+        sent = []
+
+        def upload(*, project_name, compute_env_name, local_path, remote_abs_path, access_path=None, timeout=600):
+            src = Path(local_path)
+            sent.append((remote_abs_path, sorted(p.name for p in src.iterdir()) if src.is_dir() else src.name))
+            return (upload_answer or (lambda dst: {"success": True, "remote_abs_path": dst}))(remote_abs_path)
+        monkeypatch.setattr(stage_apptainer.transfer, "upload", upload)
+        cache = FakeEnvCache({self.KEY: _staged_record(name="samtools", image="quay.io/biocontainers/samtools@sha256:23cda",
+                                                       image_digest=self.DIGEST, content_digest=self.DIGEST)})
+        r = stage_apptainer.stage_apptainer_image(project_name="demo", compute_env_name="fakehpc",
+                                                  freeze_request_key=self.KEY, env_cache=cache,
+                                                  sif_subpath=sif_subpath, access_path=str(_good_access(tmp_path)))
+        return r, sent, d
+
+    @pytest.mark.integration
+    def test_the_record_goes_up_beside_the_sif_as_one_directory(self, tmp_path, monkeypatch):
+        r, sent, _ = self._stage(tmp_path, monkeypatch)
+        assert r["outcome"] == "proven" and r["sif_path"].endswith("/samtools_23cda33a3a42.sif"), r
+        assert sent[-1] == ("/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42",
+                            ["samtools.ENV.html", "samtools.attestation.json", "samtools.recipe.md",
+                             "samtools.recipe.yaml"])
+        assert r["env_record"]["status"] == "sent"
+
+    @pytest.mark.integration
+    def test_a_copy_already_there_counts_only_when_its_checksums_match(self, tmp_path, monkeypatch):
+        from agent.models.core_data import sha256_file
+        from agent.skills import workspace
+        r, _, d = self._stage(tmp_path, monkeypatch, remote_exists=True)
+        assert r["skipped"] is True and r["env_record"]["status"] == "sent", "a .sif staged before gets its record"
+        same = {f.name: sha256_file(f) for f in workspace.env_record_files("samtools")}
+        r, sent, _ = self._stage(tmp_path, monkeypatch, remote_exists=True, there=same)
+        assert r["env_record"] == {"status": "already_there",
+                                   "path": "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42"} and sent == []
+        r, sent, _ = self._stage(tmp_path, monkeypatch, remote_exists=True, there={"samtools.ENV.html": "0" * 64})
+        assert r["env_record"]["status"] == "differs" and sent == []
+
+    @pytest.mark.integration
+    def test_another_images_record_is_never_sent_as_this_ones(self, tmp_path, monkeypatch):
+        """Records are kept by env name and a .sif by digest: after a later freeze under
+        the same name, the record here describes the newer image."""
+        r, sent, _ = self._stage(tmp_path, monkeypatch, record_digest="sha256:ffff")
+        assert r["outcome"] == "proven" and r["env_record"]["status"] == "not_this_image"
+        assert [dst for dst, _ in sent] == [r["sif_path"]]
+
+    @pytest.mark.integration
+    def test_a_sif_named_without_the_suffix_gets_a_record_directory_of_its_own(self, tmp_path, monkeypatch):
+        r, sent, _ = self._stage(tmp_path, monkeypatch, sif_subpath="tools/samtools.img")
+        assert r["env_record"]["path"] == "/work/u/CLAUDE_CONTAINERS/tools/samtools.img.record"
+
+    @pytest.mark.integration
+    def test_a_record_that_could_not_be_sent_never_undoes_the_sif(self, tmp_path, monkeypatch):
+        def answer(dst):
+            if dst.endswith(".sif"):
+                return {"success": True, "remote_abs_path": dst}
+            return {"outcome": "broke", "code": "transfer.provider_failed", "error": "endpoint unreachable"}
+        r, _, _ = self._stage(tmp_path, monkeypatch, upload_answer=answer)
+        assert r["outcome"] == "proven" and r["skipped"] is False
+        assert r["env_record"]["status"] == "not_sent" and "unreachable" in r["env_record"]["reason"]
+        assert (Path(r["env_record"]["staged"]) / "samtools.ENV.html").is_file()
+
+
+def test_the_remote_record_probe_reads_checksums_or_says_none(tmp_path, monkeypatch):
+    """Run through bash here: a record directory answers with each file's sha256, a
+    missing one with None (not an empty record)."""
+    real = subprocess.run
+    monkeypatch.setattr(stage_apptainer.subprocess, "run",
+                        lambda argv, **kw: real(["bash", "-c", argv[-1]], capture_output=True, text=True))
+    rec = tmp_path / "samtools_23cda33a3a42"
+    rec.mkdir()
+    (rec / "samtools.ENV.html").write_text("x")
+    env = {"host": "hpc.example.invalid", "user": "u"}
+    got = stage_apptainer._remote_record(env, str(rec), timeout=10)
+    import hashlib
+    assert got == {"samtools.ENV.html": hashlib.sha256(b"x").hexdigest()}
+    assert stage_apptainer._remote_record(env, str(tmp_path / "absent"), timeout=10) is None

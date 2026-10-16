@@ -768,6 +768,7 @@ def run_step_on_cluster(
         returncode=rc,
         job_id=job_id,
         sif_path=sif_path_remote,
+        env_record=stage.get("env_record"),
         cluster_sif_sha256=cluster_sif_sha256,
         cluster_image_verified=cluster_image_verified,
         cluster_image_digest_match=cluster_image_digest_match,
