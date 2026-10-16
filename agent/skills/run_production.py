@@ -50,7 +50,7 @@ from agent.skills.pipeline_record import PipelineRecord, load_pipeline_record
 from agent.skills.pipeline_render import (MANIFEST_PATH, RECORD_PATH, SAMPLESHEET_FILENAME,
                                           _edited_since_render, parse_manifest)
 from agent.skills.pipeline_render_nextflow import RUN_LOCAL, SAMPLESHEET_PARAM, params_yaml_line
-from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
 #: A params= value: a path, a word, a number. Nextflow pastes params into the pipeline's
 #: shell commands, so a value never carries a character a shell would act on.
@@ -352,7 +352,8 @@ def _remote_prefixes_exist(env: dict, prefixes: list[str], *, timeout: int) -> d
     if bad:
         raise _refuse("run_production.unsafe_input_path",
                       f"path(s) hold characters a remote check cannot carry: {bad[:5]}")
-    checks = "; ".join(f'compgen -G {shlex.quote(p + "*")} > /dev/null || echo MISSING:{shlex.quote(p)}' for p in clean)
+    checks = _SEEN_FN + "; ".join(f'fresh "$(dirname {shlex.quote(p)})"; compgen -G {shlex.quote(p + "*")} > /dev/null '
+                                  f'|| echo MISSING:{shlex.quote(p)}' for p in clean)
     argv = _ssh_argv(env, f"bash -lc {shlex.quote(checks)}")
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     if res.returncode != 0:
@@ -543,9 +544,9 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
     files `rels` it lacks, whether it holds a samplesheet, and the text of each of
     `_RUN_TEXTS` there ("" when absent). One ssh hop."""
     q = shlex.quote
-    script = (f'[ -e {q(run_dir)} ] && echo EXISTS=1 || echo EXISTS=0; '
-              + "".join(f'[ -e {q(run_dir + "/" + rel)} ] || echo {q("MISSING=" + rel)}; ' for rel in rels)
-              + f'[ -e {q(run_dir + "/" + SAMPLESHEET_FILENAME)} ] && echo SHEET=1 || echo SHEET=0; '
+    script = (_SEEN_FN + f'seen {q(run_dir)} && echo EXISTS=1 || echo EXISTS=0; '
+              + "".join(f'seen {q(run_dir + "/" + rel)} || echo {q("MISSING=" + rel)}; ' for rel in rels)
+              + f'seen {q(run_dir + "/" + SAMPLESHEET_FILENAME)} && echo SHEET=1 || echo SHEET=0; '
               # `echo` after `cat` ends a file that has no last newline before the END line
               + "".join(f'echo {q("BEGIN " + rel)}; cat {q(run_dir + "/" + rel)} 2>/dev/null; echo; '
                         f'echo {q("END " + rel)}; ' for rel in _RUN_TEXTS)

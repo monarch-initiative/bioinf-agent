@@ -10,7 +10,7 @@ EnvCache record's `mode`. These tests pin:
   - delivery = LOCAL build (apptainer-in-docker) + ship the finished .sif;
     NO `apptainer build`/`pull` on the head node
     ([[feedback-no-head-node-image-builds]])
-  - skip-if-already-staged via a light read-only `test -f` ssh probe
+  - skip-if-already-staged via a light read-only existence probe over ssh
   - the built .sif lands under container_upload_target (no spillover to
     common_data, per [[project-container-artifacts-routing]])
 """
@@ -33,7 +33,7 @@ def _install_local_build_mocks(monkeypatch, *, remote_exists=False, capture=None
     """Stub the LOCAL-build-and-ship surface so the delivery flow is testable
     without real docker/ssh: (1) `local_sif.build_sif_locally` writes a fake .sif
     + returns proven, (2) `transfer.upload` captures the destination, (3)
-    subprocess.run answers the `test -f` idempotency probe (EXISTS/MISSING) and
+    subprocess.run answers the existence probe (EXISTS/MISSING) and
     any `docker image inspect` as present. Asserts NO ssh apptainer build/pull is
     ever constructed (the whole point of the fix)."""
     def fake_build(*, out_sif, tarball="", image_tag="", platform="linux/amd64",
@@ -61,7 +61,7 @@ def _install_local_build_mocks(monkeypatch, *, remote_exists=False, capture=None
             f"head-node apptainer build/pull must never be constructed: {joined!r}")
         m = MagicMock(); m.returncode = 0; m.stderr = ""
         m.stdout = ("EXISTS\n" if remote_exists else "MISSING\n") \
-            if "test -f" in joined else ""
+            if "echo EXISTS || echo MISSING" in joined else ""
         return m
     monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -137,7 +137,7 @@ class TestPathHelpers:
 
 
 # ===========================================================================
-# Idempotency: skip when the .sif is already staged (read-only `test -f`)
+# Idempotency: skip when the .sif is already staged (a read-only existence probe)
 # ===========================================================================
 
 class TestRemoteSifExists:
@@ -153,7 +153,7 @@ class TestRemoteSifExists:
         assert stage_apptainer._remote_sif_exists(env, "/work/x.sif") is True
         joined = " ".join(seen["argv"])
         # read-only probe ONLY — never builds/pulls on the head node
-        assert "test -f" in joined
+        assert "seen /work/x.sif && echo EXISTS || echo MISSING" in joined
         assert "apptainer build" not in joined and "apptainer pull" not in joined
 
 
@@ -387,7 +387,7 @@ class TestAdoptHappyPath:
         cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(image="quay.io/biocontainers/samtools@sha256:23cda",
                            image_digest="sha256:23cda33a3a4212587276",
                            content_digest="sha256:23cda33a3a4212587276")})
-        # A light read-only `test -f` says the .sif is already staged → the
+        # A light read-only existence probe says the .sif is already staged → the
         # whole local build + upload is skipped (no docker, no ship).
         _install_local_build_mocks(monkeypatch, remote_exists=True)
 

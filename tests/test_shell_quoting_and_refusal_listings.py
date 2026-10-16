@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.skills import (acquire_data, core_test_data, env_freeze, evidence,
+from agent.skills import (acquire_data, cluster_jobs, core_test_data, env_freeze, evidence,
                           freeze_from_image, install_commands as ic, package_search,
                           stage_apptainer, submit_workflow)
 
@@ -273,6 +273,59 @@ def test_image_absent_refusal_lists_the_local_images(monkeypatch, tmp_path):
 
 # ── remote `bash -lc` bodies: stage_apptainer / submit_workflow / acquire_data ──
 
+def _bash(body: str, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(["bash", "-c", body], capture_output=True, text=True, timeout=30, **kw)
+
+
+def test_seen_answers_as_test_e_does_and_looks_again_from_the_nearest_directory_there_is(tmp_path):
+    """The login node mounts the cluster filesystem over NFS and keeps a lookup's "not
+    there"; `seen` opens the nearest directory that exists before it says no, which
+    makes the client re-read it. It answers exactly as `[ -e ]`, quotes and spaces
+    travel, every walk up ends (at `/` or `.`), and a login profile's `set -e`
+    survives a directory it may not open."""
+    from agent.skills.snapshot import _SEEN_FN
+    real = tmp_path / "it's a dir"
+    (real / "sub").mkdir(parents=True)
+    (real / "sub" / "f.txt").write_text("x")
+    q = shlex.quote
+    ran = _bash(_SEEN_FN + "; ".join([
+        f"seen {q(str(real / 'sub' / 'f.txt'))} && echo A", f"seen {q(str(real / 'nope' / 'deeper' / 'f'))} || echo B",
+        "seen '' || echo C", "seen relative/x || echo D", "seen / && echo E",
+        f"fresh {q(str(real / 'nope' / 'deeper'))}; echo \"F=$d\""]))
+    assert ran.stdout.split("\n")[:5] == ["A", "B", "C", "D", "E"], ran.stderr
+    assert ran.stdout.splitlines()[5] == f"F={real}"
+    shut = real / "shut"
+    shut.mkdir(mode=0o100)                          # traverse-only: an open is refused
+    try:
+        guarded = _bash("set -e; " + _SEEN_FN + f"seen {q(str(shut / 'x'))} || echo MISSING; echo DONE")
+    finally:
+        shut.chmod(0o755)
+    assert guarded.stdout.split() == ["MISSING", "DONE"], guarded.stderr
+
+
+def test_the_bulk_checks_run_as_written_and_name_only_what_is_missing(tmp_path, monkeypatch):
+    """remote_paths_exist and the index-prefix check, their remote bodies run here (on
+    paths the safe-path rule admits)."""
+    from agent.skills import run_production
+    there = tmp_path / "data_dir" / "r1.fq"
+    there.parent.mkdir()
+    there.write_text("x")
+    (tmp_path / "idx").mkdir()
+    (tmp_path / "idx" / "chr22.1.ht2").write_text("x")
+
+    real_run = subprocess.run
+
+    def run_here(argv, **kw):                       # the ssh hop, run on this machine instead
+        return real_run(["bash", "-c", _remote_argv(argv[-1])[2]], capture_output=True, text=True, timeout=30)
+    monkeypatch.setattr(subprocess, "run", run_here)
+    gone = str(tmp_path / "no_dir" / "r2.fq")
+    res = cluster_jobs.remote_paths_exist({"host": "h"}, [str(there), gone])
+    assert res["missing_paths"] == [gone], res
+    pre = run_production._remote_prefixes_exist({"host": "h"}, [str(tmp_path / "idx" / "chr22"),
+                                                                str(tmp_path / "idx" / "chr21")], timeout=30)
+    assert pre == {"ok": False, "missing": [str(tmp_path / "idx" / "chr21")]}
+
+
 def _remote_argv(cmd: str) -> list[str]:
     argv = shlex.split(cmd)
     assert argv[:2] == ["bash", "-lc"] and len(argv) == 3, cmd
@@ -291,12 +344,13 @@ def test_remote_sif_probe_body_is_one_quoted_argument(monkeypatch, tmp_path):
     monkeypatch.setattr(stage_apptainer.subprocess, "run", fake_run)
     sif = "/w/CLAUDE_CONTAINERS/it's a.sif"
     assert stage_apptainer._remote_sif_exists({"host": "hpc.example.invalid"}, sif) is True
+    from agent.skills.snapshot import _SEEN_FN
     body = _remote_argv(seen[0])[2]
-    assert body == f"test -f {shlex.quote(sif)} && echo EXISTS || echo MISSING"
+    assert body == _SEEN_FN + f"seen {shlex.quote(sif)} && echo EXISTS || echo MISSING"
     # the body itself runs: against a real file whose name carries the quote
     real = tmp_path / "it's a.sif"
     real.write_bytes(b"x")
-    local = f"test -f {shlex.quote(str(real))} && echo EXISTS || echo MISSING"
+    local = _SEEN_FN + f"seen {shlex.quote(str(real))} && echo EXISTS || echo MISSING"
     assert "EXISTS" in subprocess.run(["bash", "-c", local], capture_output=True, text=True).stdout
 
 
@@ -305,7 +359,7 @@ def test_inspect_cmd_body_is_one_quoted_argument():
     body = _remote_argv(stage_apptainer._build_inspect_cmd(sif))[2]
     q = shlex.quote(sif)
     assert body.startswith("module load apptainer >/dev/null 2>&1 || true; ")
-    assert f"if [ ! -f {q} ]; then echo SIF_MISSING; exit 3; fi; sha256sum {q} 2>/dev/null; echo ---INSPECT---; " in body
+    assert f"if ! seen {q}; then echo SIF_MISSING; exit 3; fi; sha256sum {q} 2>/dev/null; echo ---INSPECT---; " in body
     assert body.endswith(f"apptainer inspect --json {q} 2>/dev/null || echo INSPECT_FAILED")
 
 
@@ -322,8 +376,9 @@ def test_sbatch_via_ssh_body_is_one_quoted_argument(monkeypatch):
     r = submit_workflow.sbatch_via_ssh({"host": "hpc.example.invalid", "user": "u"}, "/work/u/run",
                                        sbatch_args=("--dependency=afterok:41",))
     assert r["job_id"] == "4242"
+    from agent.skills.snapshot import _SEEN_FN
     assert _remote_argv(r["sbatch_command"])[2] == \
-        "cd /work/u/run && sbatch --parsable --dependency=afterok:41 launcher.sh"
+        _SEEN_FN + "seen /work/u/run; cd /work/u/run && sbatch --parsable --dependency=afterok:41 launcher.sh"
     assert seen == [r["sbatch_command"]]
 
 
@@ -340,11 +395,12 @@ def test_cluster_probe_body_is_one_quoted_argument(monkeypatch):
     path = "/data/ref dir/it's.fa"
     r = acquire_data._probe_cluster_path({"host": "hpc.example.invalid"}, path)
     assert r == {"exists": True, "size_bytes": 12, "sha256": None}
+    from agent.skills.snapshot import _SEEN_FN
     body = _remote_argv(seen[0])[2]
     q, q_side = shlex.quote(path), shlex.quote(path + ".source.sha256")
-    assert body == (f"if [ -e {q} ]; then echo EXISTS=1; else echo EXISTS=0; fi; "
+    assert body == _SEEN_FN + (f"if seen {q}; then echo EXISTS=1; else echo EXISTS=0; fi; "
                     f"if [ -e {q} ]; then du -sb {q} 2>/dev/null | cut -f1 | sed \"s/^/SIZE=/\"; fi; "
-                    f"if [ -f {q_side} ]; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi")
+                    f"if seen {q_side}; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi")
 
 
 def test_the_run_dir_probe_reads_what_the_cluster_holds_and_the_rewrite_is_exact(tmp_path, monkeypatch):

@@ -44,7 +44,7 @@ from typing import Optional
 
 from agent.skills import compute_access
 from agent.skills.outcomes import refused, broke, loop
-from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
 
 # Fields we ask sacct for, in order. Keep this fixed — the parser
@@ -377,13 +377,13 @@ TASK_DONE, TASK_FAILED = frozenset({"COMPLETED", "CACHED"}), "FAILED"
 
 def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
     q = shlex.quote
-    script = (f'out=$(ls -1 {q(run_dir)}/*-{job_id}.out 2>/dev/null | head -n 1); '
+    script = (_SEEN_FN + f'out=$(ls -1 {q(run_dir)}/*-{job_id}.out 2>/dev/null | head -n 1); '
               f'if [ -z "$out" ]; then echo NOOUT; exit 0; fi; '
               f'echo "OUT=$out"; '
               f'stamp=$(grep -o -m1 "runs/[0-9_]*" "$out" | head -n 1); echo "STAMP=$stamp"; '
-              f'if [ -n "$stamp" ] && [ -f {q(run_dir)}/"$stamp"/trace.txt ]; then '
+              f'if [ -n "$stamp" ] && seen {q(run_dir)}/"$stamp"/trace.txt; then '
               f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo TRACE_END; fi; '
-              f'if [ -n "$stamp" ] && [ -f {q(run_dir)}/"$stamp"/nextflow.log ]; then '
+              f'if [ -n "$stamp" ] && seen {q(run_dir)}/"$stamp"/nextflow.log; then '
               f'echo SUBMITTED_BEGIN; grep -o "submitted process .* > jobId: [0-9]*; workDir: [^ ]*" '
               f'{q(run_dir)}/"$stamp"/nextflow.log; echo SUBMITTED_END; fi; exit 0')
     return f"bash -lc {q(script)}"
@@ -558,8 +558,8 @@ def remote_paths_exist(env: dict, paths: list[str], *,
         return refused("cluster.unsafe_input_path", error=
             f"input path(s) are not absolute safe paths (refused before ssh): "
             f"{bad[:5]}")
-    checks = "; ".join(
-        f'[ -e {shlex.quote(p)} ] || echo MISSING:{shlex.quote(p)}'
+    checks = _SEEN_FN + "; ".join(
+        f'seen {shlex.quote(p)} || echo MISSING:{shlex.quote(p)}'
         for p in clean)
     inner = f"bash -lc {shlex.quote(checks)}"
     argv = _ssh_argv(env, inner)

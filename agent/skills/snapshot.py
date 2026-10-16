@@ -270,6 +270,15 @@ def _ssh_argv(env: dict, remote_cmd: str) -> list[str]:
     return ["ssh", "-n", "-o", "BatchMode=yes", target, remote_cmd]
 
 
+#: Shell functions for a check the login node makes. The cluster filesystem is mounted
+#: there over NFS, which keeps a lookup's "not there" for up to a minute, so a path
+#: another node wrote since (a Globus transfer, a compute job) still reads as missing.
+#: `seen P` is `[ -e P ]` that, before answering no, opens the nearest directory the
+#: node can see (`fresh`; opening one makes the client re-read it) and looks again.
+_SEEN_FN = ('fresh() { d=$1; until [ -d "$d" ]; do d=$(dirname "$d"); done; : 2>/dev/null <"$d" || :; }; '
+            'seen() { [ -e "$1" ] || { fresh "$(dirname "$1")"; [ -e "$1" ]; }; }; ')
+
+
 def _ssh_failure_hint(stderr: str, host: str) -> Optional[str]:
     """Detect well-known ssh failure modes and return a user-facing hint.
 
