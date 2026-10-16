@@ -391,6 +391,15 @@ class TestLocalLaunch:
         assert "stranded: >-" in params.read_text(), "nothing written"
 
     @pytest.mark.integration
+    def test_after_is_a_cluster_chain(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        r = run_production.run_production_pipeline(
+            project_name="demo", compute_env_name="laptop", pipeline="rnaseq_counts", run_dir=str(d / "run1"),
+            after=str(d / "build"), access_path=_local_access(tmp_path, str(d)), _job_manager=_FakeJobManager())
+        assert r["code"] == "run_production.after_on_local"
+
+    @pytest.mark.integration
     def test_a_directory_holding_another_render_is_refused(self, tmp_path, local_ok):
         _render(tmp_path, "a")
         _render(tmp_path, "b", spec=sealed_rnaseq_spec(["SRR1039508"]))
@@ -427,11 +436,14 @@ class TestLocalLaunch:
 class _Remote:
     """Stands in for the cluster: which paths exist, which sifs are staged, what the run
     directory holds, and what sbatch was asked."""
-    def __init__(self, *, existing=(), sifs=(), run_state=None):
+    def __init__(self, *, existing=(), sifs=(), run_state=None, dirs=None, sidecars=None):
         self.existing = set(existing)
         self.sifs = set(sifs)
+        self.sidecars = sidecars or {}  # {path: the sha256 its .source.sha256 sidecar holds}
+        self.prefix_probes = []         # every index prefix asked about
         # `missing: None` stands for "every carried file": nothing of the render is there.
         self.run_state = run_state or {"exists": False, "missing": None, "samplesheet": False, "texts": {}}
+        self.dirs = dirs or {}      # other run directories (an upstream's): {path: what it holds}
         self.writes = {}    # files a re-launch rewrote in place: {remote path: text}
         self.uploads = []
         self.sent = {}      # what the uploads carried: {remote path: bytes}
@@ -445,19 +457,22 @@ class _Remote:
                     else {"outcome": "refused", "code": "cluster.inputs_missing", "error": "x", "missing_paths": missing})
         monkeypatch.setattr(cluster_jobs, "remote_paths_exist", paths_exist)
         monkeypatch.setattr(run_production, "_remote_prefixes_exist",
-                            lambda env, prefixes, *, timeout: {"ok": True, "missing": []})
+                            lambda env, prefixes, *, timeout: self.prefix_probes.extend(prefixes)
+                            or {"ok": True, "missing": []})
         monkeypatch.setattr(stage_apptainer, "_remote_sif_exists", lambda env, sif, *, timeout=120: sif in self.sifs)
         def run_dir_state(env, run_dir, rels, *, timeout):
-            missing = self.run_state["missing"]
-            texts = {rel: self.run_state["texts"].get(rel, "") for rel in run_production._RUN_TEXTS}
-            return {**self.run_state, "missing": list(rels) if missing is None else list(missing),
-                    "texts": texts, "live": self.run_state.get("live", [])}
+            state = self.dirs.get(run_dir, self.run_state)
+            missing = state.get("missing")
+            texts = {rel: state.get("texts", {}).get(rel, "") for rel in run_production._RUN_TEXTS}
+            return {"exists": state.get("exists", False), "samplesheet": state.get("samplesheet", False),
+                    "missing": list(rels) if missing is None else list(missing),
+                    "texts": texts, "live": state.get("live", [])}
         monkeypatch.setattr(run_production, "_remote_run_dir_state", run_dir_state)
         monkeypatch.setattr(run_production, "_write_remote",
                             lambda env, run_dir, texts, *, timeout: self.writes.update(
                                 {f"{run_dir}/{rel}": text for rel, text in texts.items()}))
-        monkeypatch.setattr(run_production, "_observe_cluster",
-                            lambda env, paths, *, timeout: {p: {"exists": True, "sha256": ""} for p in paths})
+        monkeypatch.setattr(run_production, "_observe_cluster", lambda env, paths, *, timeout: {
+            p: {"exists": True, "sha256": self.sidecars.get(p, "")} for p in paths})
 
         def upload(project_name, compute_env_name, local_path, remote_abs_path, access_path=None, timeout=600):
             self.uploads.append((local_path, remote_abs_path))
@@ -487,6 +502,36 @@ def _run_ssh(tmp_path, pipeline, run_dir, *, samplesheet="", params=None, wallti
     return run_production.run_production_pipeline(
         project_name="demo", compute_env_name="hpc", pipeline=pipeline, run_dir=run_dir,
         samplesheet=samplesheet, params=params, walltime=walltime, access_path=access or _ssh_access(tmp_path))
+
+
+def _run_ssh_after(tmp_path, *, run_dir="/work/pipelines/run1", after="/work/pipelines/build", samplesheet="",
+                   params=None):
+    return run_production.run_production_pipeline(
+        project_name="demo", compute_env_name="hpc", pipeline="rnaseq_counts", run_dir=run_dir,
+        samplesheet=samplesheet, params=params, after=after, access_path=_ssh_access(tmp_path))
+
+
+def _launched(job_id, *, env="hpc", locus="cluster", at="2026-10-16T00:00:00+00:00"):
+    """A launch into /work/pipelines/build, as this tool records one."""
+    submit_workflow._write_submission_manifest(
+        project_name="demo", workflow_name="build", job_id=job_id,
+        manifest={"run_dir": "/work/pipelines/build", "compute_env": env, "locus": locus,
+                  "job_id": job_id, "submitted_at": at})
+
+
+def _scheduler(monkeypatch, states: dict) -> list:
+    """sacct's answer: {job id: SLURM state}; a job it is not given, it keeps no record of.
+    Returns the job ids it was asked about."""
+    verdict = {"PENDING": cluster_jobs.RUNNING, "RUNNING": cluster_jobs.RUNNING,
+               "COMPLETED": cluster_jobs.SUCCEEDED, "FAILED": cluster_jobs.DIED}
+    asked = []
+
+    def status(project_name, compute_env_name, job_id, **kw):
+        asked.append(job_id)
+        st = states.get(job_id)
+        return {"jobs": [{"job_id": job_id, "state": st, "verdict": verdict[st], "verdict_reason": st}] if st else []}
+    monkeypatch.setattr(cluster_jobs, "cluster_job_status", status)
+    return asked
 
 
 class TestClusterLaunch:
@@ -682,6 +727,140 @@ class TestClusterLaunch:
         assert r["code"] == "run_production.unknown_param" and probed == []
 
     @pytest.mark.integration
+    def test_a_run_reading_an_upstream_still_in_flight_is_queued_behind_it(self, tmp_path, monkeypatch):
+        """The downstream sheet names files the upstream has not written yet: the launch
+        waits for it (and SLURM drops it if the upstream fails), the files are taken as
+        promised, and the rest is checked as always."""
+        sibling = "/work/pipelines/build2/r.fq"            # beside the upstream, not in it
+        remote = _Remote(existing={"/data/r1.fq", sibling} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        _launched("4100")
+        _scheduler(monkeypatch, {"4100": "PENDING"})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        promised = "/work/pipelines/build/results/s1/reads.fq"
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, [promised, "/data/r1.fq", sibling]))
+        assert r["outcome"] == "proven", r
+        assert remote.sbatch["sbatch_args"] == ["--dependency=afterok:4100", "--kill-on-invalid-dep=yes"]
+        assert r["after"] == {"run_dir": "/work/pipelines/build", "jobs": ["4100 PENDING"], "waits_on": ["4100"],
+                              "promised_roots": ["/work/pipelines/build"]}
+        assert r["promised_paths"] == [promised]
+
+    @pytest.mark.integration
+    def test_an_upstream_launched_by_hand_is_waited_on_and_its_outdir_is_promised(self, tmp_path, monkeypatch):
+        """No launch here recorded it: what the scheduler holds in its directory is what
+        the run waits for, and its outdir, wherever its params.yaml puts it, is promised."""
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values()), dirs={
+            "/work/pipelines/build": {"live": ["4100 RUNNING", "4101 PENDING"],
+                                      "texts": {"params.yaml": "outdir: /work/out/../shared\n"}}}).install(monkeypatch)
+        asked = _scheduler(monkeypatch, {})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        promised = "/work/shared/./s1/reads.fq"
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, [promised]))
+        assert r["outcome"] == "proven", r
+        assert remote.sbatch["sbatch_args"][0] == "--dependency=afterok:4100:4101" and asked == []
+        assert r["after"]["promised_roots"] == ["/work/pipelines/build", "/work/shared"]
+        assert r["promised_paths"] == [promised]
+
+    @pytest.mark.integration
+    def test_a_promised_reference_is_neither_checked_nor_compared_at_launch(self, tmp_path, monkeypatch):
+        """The upstream builds the annotation this run binds: nothing is there to look at
+        yet, so the reference check says it was not observed rather than that it exists."""
+        remote = _Remote(existing={"/data/r1.fq"}, sifs=set(_SIF.values())).install(monkeypatch)
+        _launched("4100")
+        _scheduler(monkeypatch, {"4100": "RUNNING"})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        gtf, index = "/work/pipelines/build/results/chr22.gtf", "/work/pipelines/build/results/idx/chr22"
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, ["/data/r1.fq"]),
+                           params={"gtf": gtf, "hisat2_index": index})
+        assert r["outcome"] == "proven" and r["promised_paths"] == [gtf, index], r
+        assert remote.prefix_probes == []
+        rows = {f["path"]: f for f in r["reference_check"]["findings"]}
+        assert [(rows[p]["exists"], rows[p]["verdict"]) for p in (gtf, index)] == [(None, "unanchored")] * 2
+
+    @pytest.mark.integration
+    def test_a_promised_path_a_shell_cannot_carry_is_refused(self, tmp_path, monkeypatch):
+        """Nothing probes a promised path, so nothing else would stop it reaching the
+        stages' shell commands."""
+        _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        _launched("4100")
+        _scheduler(monkeypatch, {"4100": "RUNNING"})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, ["/work/pipelines/build/out/a;b.fq"]))
+        assert r["code"] == "run_production.unsafe_input_path", r
+
+    @pytest.mark.integration
+    def test_an_upstream_that_succeeded_needs_no_wait_and_one_that_failed_is_refused(self, tmp_path, monkeypatch):
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        _launched("4100")
+        _scheduler(monkeypatch, {"4100": "COMPLETED"})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["outcome"] == "proven" and remote.sbatch["sbatch_args"] == [] and r["promised_paths"] == []
+        _scheduler(monkeypatch, {"4100": "FAILED"})
+        r = _run_ssh_after(tmp_path, run_dir="/work/pipelines/run2", samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["code"] == "run_production.after_failed", r
+
+    @pytest.mark.integration
+    def test_the_newest_launch_into_the_upstream_on_this_env_decides(self, tmp_path, monkeypatch):
+        """An older launch that failed was re-run; a launch into the same path on another
+        env, or on this machine, is another directory altogether."""
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        _launched("4000", at="2026-10-15T00:00:00+00:00")
+        _launched("4100", at="2026-10-16T00:00:00+00:00")
+        _launched("4200", env="other", at="2026-10-17T00:00:00+00:00")
+        _launched("4300", locus="local", at="2026-10-17T00:00:00+00:00")
+        asked = _scheduler(monkeypatch, {"4000": "FAILED", "4100": "COMPLETED", "4200": "FAILED", "4300": "FAILED"})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["outcome"] == "proven" and asked == ["4100"] and remote.sbatch["sbatch_args"] == [], r
+        assert r["after"] == {"run_dir": "/work/pipelines/build", "jobs": ["4100 COMPLETED"], "waits_on": [],
+                              "promised_roots": []}
+
+    @pytest.mark.integration
+    def test_an_upstream_nothing_knows_is_refused(self, tmp_path, monkeypatch):
+        _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh_after(tmp_path, after="/work/pipelines/elsewhere", samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["code"] == "run_production.after_unknown", r
+        _launched("4100")
+        _scheduler(monkeypatch, {})
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["code"] == "run_production.after_unknown" and "no record of job 4100" in r["error"], r
+
+    @pytest.mark.integration
+    def test_a_scheduler_that_cannot_be_asked_is_broke(self, tmp_path, monkeypatch):
+        _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        _launched("4100")
+        monkeypatch.setattr(cluster_jobs, "cluster_job_status", lambda *a, **kw: {
+            "outcome": "broke", "code": "cluster.status_ssh_failed", "error": "ssh: connect", "hint": "reopen ssh"})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert (r["outcome"], r["code"], r["hint"]) == ("broke", "run_production.after_unreadable", "reopen ssh"), r
+
+    @pytest.mark.integration
+    def test_a_relaunch_waits_too_and_a_failed_submit_names_the_next_launch(self, tmp_path, monkeypatch):
+        pdir = _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        texts = {rel: (pdir / rel).read_text() for rel in (MANIFEST_PATH, "launcher.sh", "params.yaml")}
+        remote = _Remote(existing=_REFS, sifs=set(_SIF.values()),
+                         run_state={"exists": True, "missing": [], "samplesheet": True, "texts": texts}).install(monkeypatch)
+        _launched("4100")
+        _scheduler(monkeypatch, {"4100": "PENDING"})
+        r = _run_ssh_after(tmp_path)
+        assert r["reused_run_dir"] is True and remote.sbatch["sbatch_args"][0] == "--dependency=afterok:4100", r
+        monkeypatch.setattr(submit_workflow, "sbatch_via_ssh", lambda *a, **kw: {
+            "outcome": "broke", "code": "submit.sbatch_failed", "error": "sbatch: error: Job dependency problem"})
+        r = _run_ssh_after(tmp_path)
+        assert r["code"] == "submit.sbatch_failed", r
+        assert "run_dir='/work/pipelines/run1', after='/work/pipelines/build' and no samplesheet" in r["remedy"]
+
+    @pytest.mark.integration
+    def test_a_malformed_after_is_refused_before_anything_is_asked(self, tmp_path, monkeypatch):
+        probed = []
+        monkeypatch.setattr(run_production, "_remote_run_dir_state", lambda *a, **kw: probed.append(1) or {})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh_after(tmp_path, after="pipelines/build", samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["code"] == "run_production.bad_after" and probed == [], r
+
+    @pytest.mark.integration
     def test_bad_walltime_refused(self, tmp_path, monkeypatch):
         _Remote().install(monkeypatch)
         _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
@@ -719,6 +898,24 @@ class TestReferencePins:
                        access=_local_access(tmp_path, str(d)))
         assert r["outcome"] == "degraded" and r["code"] == "run_production.reference_diverged", r
         assert r["reference_check"]["status"] == "diverged" and r.get("job_id")
+
+    @pytest.mark.integration
+    def test_a_pinned_reference_an_upstream_writes_again_launches_unverified(self, tmp_path, monkeypatch):
+        """The seal pinned the GTF at a path the upstream run (after=) writes: there is
+        nothing to compare at launch, so the launch cannot stand behind it, and says why."""
+        gtf, sha = "/work/pipelines/build/chr22.gtf", "ab" * 32
+        data = sealed_rnaseq_spec().model_dump()
+        data["reference_databases"].append({
+            "name": "gtf", "version": "v47", "local_path": gtf, "locus": "cluster", "compute_env": "hpc",
+            "available": True, "sha256": sha, "size_bytes": 12})
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF, spec=WorkflowSpec.model_validate(data))
+        # observed now, the sidecar would match and the launch would be proven
+        _Remote(existing={"/data/r1.fq"}, sifs=set(_SIF.values()), sidecars={gtf: sha},
+                dirs={"/work/pipelines/build": {"live": ["4100 RUNNING"]}}).install(monkeypatch)
+        r = _run_ssh_after(tmp_path, samplesheet=_sheet(tmp_path, ["/data/r1.fq"]), params={"gtf": gtf})
+        assert (r["outcome"], r["code"]) == ("degraded", "run_production.reference_unverified"), r
+        row = next(f for f in r["reference_check"]["findings"] if f["slot"] == "gtf")
+        assert row["exists"] is None and "upstream run (after=) writes this path" in row["reason"]
 
     @pytest.mark.integration
     def test_the_matching_reference_is_a_clean_proven_run(self, tmp_path, local_ok):

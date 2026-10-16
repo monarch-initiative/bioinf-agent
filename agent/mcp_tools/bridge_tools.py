@@ -361,7 +361,8 @@ def run_production_pipeline(project_name: str,
                             run_dir: str,
                             samplesheet: str = "",
                             params: dict = {},
-                            walltime: str = "") -> dict:
+                            walltime: str = "",
+                            after: str = "") -> dict:
     """Run a RENDERED pipeline in production on whichever compute env you name — ONE verb,
     swap `compute_env_name`. The pipeline directory `render_pipeline` wrote is copied into
     `run_dir` on that env, your samplesheet becomes its samples.csv, and the run starts the
@@ -395,15 +396,22 @@ def run_production_pipeline(project_name: str,
                    launch, by this tool or by hand, runs the same. A path, a word or a number.
       walltime     the manager job's SLURM time, written into the run directory's launcher.sh.
                    ssh envs only.
+      after        the run_dir of an upstream run this one reads from. While the scheduler
+                   holds jobs there, this run waits for them to succeed (SLURM drops it if
+                   one fails), and paths under that directory or its outdir are promised:
+                   not checked, and not compared against the seal, at launch — so a chain
+                   of runs is queued in one go. An upstream that already succeeded (as
+                   recorded by this tool) needs no wait; one that failed is refused. ssh only.
 
     Returns `{success, locus, pipeline, run_dir, job_id, samplesheet, params, launch,
-    manifest_path, reference_check, follow_up, …}`; refusals name their remedy.
+    manifest_path, reference_check, value_check, follow_up, after?, promised_paths?, …}`;
+    refusals name their remedy.
     """
     from agent.skills import run_production
     return run_production.run_production_pipeline(
         project_name=project_name, compute_env_name=compute_env_name,
         pipeline=pipeline, run_dir=run_dir, samplesheet=samplesheet or "",
-        params=dict(params or {}), walltime=walltime or "",
+        params=dict(params or {}), walltime=walltime or "", after=after or "",
         access_path=_resolve_access_path(),
     )
 

@@ -222,7 +222,7 @@ Prove a frozen env works on the cluster — the bytes the user runs on HPC are t
 
 1. **`stage_apptainer_image(project, env, freeze_request_key)`** — idempotent .sif delivery, once per env the pipeline's stages run in (`run_production_pipeline` refuses with the exact calls otherwise).
 2. **`upload(project, env, local_path, remote_abs_path)`** (×N) — push the data the samplesheet names, or point the samplesheet and `params.yaml` at data already on the cluster. Paths in the sheet are absolute AT THE CLUSTER.
-3. **`run_production_pipeline(project, env, pipeline, run_dir, samplesheet=<local csv>, params={…})`** — copies the rendered directory into `run_dir`, checks images and paths at the locus and the references against the seal, `sbatch launcher.sh`, returns `job_id`, writes the manifest. No polling. The same `run_dir` again re-launches with `-resume`.
+3. **`run_production_pipeline(project, env, pipeline, run_dir, samplesheet=<local csv>, params={…})`** — copies the rendered directory into `run_dir`, checks images and paths at the locus and the references against the seal, `sbatch launcher.sh`, returns `job_id`, writes the manifest. No polling. The same `run_dir` again re-launches with `-resume`. `after=<upstream run_dir>` queues a run behind one still in flight (`--dependency=afterok`); what the upstream writes (its run directory, its outdir) is promised, not checked at launch.
 4. **`cluster_job_status(project, env, job_id, run_dir=…, wait_s=300)`** — the manager's SLURM row plus every task (finished, from `runs/<stamp>/trace.txt`; in flight, from Nextflow's log and sacct); read `pipeline.verdict`.
 5. **`download(project, env, remote_abs_path, local_path)`** — pull `results/` back; sha256 round-trip (or Globus end-to-end).
 
