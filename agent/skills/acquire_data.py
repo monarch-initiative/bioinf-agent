@@ -16,7 +16,8 @@ reference data to where it needs to live." Two loci:
 
 Why a plain shell/SLURM script (NOT the nextflow+apptainer workflow renderer):
 a download needs `wget`/`curl`, not the tool's container (which may not even
-have curl). So this is deliberately the simpler renderer — a #SBATCH header
+have curl); a data step that ships INSIDE the tool's image is one `apptainer
+exec` in its staged .sif. So this is deliberately the simpler renderer — a #SBATCH header
 (the same controlled convention as workflow_render) + a resumable fetch + a
 sha256 sidecar. Resumability is two-layered: `wget -c` / `curl -C -` inside the
 script (survives a walltime kill) AND the script is idempotent, so a re-submit
@@ -42,7 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
 
-from agent.skills import compute_access, transfer, submit_workflow, workflow_render
+from agent.skills import compute_access, stage_apptainer, transfer, submit_workflow, workflow_render
 from agent.skills.outcomes import proven, refused, broke
 
 
@@ -208,12 +209,16 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
         f'recipe_rc=$?\n'
         f'echo "[acquire] recipe exited rc=$recipe_rc"\n'
         f"\n"
-        f"# Provenance sweep (recipe-agnostic): sha256 every FINAL produced file.\n"
-        f"# The recipe doesn't write checksums; this is our reproducibility anchor.\n"
+        f"# Provenance sweep (recipe-agnostic): sha256 every FINAL produced file, at any\n"
+        f"# depth, beside it. The recipe doesn't write checksums; this is our\n"
+        f"# reproducibility anchor. This job's own logs are still being written: skipped.\n"
         f'echo "[acquire] hashing produced files for provenance..."\n'
-        f'for f in *; do\n'
+        f"find . \\( -type f -o -type l \\) ! -name '*.source.sha256' ! -name '*.part' "
+        f"! -path ./launcher.sh ! -path {shlex.quote('./' + recipe_filename)} "
+        f"! -path {shlex.quote(f'./acquire_{name}-*.out')} "
+        f"! -path {shlex.quote(f'./acquire_{name}-*.err')} -print0 |\n"
+        f'while IFS= read -r -d "" f; do\n'
         f'  [ -f "$f" ] || continue\n'
-        f'  case "$f" in *.source.sha256|*.part|launcher.sh|{q_recipe}) continue;; esac\n'
         f'  ( sha256sum "$f" 2>/dev/null || shasum -a 256 "$f" ) '
         f"| awk '{{print $1}}' > \"$f.source.sha256\"\n"
         f'done\n'
@@ -221,6 +226,20 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
         f'echo "acquire_{name}: recipe DONE (rc=$recipe_rc)"\n'
         f'exit $recipe_rc\n'
     )
+
+
+def render_image_recipe(*, command: str, sif: str, env_name: str, digest: str,
+                        apptainer_module: str) -> str:
+    """The recipe for a tool whose data step lives inside its own image: run `command`
+    in the staged .sif with the image's own environment (never the node's), in the
+    acquisition directory, which the image sees at the same path."""
+    load = f"module load {apptainer_module}\n" if apptainer_module else ""
+    return (f"#!/usr/bin/env bash\n"
+            f"# Runs one command inside the frozen image {env_name} ({digest}), from its staged .sif.\n"
+            f"set -euo pipefail\n"
+            f"{load}"
+            f'apptainer exec --cleanenv --bind "$PWD" --pwd "$PWD" {shlex.quote(sif)} '
+            f'bash -c {shlex.quote(command)}\n')
 
 
 # ---------------------------------------------------------------------------
@@ -403,13 +422,14 @@ def acquire_to_cluster(*, name: str, url: str, compute_env: str,
               f"ssh at seal (I5) — seal only once the job COMPLETES."))
 
 
-def acquire_via_recipe(*, name: str, recipe_local_path: str, compute_env: str,
+def acquire_via_recipe(*, name: str, recipe_local_path: str = "", compute_env: str,
+                       freeze_request_key: str = "", command: str = "",
                        versions: Optional[list] = None, remote_dir: str = "",
                        slurm: Optional[Mapping] = None,
                        mask_tools: tuple = ("tmux",), bundle_version: str = "",
                        description: str = "", pipeline_id: str = "",
                        access_path: Optional[str] = None,
-                       _pipeline_state=None) -> dict:
+                       _pipeline_state=None, _env_cache=None) -> dict:
     """Run a TOOL'S OWN data-acquisition recipe on `compute_env` (head-node-safe,
     on a compute node) into the env's common_data zone, capturing sha256 + version
     provenance. The generalization of "the tool ships a gather_files.sh — use it,
@@ -424,16 +444,26 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str, compute_env: str,
 
     `versions` = [{filename, url, version, note?}] — the FINAL produced filenames
     (post-decompression/rename) mapped to their versions. `mask_tools` hides
-    interactive-only tools from the recipe's PATH (default tmux)."""
+    interactive-only tools from the recipe's PATH (default tmux).
+
+    A tool whose data step ships INSIDE its own image (a setup script in the
+    container) takes `freeze_request_key` + `command` instead of a recipe file: the
+    recipe is then one `apptainer exec` of `command` in that env's staged .sif."""
     if not name or not compute_access._is_safe_token(name):
         return refused("acquire.bad_name",
             error=f"name {name!r} must be a safe token (alnum + '_-', <=64 chars) "
                   f"— it becomes a path component under common_data")
-    recipe_p = Path(recipe_local_path).expanduser()
-    if not recipe_p.is_file():
-        return refused("acquire.recipe_missing",
-            error=f"recipe_local_path {recipe_local_path!r} is not a file — pass the "
-                  f"tool's own acquisition script (e.g. its large_files/gather_files.sh)")
+    in_image = bool(freeze_request_key or command)
+    if in_image == bool(recipe_local_path) or (in_image and not (freeze_request_key and command)):
+        return refused("acquire.recipe_or_image",
+            error="pass recipe_local_path (the tool's own script), or freeze_request_key and "
+                  "command (a step that runs inside the tool's image) — one of the two")
+    if not in_image:
+        recipe_p = Path(recipe_local_path).expanduser()
+        if not recipe_p.is_file():
+            return refused("acquire.recipe_missing",
+                error=f"recipe_local_path {recipe_local_path!r} is not a file — pass the "
+                      f"tool's own acquisition script (e.g. its large_files/gather_files.sh)")
 
     if _pipeline_state is None:
         from agent import mcp_server as _ms
@@ -457,15 +487,60 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str, compute_env: str,
     common_root = (common.get("path") or "").rstrip("/")
 
     acq_dir = (remote_dir or f"{common_root}/{name}").rstrip("/")
-    if not transfer._under(common_root, acq_dir):
+    if not transfer._under(common_root, acq_dir) or acq_dir == common_root:
         return refused("acquire.remote_dir_outside_common_data",
-            error=f"remote_dir {acq_dir!r} is not under the env's common_data zone "
-                  f"{common_root!r}.")
+            error=f"remote_dir {acq_dir!r} is not a directory under the env's common_data zone "
+                  f"{common_root!r}: the bundle gets one of its own, and every file in it is hashed.")
 
-    recipe_filename = recipe_p.name
+    if in_image:
+        if _env_cache is None:
+            from agent import mcp_server as _ms
+            _env_cache = _ms._env_cache
+        record, violations = _env_cache.lookup_verified(freeze_request_key)
+        if violations:
+            return refused("acquire.env_contract_violated",
+                error=f"the frozen env {freeze_request_key!r} no longer satisfies the Layer-1 "
+                      f"honesty contract — re-run freeze() before running in it",
+                honesty_violations=violations)
+        if not record:
+            return refused("acquire.no_frozen_env",
+                error=f"{freeze_request_key!r} is not a frozen env — freeze it first")
+        if not compute_access.get_container_upload_target(env):
+            return refused("acquire.no_container_zone",
+                error=f"compute_env {compute_env!r} declares no container_upload_target, so it "
+                      f"holds no staged .sif to run in")
+        sif = stage_apptainer.sif_remote_path(env, record, freeze_request_key)
+        staged = stage_apptainer._remote_sif_exists(env, sif)
+        if staged is None:
+            return broke("acquire.sif_unreadable",
+                error=f"could not ask {compute_env} whether {sif} is staged (ssh failed)",
+                hint="open `ssh hpc-agent` in a terminal, then retry")
+        if not staged:
+            return refused("acquire.sif_not_staged",
+                error=f"the image's .sif is not on {compute_env} at {sif}",
+                remedy=f"stage_apptainer_image(project_name=…, compute_env_name={compute_env!r}, "
+                       f"freeze_request_key={freeze_request_key!r}) first")
+        module = compute_access.get_container_modules(env).get("apptainer_module") or ""
+        if module:
+            try:
+                workflow_render._check_module("apptainer_module", module)
+            except ValueError as e:
+                return refused("acquire.bad_module", error=str(e))
+        digest = record.get("content_digest") or record.get("image_digest") or ""
+        env_name = record.get("name") or freeze_request_key.split("|", 1)[0]
+        recipe_filename = "run_in_image.sh"
+        recipe_text = render_image_recipe(command=command, sif=sif, env_name=env_name, digest=digest,
+                                          apptainer_module=module)
+        image = {"request_key": freeze_request_key, "env": env_name, "digest": digest, "command": command}
+        description = description or f"Reference data produced by `{command}` inside {env_name} ({digest})"
+        bundle_version = bundle_version or f"image:{env_name}@{digest}"
+    else:
+        recipe_filename = recipe_p.name
+        recipe_text = recipe_p.read_text()
+        image = None
     # sha256 of the recipe we actually ran (provenance: which recipe produced this).
     import hashlib
-    recipe_sha256 = hashlib.sha256(recipe_p.read_bytes()).hexdigest()
+    recipe_sha256 = hashlib.sha256(recipe_text.encode()).hexdigest()
 
     # ─── SLURM header (generous walltime — a full bundle runs for hours) ──
     try:
@@ -489,7 +564,7 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str, compute_env: str,
     with tempfile.TemporaryDirectory(prefix="bioinf_recipe_",
                                      dir=str(transfer.staging_dir("acquire_render_staging"))) as td:
         (Path(td) / _LAUNCHER_NAME).write_text(launcher)
-        (Path(td) / recipe_filename).write_text(recipe_p.read_text())
+        (Path(td) / recipe_filename).write_text(recipe_text)
         # Upload the tool's recipe verbatim, then our launcher, into acq_dir
         # (common_data zone — env-implicit grant, auto-created leaf).
         for fn in (recipe_filename, _LAUNCHER_NAME):
@@ -556,6 +631,7 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str, compute_env: str,
         "recipe":        recipe_filename,
         "recipe_sha256": recipe_sha256,
         "masked_tools":  list(mask_tools or ()),
+        **({"image": image} if image else {}),
         "files":         files_manifest,
         "slurm":         slurm_v,
         "submitted_at":  datetime.now(timezone.utc).isoformat(),
@@ -582,10 +658,12 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str, compute_env: str,
         reference_database_recorded=(merged_into is not None),
         pipeline_id=merged_into,
         manifest_path=manifest_path,
+        **({"image": image} if image else {}),
         note=(f"Recipe {recipe_filename} submitted as job {job_id} on {compute_env}. "
-              f"It runs the tool's OWN acquisition script on a compute node into "
-              f"{acq_dir}, then hashes every produced file. Poll cluster_job_status; "
-              f"seal once COMPLETE (the bundle dir is ssh-verified at seal, I5)."))
+              + (f"It runs `{image['command']}` inside {image['env']} ({image['digest']})"
+                 if image else "It runs the tool's OWN acquisition script")
+              + f" on a compute node into {acq_dir}, then hashes every produced file. Poll "
+                f"cluster_job_status; seal once COMPLETE (the bundle dir is ssh-verified at seal, I5)."))
 
 
 # ---------------------------------------------------------------------------

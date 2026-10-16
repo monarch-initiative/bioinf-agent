@@ -100,18 +100,29 @@ def _short_digest(content_digest: str) -> str:
 
 
 
-def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) -> bool:
-    """ONE light read-only ssh: does the .sif already exist on the cluster?
-    Used for idempotency (skip a re-stage) WITHOUT any build/pull on the head
-    node. Returns False on any ssh failure (caller then builds+ships)."""
+def sif_remote_path(env: dict, record: dict, freeze_request_key: str, sif_subpath: str = "") -> str:
+    """Where a frozen env's .sif lands on `env`: the container zone itself (no
+    extra prefix), as `<env_name>_<digest12>.sif` unless a subpath is given."""
+    ct_path = ((env.get("container_upload_target") or {}).get("path") or "").rstrip("/")
+    name = record.get("name") or freeze_request_key.split("|", 1)[0]
+    digest = record.get("content_digest") or record.get("image_digest", "")
+    return f"{ct_path}/{sif_subpath or f'{name}_{_short_digest(digest)}.sif'}"
+
+
+def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) -> Optional[bool]:
+    """ONE light read-only ssh: does the .sif already exist on the cluster? True or
+    False as the cluster answered; None when it could not be asked (falsy, so a
+    stage builds and ships, and the ship then names the ssh failure). Used for
+    idempotency (skip a re-stage) WITHOUT any build/pull on the head node."""
     body = f"test -f {shlex.quote(sif_remote_abs)} && echo EXISTS || echo MISSING"
     cmd = f"bash -lc {shlex.quote(body)}"
     try:
         res = subprocess.run(_ssh_argv(env, cmd), capture_output=True,
                              text=True, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):
-        return False
-    return "EXISTS" in (res.stdout or "")
+        return None
+    lines = (res.stdout or "").splitlines()
+    return True if "EXISTS" in lines else (False if "MISSING" in lines else None)
 
 
 def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_name: str,
@@ -482,17 +493,11 @@ def stage_apptainer_image(
 
         env_name_for_sif = (record.get("name")
                             or freeze_request_key.split("|", 1)[0])
-        content_digest = record.get("content_digest") or record.get(
-            "image_digest", "")
-        # The whole target IS the container zone — default subpath is
-        # just `<env_name>_<digest>.sif`, no extra `apptainer/` prefix.
-        subpath = (sif_subpath or
-                   f"{env_name_for_sif}_{_short_digest(content_digest)}.sif")
         # Refuse traversal in sif_subpath
-        if ".." in subpath.split("/") or subpath.startswith("/"):
+        if sif_subpath and (".." in sif_subpath.split("/") or sif_subpath.startswith("/")):
             return refused("stage.bad_subpath",
-                error=f"sif_subpath {subpath!r} must be relative + no `..`")
-        sif_remote_abs = f"{ct_path}/{subpath}"
+                error=f"sif_subpath {sif_subpath!r} must be relative + no `..`")
+        sif_remote_abs = sif_remote_path(env, record, freeze_request_key, sif_subpath)
 
         mode = record.get("mode")
         image_digest = record.get("image_digest") or ""

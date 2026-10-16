@@ -70,7 +70,7 @@ def _cluster_hints(env_block: dict, spec: Any) -> dict:
     names, and — when the env has a container zone and the sealed env is in the cache —
     the .sif path `stage_apptainer_image` writes: `<container zone>/<env name>_<12 hex
     of the content digest>.sif`. Absent pieces stay absent; nothing is guessed."""
-    from agent.skills.stage_apptainer import _short_digest
+    from agent.skills.stage_apptainer import sif_remote_path
     mods = compute_access.get_container_modules(env_block)
     modules = [v for k in ("apptainer_module", "nextflow_module") for v in [mods.get(k)] if v]
     sif_paths: dict[str, str] = {}
@@ -80,10 +80,8 @@ def _cluster_hints(env_block: dict, spec: Any) -> dict:
     target = compute_access.get_container_upload_target(env_block)
     if cached and cached.get("name"):
         env_names[key] = str(cached["name"])
-        digest = cached.get("content_digest") or getattr(spec, "env_content_digest", "")
-        if target and target.get("path") and digest:
-            base = str(target["path"]).rstrip("/")
-            sif_paths[key] = f"{base}/{cached['name']}_{_short_digest(str(digest))}.sif"
+        if target and target.get("path") and (cached.get("content_digest") or cached.get("image_digest")):
+            sif_paths[key] = sif_remote_path(env_block, cached, key)
     return {"modules": modules, "sif_paths": sif_paths, "env_names": env_names}
 
 

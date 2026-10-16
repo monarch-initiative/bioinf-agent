@@ -385,3 +385,74 @@ class TestSealIntegration:
         filled = workflow_tools._refresh_reference_databases(
             [{"name": "ref", "local_path": str(db)}])[0]
         assert filled["sha256"] == "b" * 64, "an absent anchor must still be filled"
+
+
+# ---------------------------------------------------------------------------
+# A recipe's provenance sweep, and a data step that lives inside the image
+# ---------------------------------------------------------------------------
+
+class TestRecipeRunner:
+    def test_the_sweep_hashes_every_produced_file_at_any_depth_and_never_its_own_logs(self, tmp_path, monkeypatch):
+        """A setup step that writes into a subdirectory (monarch_kg/…) is anchored file by
+        file; the job's own .out/.err, still being written while the sweep runs, are not."""
+        import subprocess
+        script = acquire_data.render_recipe_runner_script(
+            name="kg", recipe_filename="gather.sh", mask_tools=(), slurm_v=_slurm_v(), email="")
+        (tmp_path / "gather.sh").write_text("mkdir -p monarch_kg/sub && echo a > monarch_kg/sub/edges.tsv "
+                                           "&& echo b > top.txt && ln -s top.txt latest.txt "
+                                           "&& echo c > monarch_kg/launcher.sh\n")
+        (tmp_path / "acquire_kg-4242.out").write_text("log")
+        (tmp_path / "launcher.sh").write_text(script)
+        r = subprocess.run(["bash", "launcher.sh"], cwd=tmp_path, capture_output=True, text=True,
+                           env={"PATH": "/usr/bin:/bin:/usr/sbin", "SLURM_SUBMIT_DIR": str(tmp_path)})
+        assert r.returncode == 0, r.stderr
+        sidecars = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.source.sha256"))
+        assert sidecars == ["latest.txt.source.sha256", "monarch_kg/launcher.sh.source.sha256",
+                            "monarch_kg/sub/edges.tsv.source.sha256", "top.txt.source.sha256"]
+
+
+class TestDataStepInsideTheImage:
+    KEY = "monarch-phenologs=0.3.0|linux/amd64|none"
+
+    def _call(self, monkeypatch, *, staged=True, **kw):
+        from agent.skills import stage_apptainer, transfer, submit_workflow
+        access = {**_FAKE_ACCESS, "compute_envs": [{**_FAKE_ACCESS["compute_envs"][0],
+                                                    "apptainer_module": "apptainer/1.5.0",
+                                                    "container_upload_target": {"path": "/work/containers",
+                                                                                "permissions": ["upload"]}}]}
+        monkeypatch.setattr(compute_access, "load_access", lambda *_a, **_k: access)
+        monkeypatch.setattr(stage_apptainer, "_remote_sif_exists", lambda env, sif, **k: staged)
+        sent = {}
+
+        def fake_upload(**kw):
+            sent[kw["remote_abs_path"]] = Path(kw["local_path"]).read_text()
+            return {"success": True, "remote_abs_path": kw["remote_abs_path"]}
+        monkeypatch.setattr(transfer, "upload", fake_upload)
+        monkeypatch.setattr(submit_workflow, "sbatch_via_ssh", lambda env, d, **k: {"job_id": "77", "launcher": d})
+        monkeypatch.setattr(submit_workflow, "_write_submission_manifest", lambda **k: "/tmp/m.json")
+
+        class Cache:
+            def lookup_verified(self, key):
+                return ({"name": "monarch_phenologs", "content_digest": "sha256:" + "b8" * 32}, [])
+        r = acquire_data.acquire_via_recipe(name="kg_2026", compute_env="hpc", _env_cache=Cache(), **kw)
+        return r, sent
+
+    def test_a_command_runs_inside_the_staged_sif(self, monkeypatch):
+        r, sent = self._call(monkeypatch, freeze_request_key=self.KEY,
+                             command="python /app/python/01_download_and_setup.py -p . -gv 2026-03-06")
+        assert r["outcome"] == "proven" and r["recipe"] == "run_in_image.sh", r
+        recipe = sent["/work/common/kg_2026/run_in_image.sh"]
+        assert "module load apptainer/1.5.0\n" in recipe
+        assert "apptainer exec --cleanenv --bind \"$PWD\" --pwd \"$PWD\" /work/containers/monarch_phenologs_b8b8b8b8b8b8.sif " in recipe
+        assert r["image"]["digest"] == "sha256:" + "b8" * 32 and "01_download_and_setup.py" in r["note"]
+        assert "'python /app/python/01_download_and_setup.py -p . -gv 2026-03-06'" in recipe
+
+    def test_an_image_not_staged_or_a_half_request_is_refused(self, monkeypatch):
+        r, _ = self._call(monkeypatch, staged=False, freeze_request_key=self.KEY, command="true")
+        assert r["code"] == "acquire.sif_not_staged" and "stage_apptainer_image(" in r["remedy"]
+        r, _ = self._call(monkeypatch, staged=None, freeze_request_key=self.KEY, command="true")
+        assert r["code"] == "acquire.sif_unreadable", "an ssh failure is not a missing .sif"
+        r, _ = self._call(monkeypatch, freeze_request_key=self.KEY)
+        assert r["code"] == "acquire.recipe_or_image"
+        r, _ = self._call(monkeypatch, freeze_request_key=self.KEY, command="true", remote_dir="/work/common")
+        assert r["code"] == "acquire.remote_dir_outside_common_data", "never the zone root itself"
