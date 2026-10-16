@@ -14,7 +14,8 @@ in is there (the staged .sif on a cluster, the docker image on a laptop); every 
 run binds — the shared path parameters and every path cell of the samplesheet — exists;
 and the shared references still hash to what the workflow was SEALED against where a
 sealed anchor exists. A reference that diverged launches, reported as `degraded`, never
-as a bare success.
+as a bare success; so does a value the seal's self-test never ran the how-to with
+(`value_check`).
 
 A run directory is Nextflow's launch directory, and `-resume` only works from the same
 one. The first launch creates it (on a cluster, as one transfer of the whole directory);
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import csv
 import glob
+import io
 import os
 import base64
 import re
@@ -40,6 +42,7 @@ from typing import Mapping, Optional, Collection
 
 import yaml
 
+from agent.models import core_data
 from agent.skills import cluster_jobs, compute_access, data_pins, stage_apptainer, submit_workflow, transfer, workspace
 from agent.skills.container_build import image_present as _docker_image_present
 from agent.skills.outcomes import proven, refused, broke, degraded
@@ -58,8 +61,9 @@ _SAMPLE_KEY = "sample"
 _PARAMS_FILE = "params.yaml"
 _LAUNCHER = "launcher.sh"
 #: What a launch reads of a run directory beyond which files are there: the manifest
-#: that names its render, and the two files a launch's params= and walltime= go into.
-_RUN_TEXTS = (MANIFEST_PATH, _PARAMS_FILE, _LAUNCHER)
+#: that names its render, the two files a launch's params= and walltime= go into, and
+#: the samplesheet a re-launch runs.
+_RUN_TEXTS = (MANIFEST_PATH, _PARAMS_FILE, _LAUNCHER, SAMPLESHEET_FILENAME)
 _REMOTE_CHECK_CHUNK = 400
 
 
@@ -401,6 +405,30 @@ def _spec_for(record: PipelineRecord, param_key: str) -> str:
     return record.sealed_workflow_path
 
 
+def _value_check(record: PipelineRecord, effective: Mapping[str, str], rows: list[dict]) -> dict:
+    """The value parameters this launch binds (params.yaml values and the samplesheet's
+    value columns, never the sample's name) against what the seal's self-test ran the
+    how-to with: {status: checked | unrecorded, unproven: [{param, values, proven}]}.
+    A value it never ran is a run the shipped how-to was not proven on — legitimate,
+    but not one to start without being told; `unrecorded` says the seal kept no
+    transcript of its self-test, so there was nothing to compare against."""
+    ran_with: dict[str, set[str]] = {}
+    for path in {record.sealed_workflow_path, *(cw.sealed_workflow_path for cw in record.cohort_workflows)}:
+        spec, _ = _load_spec(path)
+        for trial in core_data.usage_proven_trials(spec):
+            for slot, value in (trial.get("substitutions") or {}).items():
+                ran_with.setdefault(slot, set()).add(str(value))
+    if not ran_with:
+        return {"status": "unrecorded", "unproven": []}
+    bound = {p.name: {effective.get(p.name.lower(), "")} for p in record.params
+             if p.kind == "shared" and p.value_kind == "value"}
+    bound |= {c.placeholder: {r.get(c.name, "") for r in rows} for c in record.samplesheet.columns
+              if rows and c.value_kind == "value" and c.name != _SAMPLE_KEY}
+    return {"status": "checked",
+            "unproven": [{"param": name, "values": sorted(values - ran_with[name]), "proven": sorted(ran_with[name])}
+                         for name, values in sorted(bound.items()) if name in ran_with and values - ran_with[name]]}
+
+
 def _observe_cluster(env: dict, paths: list[str], *, timeout: int) -> dict:
     """{path: {exists, sha256}} observed on the cluster: the sidecar hash where the
     download job left one, never a hash computed on the head node."""
@@ -483,13 +511,14 @@ def _reference_check(record: PipelineRecord, shared: Mapping[str, str], *, locus
     return out
 
 
-def _disclose(result: dict, reference_check: Mapping) -> dict:
-    """Attach the data-pin verdict and DOWNGRADE a launch that could not stand behind
-    its data. A divergence does not refuse — re-running against a newer reference is
-    legitimate; doing it without being told is the failure this closes."""
+def _disclose(result: dict, reference_check: Mapping, value_check: Mapping) -> dict:
+    """Attach the data-pin verdict and the value check, and DOWNGRADE a launch that
+    could not stand behind its data or its values. Neither refuses — re-running
+    against a newer reference, or in a mode the seal never ran, is legitimate; doing
+    it without being told is the failure this closes."""
     if not isinstance(result, dict):                            # pragma: no cover
         return result
-    out = {**result, "reference_check": dict(reference_check)}
+    out = {**result, "reference_check": dict(reference_check), "value_check": dict(value_check)}
     if out.get("outcome") != "proven":
         return out
     status = reference_check.get("status")
@@ -500,6 +529,8 @@ def _disclose(result: dict, reference_check: Mapping) -> dict:
     if status == data_pins.UNVERIFIED:
         return degraded("run_production.reference_unverified", **rest,
                         reference_divergence=reference_check.get("summary", ""))
+    if value_check.get("unproven"):
+        return degraded("run_production.values_unproven", **rest)
     return out
 
 
@@ -776,6 +807,9 @@ def run_production_pipeline(project_name: str,
             _check_paths_local(plain, prefixes)
         reference_check = _reference_check(record, shared, locus=locus, env=env, timeout=timeout,
                                            prefixes=prefixes)
+        # a re-launch reads the samples.csv the run directory already holds
+        value_check = _value_check(record, effective, rows if samplesheet else
+                                   list(csv.DictReader(io.StringIO(state["texts"].get(SAMPLESHEET_FILENAME, "")))))
 
         # ─── The run directory ──────────────────────────────────────────
         if env_type == "ssh":
@@ -831,6 +865,7 @@ def run_production_pipeline(project_name: str,
             "params": effective, "params_overridden": {str(k): str(v) for k, v in (params or {}).items()},
             "walltime": (time_line.group(1) if time_line and env_type == "ssh" else None), "launch": launch,
             "edited_since_render": edited, "reference_check": dict(reference_check),
+            "value_check": value_check,
             "submitted_at": submitted_at, "follow_up": follow_up,
         }
         manifest_path = submit_workflow._write_submission_manifest(
@@ -843,7 +878,7 @@ def run_production_pipeline(project_name: str,
                         samplesheet=manifest_record["samplesheet"], params=effective,
                         launch=launch, submitted_at=submitted_at, manifest_path=manifest_path,
                         edited_since_render=edited, follow_up=follow_up)
-        return _disclose(result, reference_check)
+        return _disclose(result, reference_check, value_check)
 
     except _Refusal as r:
         return r.result

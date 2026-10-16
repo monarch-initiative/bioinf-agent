@@ -367,6 +367,15 @@ class TestDirectoryArtifacts:
         assert loaded.stages[0].outputs[0].directory is True
 
 
+def test_the_render_says_which_values_a_value_parameter_was_proven_with():
+    rec = pr.derive_pipeline_record(sealed_rnaseq_spec(), name="rnaseq_counts")
+    assert any(n.startswith("STRANDED: shared") and "the self-test ran it with ['reverse'] only" in n
+               for n in rec.notes), rec.notes
+    assert not any(n.startswith("SAMPLE:") and "ran it with" in n for n in rec.notes)
+    declared = pr.derive_pipeline_record(sealed_rnaseq_spec(proven=False), name="rnaseq_counts")
+    assert not any("ran it with" in n for n in declared.notes), "declared trials never ran"
+
+
 def test_an_empty_value_leaves_the_sealed_steps_matched():
     """`-s {STRANDED}` with STRANDED="" runs as `-s -o …`: the value is literal text,
     collapsed with the text around it, so the stage still finds its sealed steps."""

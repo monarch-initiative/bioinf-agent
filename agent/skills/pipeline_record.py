@@ -685,7 +685,9 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             default=v0 if kind == "shared" else None,     # a per-sample value is a samplesheet cell
             source=source, format=di.get("format"), description=di.get("description"),
             used_by=[], reason=why))
-        notes.append(f"{ph}: {kind} ({why})")
+        proven = (f"; the self-test ran it with {sorted(set(values))} only"
+                  if row_source == "proven" and value_kind == "value" and ph not in _SAMPLE_NAMES else "")
+        notes.append(f"{ph}: {kind} ({why}){proven}")
     # a shared path that is an authored artifact of the workflow is either a SCRIPT —
     # its full text in the record, carried verbatim into bin/, the param defaulting to
     # that relative path — or an authored DATA file (or a script too large to carry):

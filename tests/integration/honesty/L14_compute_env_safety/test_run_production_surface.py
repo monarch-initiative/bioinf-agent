@@ -288,7 +288,8 @@ class TestLocalLaunch:
         jm = _FakeJobManager()
         r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
                        params={"stranded": "yes"}, access=_local_access(tmp_path, str(d)), jm=jm)
-        assert r["outcome"] == "proven" and r["code"] == "run_production.local_launched", r
+        # launched; and said so: the seal never ran stranded=yes
+        assert (r["outcome"], r["code"]) == ("degraded", "run_production.values_unproven"), r
         run = d / "run1"
         for rel in ("main.nf", "nextflow.config", "params.yaml", "launcher.sh", "samples.csv", MANIFEST_PATH):
             assert (run / rel).is_file(), rel
@@ -306,6 +307,27 @@ class TestLocalLaunch:
         assert manifest["pipeline"] == "rnaseq_counts" and manifest["samplesheet"]["rows"] == 1
         assert manifest["params_overridden"]["stranded"] == "yes"
         assert "check_job" in r["follow_up"]["poll"]
+
+    @pytest.mark.integration
+    def test_a_value_the_seal_never_ran_is_named_beside_the_launch(self, tmp_path, local_ok):
+        """The sealed self-test ran STRANDED=reverse only: a launch in another mode is a
+        legitimate run of a how-to that was never proven in it, and the result says so
+        (paths and sample names are not modes and are never named)."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                       params={"stranded": "yes"}, access=ap)
+        assert (r["outcome"], r["code"]) == ("degraded", "run_production.values_unproven"), r
+        assert r["value_check"] == {"status": "checked",
+                                    "unproven": [{"param": "STRANDED", "values": ["yes"], "proven": ["reverse"]}]}
+        manifest = __import__("json").loads(Path(r["manifest_path"]).read_text())
+        assert manifest["value_check"] == r["value_check"]
+        again = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)     # the run's own params.yaml
+        assert again["code"] == "run_production.values_unproven"
+        same = _run_local(tmp_path, "rnaseq_counts", d / "run2", samplesheet=_sheet(tmp_path, [str(fq)]), access=ap)
+        assert same["outcome"] == "proven" and same["value_check"] == {"status": "checked", "unproven": []}
 
     @pytest.mark.integration
     def test_the_same_directory_again_relaunches_without_copying(self, tmp_path, local_ok):
@@ -626,7 +648,7 @@ class TestClusterLaunch:
                          run_state={"exists": True, "missing": [], "samplesheet": True,
                                     "texts": texts}).install(monkeypatch)
         r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1")
-        assert r["outcome"] == "proven" and r["reused_run_dir"] is True and remote.uploads == []
+        assert r["outcome"] == "degraded" and r["reused_run_dir"] is True and remote.uploads == []
         assert remote.writes == {} and remote.sbatch["sbatch_args"] == []
         assert r["params"]["stranded"] == "yes", "the run directory's own params.yaml, hand edit included"
 

@@ -375,7 +375,9 @@ def run_production_pipeline(project_name: str,
     make otherwise; the docker image locally); every path the run binds — the shared path
     parameters and every path cell of the samplesheet — exists; and the shared references
     still hash to what the workflow was sealed against where an anchor exists. A reference
-    that diverged launches as `degraded`, never a bare success.
+    that diverged launches as `degraded`, never a bare success; so does a value (a
+    params.yaml value or a samplesheet value column) the seal's self-test never ran,
+    named in `value_check`.
 
     Inputs:
       pipeline     the name of a directory `render_pipeline` wrote under <workspace>/pipelines/,
