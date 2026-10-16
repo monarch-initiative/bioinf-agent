@@ -599,10 +599,10 @@ _GLOBUS_REQUIRED_KEYS: frozenset[str] = frozenset({
     "remote_endpoint_name",
 })
 
-# Globus endpoint IDs are UUIDs. Accept canonical lowercase-hex form.
+# Globus endpoint and task IDs are UUIDs, in canonical lowercase-hex form.
 import re as _re
-_UUID_RE = _re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+UUID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_UUID_RE = _re.compile(rf"^{UUID_PATTERN}$")
 
 
 def _validate_data_transfer_block(blk: object, where: str, path: Path) -> None:

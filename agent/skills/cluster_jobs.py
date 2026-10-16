@@ -170,37 +170,23 @@ def _build_sacct_cmd(job_id: str) -> str:
     return f"bash -lc {shlex.quote(inner)}"
 
 
-def _parse_sacct_output(text: str) -> list[dict]:
-    """Parse pipe-delimited sacct output into a list of row-dicts.
-
-    sacct -P uses '|' as the column separator. With --noheader, each
-    non-empty line is one job (or array-task with -X) row. Empty
-    output → empty list (job not in slurmdbd yet, or never existed).
-
-    Defensively skips rows whose column count doesn't match
-    `_SACCT_FIELDS` — sacct on a misbehaving cluster could emit a
-    truncated row; we'd rather drop it than crash."""
+def _sacct_rows(text: str, keys: tuple[str, ...]) -> list[dict]:
+    """`sacct -P --noheader` output as row dicts, one per non-empty line, its `|`
+    columns named by `keys`. A row whose column count differs (a truncated line) is
+    dropped rather than misread. Empty output -> [] (job not in slurmdbd yet, or
+    never existed)."""
     rows: list[dict] = []
     for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("|")
-        if len(parts) != len(_SACCT_FIELDS):
-            continue
-        # Build a row dict with snake_case keys; sacct's exit_code is
-        # the `0:0` `<rc>:<signal>` shape — preserved verbatim.
-        rows.append({
-            "job_id":    parts[0],
-            "state":     parts[1],
-            "elapsed":   parts[2],
-            "exit_code": parts[3],
-            "nodelist":  parts[4],
-            "reason":    parts[5],
-            "start":     parts[6],
-            "end":       parts[7],
-        })
+        parts = line.strip().split("|")
+        if line.strip() and len(parts) == len(keys):
+            rows.append(dict(zip(keys, parts)))
     return rows
+
+
+def _parse_sacct_output(text: str) -> list[dict]:
+    """The status rows, in `_SACCT_FIELDS` order; `exit_code` keeps sacct's
+    `<rc>:<signal>` shape verbatim."""
+    return _sacct_rows(text, ("job_id", "state", "elapsed", "exit_code", "nodelist", "reason", "start", "end"))
 
 
 #: The longest one call waits (under the client's ~600 s stream watchdog), and how
@@ -289,7 +275,7 @@ def cluster_job_status(project_name: str,
             from agent.skills import transfer
             transfer._validate_remote_abs_path(run_dir)
             transfer._classify_zone_and_authorize(project=project, env=env, remote_abs_path=run_dir,
-                                                  op="download", primitive_name="download")
+                                                  primitive_name="download")
 
         started = time.monotonic()
         out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout)
@@ -357,11 +343,15 @@ def _observe(env: dict, compute_env_name: str, job_id: str, run_dir: str, *,
     return out
 
 
+def _over(rows: list[dict]) -> bool:
+    """There are rows, and none is still running."""
+    return bool(rows) and all(r.get("verdict") != RUNNING for r in rows)
+
+
 def _settled(status: dict) -> bool:
     """Nothing more will change: every job row is over (a pipeline's manager has
     written its records by the time its job ends)."""
-    jobs = status.get("jobs") or []
-    return bool(jobs) and all(r.get("verdict") != RUNNING for r in jobs)
+    return _over(status.get("jobs") or [])
 
 
 def _progress(status: dict) -> tuple:
@@ -503,7 +493,7 @@ def _pipeline_verdict(tasks: list[dict], manager_rows: list[dict]) -> str:
         return "failed"
     if not manager_rows:
         return "running" if any(s not in TASK_DONE for s in statuses) else "unobserved"
-    manager_over = bool(manager_rows) and all(r.get("verdict") != RUNNING for r in manager_rows)
+    manager_over = _over(manager_rows)
     if manager_over and any(r.get("verdict") == DIED for r in manager_rows):
         return "failed"
     if tasks and all(s in TASK_DONE for s in statuses) and manager_over:
@@ -784,21 +774,7 @@ def cluster_job_resources(project_name: str,
                 f"{(res.stderr or '').strip()[:500]}",
                 **({"hint": hint} if hint else {}))
 
-        rows = []
-        for line in (res.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("|")
-            if len(parts) != len(_RES_FIELDS):
-                continue
-            rows.append({
-                "job_id":   parts[0],
-                "elapsed":  parts[1],
-                "max_rss":  parts[2],
-                "ave_cpu":  parts[3],
-                "total_cpu": parts[4],
-            })
+        rows = _sacct_rows(res.stdout or "", ("job_id", "elapsed", "max_rss", "ave_cpu", "total_cpu"))
 
         if not rows:
             return loop("cluster.res_no_rows_retry", error=

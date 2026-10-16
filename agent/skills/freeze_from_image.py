@@ -169,7 +169,7 @@ def _image_probe(image: str, platform: str, tool: str) -> dict:
     glob = _shq(f"*{tok}*")
     q = _shq(tok)
     cmd = (f'echo "PATH=$PATH"; echo "---executables---"; '
-           f'find / -xdev \( -type f -o -type l \) -iname {glob} -perm -u+x -not -path "/proc/*" '
+           f'find / -xdev \\( -type f -o -type l \\) -iname {glob} -perm -u+x -not -path "/proc/*" '
            f'2>/dev/null | head -20; '
            f'echo "---console_scripts---"; '
            f'for f in $(find / -xdev -name entry_points.txt -not -path "/proc/*" 2>/dev/null | '

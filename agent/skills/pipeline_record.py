@@ -412,7 +412,7 @@ def _input_stem_glob(name: str, row_subs: Mapping[str, str], path_params: list[s
 _REPLACING_SIDECARS = {".bai": (".bam",), ".crai": (".cram",), ".dict": (".fa", ".fasta", ".fna")}
 
 
-def _sidecar_of(name: str, produced: Mapping[str, int]) -> Optional[str]:
+def _sidecar_of(name: str, produced: Mapping[str, object]) -> Optional[str]:
     """`x.bam.bai` — or `x.bai` — is a sidecar of `x.bam` when `x.bam` is a known artifact."""
     low = name.lower()
     for suf in _SIDECAR_SUFFIXES:
@@ -892,21 +892,20 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             "run each how-to command with run_step_in_container (not run_pipeline_step), "
             "then re-seal: the pipeline executes inside the images the seal pins")
 
-    produced_by: dict[str, int] = {}           # artifact -> its latest producer so far (the forward scan)
-    history: dict[str, list[int]] = {}         # artifact -> every template that wrote it, in order
+    history: dict[str, list[int]] = {}         # artifact -> every template that wrote it so far, in order
     observed: dict[tuple[int, str], list[Optional[str]]] = {}   # (template, artifact) -> per-row observed name
     directories: set[str] = set()              # artifacts observed as directories (a tree written under them)
     template_tokens: list[list[str]] = []
     template_bare: list[bool] = []
-    consumers: dict[str, list[int]] = {}
     rewrites: dict[int, list[str]] = {i: [] for i in range(len(templates))}
     template_outputs: list[list[str]] = []   # named tokens + observed-but-unnamed artifacts
 
+    def _written_before(tok: str, ti: int) -> bool:
+        return bool(history.get(tok)) and history[tok][-1] < ti
+
     def _produce(tok: str, ti: int) -> None:
-        if tok in produced_by and produced_by[tok] < ti:
+        if _written_before(tok, ti):
             rewrites[ti].append(tok)          # consumed and re-written: stage_in_copy
-            consumers.setdefault(tok, []).append(ti)
-        produced_by[tok] = ti
         if not history.get(tok) or history[tok][-1] != ti:
             history.setdefault(tok, []).append(ti)
 
@@ -934,18 +933,18 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             if wrote_it:
                 _produce(tok, ti)
                 observed[(ti, tok)] = per_row
-            elif tok in produced_by and produced_by[tok] < ti:
-                consumers.setdefault(tok, []).append(ti)
+            elif _written_before(tok, ti):
+                pass                          # consumed from an earlier command
             elif not steps_here:
                 # no sealed step to observe: a redirect / -o target is the producer, else a consumer
                 if re.search(r"(>\s*|-o\s+|--out\S*[= ]\s*)\{[A-Z0-9_]+\}/" + re.escape(tok), tmpl):
-                    if tok not in produced_by:
+                    if tok not in history:
                         _produce(tok, ti)
                     observed[(ti, tok)] = []
                     notes.append(f"{tok}: producer inferred from the command text of how-to "
                                  f"command {ti + 1} (no sealed step to confirm it)")
-                elif tok in produced_by:
-                    consumers.setdefault(tok, []).append(ti)
+                elif tok in history:
+                    pass                      # consumed from an earlier command
                 else:
                     head = tmpl if len(tmpl) <= 90 else tmpl[:87] + "..."
                     raise PipelineDerivationError(
@@ -960,10 +959,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                         "is read off the command text; or, if an earlier command writes it, name it after "
                         "that command")
             else:
-                parent = _sidecar_of(tok, produced_by)
-                if parent is not None:
-                    consumers.setdefault(tok, []).append(ti)
-                    continue
+                if _sidecar_of(tok, history) is not None:
+                    continue                  # an index beside an artifact an earlier command wrote
                 raise PipelineDerivationError(
                     "pipeline.orphan_artifact",
                     f"how-to command {ti + 1} names `{tok}` inside an output slot, but the sealed "

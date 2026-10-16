@@ -327,7 +327,7 @@ def _authorize_outdir(project: dict, env: dict, outdir: str) -> None:
     """An outdir outside the run directory, with exec checked for it: the job writes
     the results there. A zone for reference data or images is refused."""
     zone = transfer._classify_zone_and_authorize(project=project, env=env, remote_abs_path=outdir,
-                                                 op="upload", primitive_name="run_production_pipeline")["zone"]
+                                                 primitive_name="run_production_pipeline")["zone"]
     if zone in ("common_data", "container_upload"):
         raise _refuse("run_production.outdir_zone",
                       f"outdir {outdir} is in the env's {zone} zone, which holds reference data and images, not results",
@@ -338,7 +338,7 @@ def _authorize_run_dir(project: dict, env: dict, env_name: str, run_dir: str) ->
     """The zone `run_dir` falls in, with upload AND exec checked for it: a run writes
     files there and the job runs there."""
     zone = transfer._classify_zone_and_authorize(
-        project=project, env=env, remote_abs_path=f"{run_dir}/main.nf", op="upload", primitive_name="upload")
+        project=project, env=env, remote_abs_path=f"{run_dir}/main.nf", primitive_name="upload")
     name = zone["zone"]
     if name in ("common_data", "container_upload"):
         raise _refuse("run_production.run_dir_zone",
@@ -960,7 +960,7 @@ def run_production_pipeline(project_name: str,
             launch = sb.get("sbatch_command", "")
             try:                    # cluster_job_status reads a run's tasks where download is granted
                 transfer._classify_zone_and_authorize(project=project, env=env, remote_abs_path=normed_dir,
-                                                      op="download", primitive_name="download")
+                                                      primitive_name="download")
                 tasks = f", run_dir={normed_dir!r}"
             except compute_access.PermissionDenied:
                 tasks = ""

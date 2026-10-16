@@ -471,13 +471,13 @@ def _under(root: str, abs_path: str) -> bool:
 
 def _classify_zone_and_authorize(*, project: dict, env: dict,
                                   remote_abs_path: str,
-                                  op: str,
                                   primitive_name: str) -> dict:
     """Decide which zone `remote_abs_path` falls in, apply the right
     authorization check, and return a {zone, auth_target?} summary.
 
-    `op` is "upload" or "download" — used by the authorization check
-    to look up the required permission token in OPERATION_REQUIRES.
+    `primitive_name` names the operation whose permission token
+    (OPERATION_REQUIRES) the path must carry: upload, download, or a
+    primitive such as run_production_pipeline (exec).
 
     Order of checks:
       1. scratch zone: if remote_abs_path is under env.agent_scratch_target,
@@ -921,7 +921,6 @@ def _do_transfer(*, direction: str,
     are inline (overwrite check on remote vs local, sha256 anchor
     direction, provider method)."""
     started = time.perf_counter()
-    manifest_dir_hint = None
     if detached():
         timeout = max(timeout, _DETACHED_TIMEOUT_S)
 
@@ -992,7 +991,7 @@ def _do_transfer(*, direction: str,
         zone_info = _classify_zone_and_authorize(
             project=project, env=env,
             remote_abs_path=normed_remote,
-            op=direction, primitive_name=direction)
+            primitive_name=direction)
         zone = zone_info["zone"]
 
         # 4) Direction-specific local-side checks.

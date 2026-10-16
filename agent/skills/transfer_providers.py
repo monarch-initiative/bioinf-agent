@@ -509,9 +509,7 @@ _PERMISSION_DENIED_TOKEN = "PERMISSION_DENIED"
 # context.path. The classifier uses these patterns to decide which
 # root cause to surface.
 import re as _re
-_UUID_RE = _re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-    _re.IGNORECASE)
+_UUID_RE = _re.compile(compute_access.UUID_PATTERN, _re.IGNORECASE)      # found inside an event's text
 # GCP refuses to scan paths outside its Accessible Folders config with
 # this exact FTP-style body. Distinctive enough to key off of.
 _GCP_PATH_BLOCK_BODY_RE = _re.compile(r"path not allowed", _re.IGNORECASE)
@@ -1266,10 +1264,7 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     # Validate the task_id shape BEFORE shelling out — Globus task IDs
     # are UUIDs. Defense against any caller smuggling a metacharacter
     # into the argv.
-    import re as _re
-    if not _re.match(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            task_id):
+    if not compute_access._UUID_RE.match(task_id):
         return refused("transfer.task_status_bad_uuid", error=
             f"task_id {task_id!r} is not a canonical UUID — refused "
             f"before any subprocess")
