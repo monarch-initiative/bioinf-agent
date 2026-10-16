@@ -96,6 +96,7 @@ def test_an_index_the_how_to_binds_itself_is_staged_once(tmp_path):
                       step_outputs=lambda ti, run, s: [f"{run}/{s['SAMPLE']}.sam"])
     rec = pr.derive_pipeline_record(spec, name="sv", index_files=_observed(spec))
     assert {c.name: c for c in rec.samplesheet.columns}["bam"].index_files == []
+    assert not any("index files sit beside" in n for n in rec.notes), rec.notes
     assert "tuple val(meta), path(bam), path(bai)" in render_pipeline_files(rec)["main.nf"]
 
 

@@ -155,6 +155,17 @@ def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_na
             staged_at=datetime.now(timezone.utc).isoformat(),
             env_record=_stage_record(**record_kw))
 
+    # An earlier upload of this .sif whose Globus task has not been seen to end may still
+    # be reading the local .sif a rebuild would replace.
+    inflight = transfer._pending_receipt(env=compute_env_name, to=sif_remote_abs)
+    if inflight is not None:
+        call = transfer.status_call(project_name, compute_env_name, inflight[1].get("globus_task_id"))
+        return loop("stage.sif_upload_still_running", success=False, sif_path=sif_remote_abs,
+            error=f"an earlier upload of {sif_remote_abs} has not been seen to end; rebuilding the "
+                  f"local .sif under it would change what that upload reads",
+            remedy=f"{call} until SUCCEEDED (it puts the .sif in place), then stage_apptainer_image "
+                   f"again: it finds the .sif and sends the record")
+
     # 2. Resolve the LOCAL docker source (tarball or image tag). The archive's
     #    directory is the env's directory in the environments zone, read at call time.
     from agent.skills.freeze import tarball_path
@@ -216,7 +227,7 @@ def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_na
         return loop("stage.sif_upload_still_running", success=False,
             error=up["error"], task_id=up.get("task_id"), sif_path=sif_remote_abs,
             local_sif=str(local_sif_path),
-            remedy=f"globus_task_status(task_id={up.get('task_id')!r}) until SUCCEEDED (it puts "
+            remedy=f"{transfer.status_call(project_name, compute_env_name, up.get('task_id'))} until SUCCEEDED (it puts "
                    f"the .sif in place), then stage_apptainer_image again: it finds the "
                    f".sif and sends the record")
     if up.get("code") == "transfer.remote_exists":

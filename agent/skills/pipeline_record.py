@@ -768,7 +768,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             default=v0 if kind == "shared" else None,     # a per-sample value is a samplesheet cell
             source=source, format=di.get("format"), description=di.get("description"),
             used_by=[], reason=why, index_files=indexes))
-        if value_kind == "path" and not indexes and any((index_files or {}).get(v) for v in given):
+        if value_kind == "path" and not indexes and any(beside.get(v) for v in given):
             notes.append(f"{ph}: index files sit beside its files, but not under one name for every "
                          f"row, so none is staged; name them alike (e.g. <file>.bai) to have them staged")
         if indexes:

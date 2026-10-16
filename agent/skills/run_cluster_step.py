@@ -97,13 +97,8 @@ _RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 
 
 
-# Terminal SLURM states — once we hit one of these the job is over.
-#: Alias of the one definition, in `cluster_jobs` alongside the sacct parser
-#: that produces the rows. It was a second literal copy here — and the copy in
-#: the L14 surface test asserts set-equality against it, so the two had to be
-#: edited in lockstep and the test could only prove the set had not changed,
-#: never that it was right. Same shape as the invariant roster: the poller that
-#: consumes the set is not its owner.
+#: Terminal SLURM states: the one definition lives in `cluster_jobs`, beside the
+#: sacct parser that produces the rows.
 _TERMINAL_STATES = cluster_jobs.TERMINAL_STATES
 
 
@@ -442,7 +437,7 @@ def run_step_on_cluster(
         return loop("run_cluster.upload_still_running",
             error=f"the rendered workflow may still be arriving in scratch: {up['error']}",
             task_id=up.get("task_id"), staged=str(tree), stage_result=stage,
-            remedy=f"globus_task_status(task_id={up.get('task_id')!r}) says how it ended; then run "
+            remedy=f"{transfer.status_call(project_name, compute_env_name, up.get('task_id'))} says how it ended; then run "
                    f"the step again under a fresh workflow_name")
     if "error" in up:
         return broke("run_cluster.upload_failed",
@@ -453,9 +448,8 @@ def run_step_on_cluster(
 
     sb = submit_workflow.sbatch_via_ssh(env, workflow_dir, timeout=300)
     if "error" in sb:
-        # RECORDED (was VANISHED): the SLURM submission failed. Record a failed
-        # pipeline_step BEFORE returning so this attempt leaves a durable trace
-        # in the draft — the files were uploaded but no job started.
+        # the submission failed: a failed step records the attempt (files uploaded,
+        # no job started)
         step_index = _record_failed_cluster_step(
             _pipeline_state, pipeline_id,
             tool_name=tool_name, command=command, inputs=inputs,
@@ -484,10 +478,8 @@ def run_step_on_cluster(
             job_id=job_id,
             access_path=access_path)
         if "error" in s:
-            # RECORDED (was VANISHED — the worst hole): the job was submitted
-            # (job_id in hand) but the poll query errored. Record a failed step
-            # carrying the job_id so the possibly-still-running SLURM job is
-            # traceable (a reader can sacct it) instead of leaving zero trace.
+            # the job was submitted but the poll errored: a failed step carrying the
+            # job_id keeps the possibly still running job traceable
             step_index = _record_failed_cluster_step(
                 _pipeline_state, pipeline_id,
                 tool_name=tool_name, command=command, inputs=inputs,
@@ -505,20 +497,15 @@ def run_step_on_cluster(
                                 "step_index": step_index})
         if s.get("jobs"):
             row = s["jobs"][0]
-            # normalize_state, not a bare `in`: sacct writes `CANCELLED by 12345`,
-            # which never matched the undecorated name — so the one death a user
-            # causes on purpose polled until the timeout and was reported as a
-            # poll_timeout rather than as the cancellation it was.
+            # normalize_state: sacct writes `CANCELLED by 12345`
             if cluster_jobs.normalize_state(row.get("state")) in _TERMINAL_STATES:
                 final_status = row
                 break
         time.sleep(poll_interval)
 
     if final_status is None:
-        # RECORDED (was VANISHED): the job was submitted but never reached a
-        # terminal state within the poll cap. Record a failed step carrying the
-        # job_id so the (possibly still-running) job is traceable — the caller
-        # can sacct it or cancel it rather than losing the handle.
+        # no terminal state within the poll cap: a failed step carrying the job_id,
+        # so the caller can look at it or cancel it
         step_index = _record_failed_cluster_step(
             _pipeline_state, pipeline_id,
             tool_name=tool_name, command=command, inputs=inputs,

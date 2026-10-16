@@ -117,6 +117,28 @@ class TestScpFile:
         assert not local.exists(), "a truncated file would be validated as the output"
 
     @pytest.mark.integration
+    def test_a_file_that_arrives_during_the_upload_keeps_its_own_refusal(self, tmp_path, monkeypatch):
+        """The provider found the destination there at the rename; the caller branches
+        on transfer.remote_exists (a staged .sif is then simply there), never on a
+        generic provider refusal."""
+        monkeypatch.setattr(transfer, "_remote_existence_check", lambda env, p, t: {"exists": False})
+        monkeypatch.setattr(transfer, "_remote_mkdir_parent_ssh", lambda env, p, t: None)
+        monkeypatch.setattr(transfer_providers.ScpHeadNodeProvider, "upload_one",
+                            lambda self, **kw: transfer_providers.refused(
+                                "transfer.remote_exists", provider="scp_head_node", error="appeared"))
+        acc = tmp_path / "projects_access.yaml"
+        acc.write_text(yaml.safe_dump({
+            "compute_envs": [{"name": "hpc", "type": "ssh", "host": "h", "user": "u",
+                              "agent_scratch_target": {"path": "/w/scratch",
+                                                       "permissions": ["upload", "download", "exec"]}}],
+            "projects": [{"name": "demo_project", "compute_envs": ["hpc"], "directories": []}]}))
+        src = tmp_path / "x.sif"
+        src.write_bytes(b"sif")
+        out = transfer.upload("demo_project", "hpc", str(src), "/w/scratch/demo_project/x.sif",
+                              access_path=str(acc))
+        assert (out["outcome"], out["code"]) == ("refused", "transfer.remote_exists"), out
+
+    @pytest.mark.integration
     def test_the_no_overwrite_check_looks_again_before_saying_missing(self, monkeypatch):
         calls: list = []
         monkeypatch.setattr(subprocess, "run", lambda argv, *a, **kw: (
@@ -139,6 +161,23 @@ class TestLocalCopy:
         assert not (dest.parent / ".x.txt.partial").exists()
 
     @pytest.mark.integration
+    def test_a_destination_that_appears_during_the_copy_is_never_replaced(self, tmp_path, monkeypatch):
+        from tests.integration.honesty.L14_compute_env_safety.test_transfer_surface import _make_access
+        access = _make_access(tmp_path)
+        src = tmp_path / "x.txt"
+        src.write_text("payload")
+        dest = tmp_path / "fakescratch" / "demo_project" / "x.txt"
+        real_copy = shutil.copy
+
+        def copy_while_another_arrives(a, b, *rest, **kw):
+            dest.write_text("theirs")
+            return real_copy(a, b, *rest, **kw)
+        monkeypatch.setattr(transfer.shutil, "copy", copy_while_another_arrives)
+        out = transfer.upload("demo_project", "fakehpc", str(src), str(dest), access_path=str(access))
+        assert out["outcome"] == "refused" and "appeared while the copy ran" in out["error"], out
+        assert dest.read_text() == "theirs" and not (dest.parent / ".x.txt.partial").exists()
+
+    @pytest.mark.integration
     def test_a_local_write_that_fails_is_a_typed_failure_not_a_missing_manifest(self, tmp_path):
         from tests.integration.honesty.L14_compute_env_safety.test_transfer_surface import _make_access
         access = _make_access(tmp_path)
@@ -158,16 +197,39 @@ class TestLocalCopy:
         assert missing["code"] == "transfer.access_config_missing", missing
 
 
-def _globus_access(tmp_path: Path) -> Path:
+def _globus_access(tmp_path: Path, *, wire: str = "globus") -> Path:
     p = tmp_path / "projects_access.yaml"
+    zone = {"permissions": ["file_name_only", "upload", "download", "exec"]}
     p.write_text(yaml.safe_dump({
         "compute_envs": [{
             "name": "hpc", "type": "ssh", "host": "hpc.example.edu", "user": "u",
-            "agent_scratch_target": {"path": "/w/scratch",
-                                     "permissions": ["file_name_only", "upload", "download", "exec"]},
-            "data_transfer": {"type": "globus", "globus": _GLOBUS}}],
-        "projects": [{"name": "demo_project", "compute_envs": ["hpc"], "directories": []}]}))
+            "agent_scratch_target": {"path": "/w/scratch", **zone},
+            "agent_common_data_target": {"path": "/w/common", **zone},
+            "data_transfer": ({"type": "globus", "globus": _GLOBUS} if wire == "globus"
+                              else {"type": "scp_head_node"})}],
+        "projects": [{"name": n, "compute_envs": ["hpc"], "directories": []}
+                     for n in ("demo_project", "other_project")]}))
     return p
+
+
+def _unobserved_globus(calls: list, state: dict):
+    """Globus whose status query fails after submit until `state["show"]` says how the
+    task ended; `globus stat` finds nothing unless `state["there"]` names it."""
+    def fake_run(argv, *a, **kw):
+        calls.append(argv)
+        if argv[:2] == ["globus", "stat"]:
+            hit = argv[2].split(":", 1)[1] in state.get("there", ())
+            return MagicMock(returncode=0, stderr="",
+                             stdout=json.dumps({"name": "x", "type": "file"} if hit else {"code": "NotFound"}))
+        if argv[:2] == ["globus", "transfer"]:
+            return MagicMock(returncode=0, stderr="", stdout=json.dumps({"task_id": _TASK_ID}))
+        if argv[:2] == ["globus", "rename"]:
+            return MagicMock(returncode=1, stderr="No such file", stdout="")
+        if state["show"] == "error":
+            return MagicMock(returncode=1, stderr="Token expired", stdout="")
+        return MagicMock(returncode=0, stderr="", stdout=json.dumps(
+            {"status": state["show"], "files_transferred": 1}))
+    return fake_run
 
 
 class TestGlobus:
@@ -208,7 +270,7 @@ class TestGlobus:
 
         clock["done"] = True
         env = {**_env_ssh(), "data_transfer": {"type": "globus", "globus": _GLOBUS}}
-        st = transfer.resolve_globus_task("demo_project", env, _TASK_ID)
+        st = transfer.resolve_globus_task(env, _TASK_ID)
         assert (st["outcome"], st["renamed_to"]) == ("proven", "/w/scratch/demo_project/big.sif"), st
         assert calls[-1] == ["globus", "rename", _REMOTE_EP,
                              "/w/scratch/demo_project/.big.sif.partial",
@@ -217,7 +279,7 @@ class TestGlobus:
         assert rec["outcome"] == "uploaded" and "pending_rename" not in rec
 
         calls.clear()
-        again = transfer.resolve_globus_task("demo_project", env, _TASK_ID)
+        again = transfer.resolve_globus_task(env, _TASK_ID)
         assert again["outcome"] == "proven" and "renamed_to" not in again
         assert not any(c[:2] == ["globus", "rename"] for c in calls), "renamed once"
 
@@ -272,16 +334,89 @@ class TestGlobus:
         assert rec["outcome"] == "still running" and rec["pending_rename"]["to"] == dest
 
         again = transfer.upload("demo_project", "hpc", str(src), dest, access_path=access)
-        assert (again["outcome"], again["code"]) == ("refused", "transfer.upload_in_flight"), again
+        assert (again["outcome"], again["code"]) == ("loop", "transfer.upload_in_flight"), again
+        assert "project_name='demo_project', compute_env_name='hpc'" in again["remedy"]
         assert again["task_id"] == _TASK_ID and not any(c[:2] == ["globus", "transfer"] for c in calls[3:])
 
         state["show"] = "failed"
         env = {**_env_ssh(), "data_transfer": {"type": "globus", "globus": _GLOBUS}}
-        st = transfer.resolve_globus_task("demo_project", env, _TASK_ID)
+        st = transfer.resolve_globus_task(env, _TASK_ID)
         assert st["code"] == "transfer.task_failed" and st["partial_path"].endswith(".big.sif.partial"), st
         rec = json.loads(Path(out["manifest"]).read_text())
         assert rec["outcome"] == "failed" and "pending_rename" not in rec
         assert transfer.upload("demo_project", "hpc", str(src), dest,
+                               access_path=access)["code"] != "transfer.upload_in_flight"
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("again_as,project", [("/w/common/ref/", "demo_project"),
+                                                  ("/w/common//ref", "demo_project"),
+                                                  ("/w/common/ref", "other_project")],
+                             ids=["trailing_slash", "double_slash", "another_project"])
+    def test_the_hold_is_on_the_place_however_it_is_named_and_whoever_asks(
+            self, tmp_path, monkeypatch, again_as, project):
+        calls: list = []
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus(calls, {"show": "error"}))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        access = str(_globus_access(tmp_path))
+        first = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
+        assert first["code"] == "transfer.globus_task_unobserved", first
+        again = transfer.upload(project, "hpc", str(src), again_as, access_path=access)
+        assert again["code"] == "transfer.upload_in_flight", again
+        assert sum(c[:2] == ["globus", "transfer"] for c in calls) == 1, "one task, never a second"
+
+    @pytest.mark.integration
+    def test_a_task_that_succeeded_short_of_the_whole_copy_clears_the_way(self, tmp_path, monkeypatch):
+        state = {"show": "error"}
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus([], state))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        first = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref",
+                                access_path=str(_globus_access(tmp_path)))
+        state["show"] = "SUCCEEDED"
+        real = subprocess.run
+
+        def skipped(argv, *a, **kw):
+            if argv[:3] == ["globus", "task", "show"]:
+                return MagicMock(returncode=0, stderr="", stdout=json.dumps(
+                    {"status": "SUCCEEDED", "files_transferred": 0, "files_skipped": 1}))
+            return real(argv, *a, **kw)
+        monkeypatch.setattr(subprocess, "run", skipped)
+        env = {**_env_ssh(), "data_transfer": {"type": "globus", "globus": _GLOBUS}}
+        st = transfer.resolve_globus_task(env, _TASK_ID)
+        assert st["code"] == "transfer.task_incomplete", st
+        rec = json.loads(Path(first["manifest"]).read_text())
+        assert rec["outcome"] == "failed" and "pending_rename" not in rec
+
+    @pytest.mark.integration
+    def test_on_another_wire_the_hold_does_not_apply(self, tmp_path, monkeypatch):
+        """globus_task_status cannot resolve a task on an env that no longer speaks Globus,
+        so a hold there would never lift."""
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus([], {"show": "error"}))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=str(_globus_access(tmp_path)))
+        monkeypatch.setattr(subprocess, "run", lambda argv, *a, **kw: MagicMock(returncode=1, stdout="", stderr="no ssh"))
+        (tmp_path / "scp").mkdir()
+        out = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref",
+                              access_path=str(_globus_access(tmp_path / "scp", wire="scp")))
+        assert out["code"] != "transfer.upload_in_flight", out
+
+    @pytest.mark.integration
+    def test_a_rename_with_nothing_left_to_rename_clears_the_way(self, tmp_path, monkeypatch):
+        state = {"show": "error"}
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus([], state))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        access = str(_globus_access(tmp_path))
+        first = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
+        state["show"] = "SUCCEEDED"
+        env = {**_env_ssh(), "data_transfer": {"type": "globus", "globus": _GLOBUS}}
+        st = transfer.resolve_globus_task(env, _TASK_ID)
+        assert st["code"] == "transfer.task_rename_failed" and "upload it again" in st["remedy"], st
+        assert json.loads(Path(first["manifest"]).read_text())["outcome"] == "failed"
+        state["show"] = "error"
+        assert transfer.upload("demo_project", "hpc", str(src), "/w/common/ref",
                                access_path=access)["code"] != "transfer.upload_in_flight"
 
     @pytest.mark.integration

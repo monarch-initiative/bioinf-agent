@@ -62,6 +62,11 @@ _DEFAULT_DL_SLURM = {"time": "1-00:00:00", "mem": "4g"}
 _PROBE_TIMEOUT = 120
 
 
+#: Markers around a file's text in a probe's output.
+_FILE_BEGIN, _FILE_END = "BIOINF_FILE_BEGIN", "BIOINF_FILE_END"
+_SBATCH_LINE_RE = re.compile(r"(?m)^#SBATCH .*$")
+
+
 def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Optional[str]) -> Optional[dict]:
     """Put `src` in the acquisition directory for its job. A re-submit finds the same
     file there and runs it again (the job resumes), once no job of the acquisition
@@ -73,14 +78,24 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
                          access_path=str(Path(access_path)) if access_path else None, timeout=600)
     if up.get("code") == "transfer.remote_exists":
         from agent.skills.snapshot import _ssh_argv
-        script = f"{transfer._remote_sha256_cmd(remote)}; {cluster_jobs.jobs_in_dir_sh(acq_dir)}"
+        script = (f"echo {_FILE_BEGIN}; cat {shlex.quote(remote)}; echo; echo {_FILE_END}; "
+                  + cluster_jobs.jobs_in_dir_sh(acq_dir))
         try:
             res = subprocess.run(_ssh_argv(env, f"bash -lc {shlex.quote(script)}"),
                                  capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
             lines = (res.stdout or "").splitlines()
+            said_ssh = (f"ssh rc={res.returncode}: {(res.stderr or '').strip()[:200]}"
+                        if res.returncode != 0 else "")
         except subprocess.TimeoutExpired:
-            lines = ["SQUEUE_FAILED", "SQUEUE_ERR ssh timed out"]
-        live, said = cluster_jobs.jobs_in_dir(lines)
+            lines, said_ssh = [], "ssh timed out"
+        if said_ssh or _FILE_BEGIN not in lines or _FILE_END not in lines:
+            return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
+                error=f"could not read {remote} and the scheduler's jobs in {acq_dir} "
+                      f"({said_ssh or 'the probe printed no answer'}); a re-submit is not sent unchecked",
+                remedy="submit again once ssh to the cluster answers")
+        a, b = lines.index(_FILE_BEGIN), lines.index(_FILE_END)
+        there = "\n".join(lines[a + 1:b]).strip()
+        live, said = cluster_jobs.jobs_in_dir(lines[b + 1:])
         if said is not None:
             return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
                 error=f"could not tell whether a job of this acquisition still runs in {acq_dir} "
@@ -91,8 +106,15 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
                 error=f"a job of this acquisition is still queued or running in {acq_dir} ({live}); "
                       f"a second one would race it for the same files",
                 remedy="cluster_job_status on it; submit again only once it has ended")
-        if transfer._parse_sha256sum_output(res.stdout or "") == transfer._compute_local_sha256(src):
+        mine = src.read_text().strip()
+        if there == mine:
             return None
+        if _SBATCH_LINE_RE.sub("", there).strip() == _SBATCH_LINE_RE.sub("", mine).strip():
+            return refused("acquire.slurm_differs", acq_dir=acq_dir,
+                error=f"{remote} is this acquisition's job script with another SLURM request; "
+                      f"it is never rewritten under a job that may resume from it",
+                remedy="re-submit with the SLURM request it was submitted with (its submission "
+                       "manifest records it): the job resumes where it stopped")
         return refused("acquire.acq_dir_holds_another", acq_dir=acq_dir,
             error=f"{remote} is there and is not this acquisition's {src.name}: {acq_dir} holds an "
                   f"acquisition submitted with other arguments",
@@ -101,7 +123,7 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
     if up.get("outcome") == "loop":
         return loop("acquire.upload_still_running", acq_dir=acq_dir, task_id=up.get("task_id"),
             error=f"{src.name} may still be arriving in {acq_dir}, so nothing was submitted: {up['error']}",
-            remedy=f"globus_task_status(task_id={up.get('task_id')!r}); once it has SUCCEEDED, "
+            remedy=f"{transfer.status_call(transfer.AD_HOC_PROJECT_NAME, compute_env, up.get('task_id'))}; once it has SUCCEEDED, "
                    f"submit the acquisition again")
     if "error" in up:
         return broke("acquire.upload_failed", acq_dir=acq_dir,

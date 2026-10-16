@@ -205,8 +205,14 @@ def _check_samplesheet(text: str, record: PipelineRecord, where: str) -> tuple[l
     pipeline reads is there, and every cell can be run: the sample names a directory
     and the files under it, a value a stage binds is pasted into its shell command (the
     rule params= values follow), and a path is absolute and plain."""
-    lines = [r for r in csv.reader(io.StringIO(text), quoting=csv.QUOTE_NONE) if r]
+    # a byte-order mark (a spreadsheet's "CSV UTF-8") is dropped, as Nextflow drops it
+    lines = [r for r in csv.reader(io.StringIO(text.removeprefix("\ufeff")), quoting=csv.QUOTE_NONE) if r]
     header = lines[0] if lines else []
+    if "" in header:
+        raise _refuse("run_production.samplesheet_malformed",
+                      f"samplesheet {where}: the header {','.join(header)!r} has an empty column name; "
+                      f"Nextflow refuses the sheet",
+                      remedy="name every column, or drop the trailing comma from every line")
     for row in lines:
         if len(row) != len(header):
             raise _refuse("run_production.samplesheet_malformed",
@@ -641,7 +647,8 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
                              error=f"could not inspect {run_dir} on the cluster (rc={res.returncode}): "
                                    f"{(res.stderr or '').strip()[:300]}", **({"hint": hint} if hint else {})))
     lines = (res.stdout or "").splitlines()
-    live, said = cluster_jobs.jobs_in_dir(lines)
+    # the scheduler's lines come after every file's text, never read from inside one
+    live, said = cluster_jobs.jobs_in_dir(lines[lines.index(f"END {_RUN_TEXTS[-1]}") + 1:])
     if said is not None:
         raise _Refusal(broke("run_production.run_dir_probe_failed",
                              error=f"the scheduler could not say whether a run of {run_dir} is still "
@@ -728,8 +735,8 @@ def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: st
     if state["missing"]:
         raise _refuse("run_production.run_dir_incomplete",
                       f"{run_dir} holds part of this pipeline: it lacks {state['missing'][:5]}",
-                      remedy="launch into a new run directory: a launch puts its run directory in "
-                             "place whole, so this one is not a launch's copy")
+                      remedy="launch into a new run directory: a run directory holding part of a "
+                             "pipeline is not one a launch can resume")
     if samplesheet:
         raise _refuse("run_production.samplesheet_already_there",
                       f"{run_dir} already holds {SAMPLESHEET_FILENAME}; a re-launch resumes with it",
@@ -775,7 +782,7 @@ def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir:
         raise _Refusal(loop("run_production.upload_still_running",
                             error=f"the run directory may still be arriving, so nothing was launched: {up['error']}",
                             staged=str(tree), task_id=up.get("task_id"),
-                            remedy=f"globus_task_status(task_id={up.get('task_id')!r}); once it has "
+                            remedy=f"{transfer.status_call(project_name, env_name, up.get('task_id'))}; once it has "
                                    f"SUCCEEDED (it puts the directory in place), launch again with the "
                                    f"same run_dir and no samplesheet"))
     if "error" in up:

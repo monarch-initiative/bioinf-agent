@@ -68,6 +68,30 @@ def test_an_output_named_by_the_tool_is_one_artifact_across_rows(samples):
     assert "tuple val(meta), path(fastqc_html), path(fastqc_zip)" in main
 
 
+def test_a_glob_named_like_a_name_every_process_binds_is_staged_under_another():
+    """`*.meta` slugs to `meta`, which every per-sample process already declares."""
+    def outs(ti, run, s):
+        stem = s["READS"].rsplit("/", 1)[-1].removesuffix(".fq")
+        return [f"{run}/{stem}.meta"] if ti == 0 else [f"{run}/report.txt"]
+    sp = probe_spec(["describe -o {OUTPUT_DIR} {READS}", "report -o {OUTPUT_DIR}/report.txt {OUTPUT_DIR}"],
+                    [(x, {"READS": f"/data/{x}.fq"}) for x in ("s1", "s2")],
+                    [{"name": "OUTPUT_DIR", "files": ["report.txt"]}],
+                    inputs=[{"name": "READS", "format": "fastq"}], step_outputs=outs)
+    main = _main(pr.derive_pipeline_record(sp, name="probe"))
+    assert "tuple val(meta), path(meta_files)" in main and "path(meta))" not in main
+
+
+def test_two_inputs_staged_under_one_name_refuse_at_render():
+    """`*_fastqc.html` and `*_fastqc-html` both stage as `fastqc_html`: Nextflow would
+    refuse two inputs of one name, so the render does, naming them."""
+    from agent.skills.pipeline_render import PipelineRenderError
+    rec = pr.derive_pipeline_record(_qc_spec(["s1", "s2"]), name="qc")
+    fastqc, multiqc = rec.stages
+    fastqc.outputs[1].artifact = multiqc.inputs[1].artifact = multiqc.inputs[1].name = "*_fastqc-html"
+    with pytest.raises(PipelineRenderError, match=r"two inputs would be staged as \['fastqc_html'\]"):
+        render_pipeline_files(rec)
+
+
 @pytest.mark.parametrize("reads,sample", [("/data/reads/SRR1039508_10K_R1.fastq.gz", "SRR1039508"),
                                           ("/data/HG002.novaseq.R1.fastq.gz", "HG002"),
                                           ("/data/2024.10.01_s1.fastq.gz", "s1")],
@@ -193,12 +217,17 @@ def test_an_empty_option_anywhere_still_matches_its_steps(template):
     assert rec.stages[0].sealed_steps == [1, 2] and not rec.unmatched_steps
 
 
-def test_an_output_slot_with_a_bare_slash_binds_to_the_task_directory():
-    sp = probe_spec(["fastqc --outdir {OUTPUT_DIR}/ {READS}"], [(x, {"READS": f"/data/{x}.fq"}) for x in ("s1", "s2")],
+@pytest.mark.parametrize("template,rendered", [
+    ("fastqc --outdir {OUTPUT_DIR}/ {READS}", "fastqc --outdir ./ ${reads}"),
+    ("fastqc --outdir '{OUTPUT_DIR}/' {READS}", "fastqc --outdir './' ${reads}"),
+    ("fastqc {READS} --outdir {OUTPUT_DIR}/;", "fastqc ${reads} --outdir ./;"),
+], ids=["space", "quoted", "separator"])
+def test_an_output_slot_with_a_bare_slash_binds_to_the_task_directory(template, rendered):
+    sp = probe_spec([template], [(x, {"READS": f"/data/{x}.fq"}) for x in ("s1", "s2")],
                     [{"name": "OUTPUT_DIR", "files": ["*_fastqc.html"]}],
                     inputs=[{"name": "READS", "format": "fastq"}],
                     step_outputs=lambda ti, run, s: [f"{run}/{s['READS'].rsplit('/', 1)[-1][:-3]}_fastqc.html"])
-    assert "fastqc --outdir ./ ${reads}" in _main(pr.derive_pipeline_record(sp, name="probe"))
+    assert rendered in _main(pr.derive_pipeline_record(sp, name="probe"))
 
 
 def test_a_backslash_in_a_value_reaches_the_command_as_written():

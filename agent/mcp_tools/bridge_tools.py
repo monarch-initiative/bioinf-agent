@@ -313,7 +313,7 @@ def globus_task_status(project_name: str,
         return refused("globus_task_status.access_denied", success=False,
                        error=f"PermissionDenied: project {project_name!r} does not "
                              f"list compute_env {compute_env_name!r}")
-    return transfer.resolve_globus_task(project_name, env, task_id)
+    return transfer.resolve_globus_task(env, task_id)
 
 
 @mcp.tool()

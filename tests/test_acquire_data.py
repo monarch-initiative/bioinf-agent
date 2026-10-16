@@ -171,7 +171,8 @@ class TestResubmit:
     one again (the job resumes) — once no job of it is still queued or running there,
     and only when the script there is this acquisition's own."""
 
-    def _resubmit(self, tmp_path, monkeypatch, *, squeue: str, there: str | None = None):
+    def _resubmit(self, tmp_path, monkeypatch, *, squeue: str, there: str | None = None,
+                  second: dict | None = None, ssh_down: bool = False):
         import os
         import shlex
         import subprocess
@@ -202,15 +203,17 @@ class TestResubmit:
         real = subprocess.run
 
         def via_bash(argv, *a, **kw):
+            if ssh_down:
+                return subprocess.CompletedProcess(argv, 255, stdout="", stderr="Connection refused")
             return real(["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=True,
                         env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "USER": "u"})
         monkeypatch.setattr(acquire_data.subprocess, "run", via_bash)
 
-        def submit():
+        def submit(**kw):
             return acquire_data.acquire_to_cluster(name="gnomad", url="https://x.org/g.vcf.bgz",
-                                                   compute_env="hpc", _pipeline_state=object())
+                                                   compute_env="hpc", _pipeline_state=object(), **kw)
         first = submit()
-        return first, submit(), sent
+        return first, submit(**(second or {})), sent
 
     def test_a_resubmit_runs_its_own_script_again(self, tmp_path, monkeypatch):
         first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="echo '9 RUNNING /elsewhere'\n")
@@ -227,6 +230,17 @@ class TestResubmit:
                                             squeue="echo 'Socket timed out' >&2; exit 1\n")
         assert (again["outcome"], again["code"]) == ("broke", "acquire.resubmit_unchecked"), again
         assert "Socket timed out" in again["error"] and len(sent["sbatch"]) == 1
+
+    def test_a_cluster_that_cannot_be_asked_submits_nothing(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", ssh_down=True)
+        assert (again["outcome"], again["code"]) == ("broke", "acquire.resubmit_unchecked"), again
+        assert "Connection refused" in again["error"] and len(sent["sbatch"]) == 1
+
+    def test_a_script_that_differs_only_in_its_slurm_request_says_so(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n",
+                                            second={"slurm": {"time": "3-00:00:00", "mem": "4g"}})
+        assert (again["outcome"], again["code"]) == ("refused", "acquire.slurm_differs"), again
+        assert "resumes where it stopped" in again["remedy"] and len(sent["sbatch"]) == 1
 
     def test_another_acquisitions_script_is_refused_not_overwritten(self, tmp_path, monkeypatch):
         first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", there="#!/bin/bash\nother\n")

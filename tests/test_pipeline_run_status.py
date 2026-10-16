@@ -322,3 +322,55 @@ def test_the_schedulers_word_is_kept_apart_from_nextflows(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [], inflight_rc=1))
     r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", access_path=_access(tmp_path))
     assert "sacct for the tasks in flight failed" in r["pipeline"]["scheduler_unread"]
+
+
+def test_a_trace_whose_first_column_is_not_task_id_still_reads_every_task():
+    """A trace.fields edited by hand: no line opens with a task_id, and each is a task."""
+    moved = "\n".join("\t".join([ln.split("\t")[2], *ln.split("\t")[:2], *ln.split("\t")[3:]])
+                      for ln in TRACE.splitlines())
+    rows = cj._parse_trace(moved)
+    assert [r["status"] for r in rows] == ["COMPLETED", "FAILED", "RUNNING"]
+    assert cj._pipeline_verdict([cj._task_view(r) for r in rows], [{"verdict": cj.RUNNING}]) == "failed"
+
+
+def test_the_run_read_is_the_last_one_its_manager_logged_and_its_last_task_counts(tmp_path, monkeypatch):
+    """A requeued manager appends its next run to the same log; a trace's last line may
+    still lack its newline. Both through bash, as the login node runs them."""
+    import shlex
+    import subprocess
+    run = tmp_path / "run1"
+    for stamp, body in (("runs/20261009_100000", TRACE.splitlines()[0] + "\n" + TRACE.splitlines()[1] + "\n"),
+                        ("runs/20261010_090000", TRACE.splitlines()[0] + "\n" + TRACE.splitlines()[2])):
+        (run / stamp).mkdir(parents=True)
+        (run / stamp / "trace.txt").write_text(body)              # the second has no last newline
+    (run / "rnaseq-4242.out").write_text("run records: runs/20261009_100000\nrequeued\n"
+                                         "run records: runs/20261010_090000\n")
+    real = subprocess.run
+    monkeypatch.setattr(subprocess, "run", lambda argv, *a, **kw: real(
+        ["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=True))
+    out = cj._read_pipeline_run({"host": "h", "user": "u"}, str(run), "4242", [{"verdict": cj.SUCCEEDED}],
+                                timeout=30)
+    assert out["stamp"] == "runs/20261010_090000"
+    assert [t["status"] for t in out["tasks"]] == ["FAILED"] and out["verdict"] == "failed"
+    assert list(out)[:2] == ["run_dir", "verdict"], "the verdict leads; the task list is as long as the run"
+
+
+def test_a_look_that_hangs_still_ends_the_wait_by_its_cap(tmp_path, monkeypatch):
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")]))
+    orig, hops = cj._observe, []
+
+    def hangs_near_the_deadline(*a, timeout, **kw):
+        hops.append(timeout)
+        if clock.now >= 1000 + 480:                           # late in the wait, the cluster stops answering
+            clock.now += cj._HOPS_PER_LOOK * timeout          # every hop runs out its time
+            raise subprocess.TimeoutExpired("ssh", timeout)
+        return orig(*a, timeout=timeout, **kw)
+    monkeypatch.setattr(cj, "_observe", hangs_near_the_deadline)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                              access_path=_access(tmp_path))
+    assert r["waited_s"] <= 540 and r["pipeline"]["tasks"], "the last answer stands"
+    assert hops[-1] < 60, "the hanging look's hops were held to the time left"

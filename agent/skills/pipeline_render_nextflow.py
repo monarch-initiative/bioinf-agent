@@ -655,7 +655,9 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     # because a pattern input renames what it stages (`*_fastqc.html` -> `1_fastqc.html`).
     def staged(i) -> str:
         art = i.artifact or i.name
-        return _slug(art) if any(c in art for c in "*?") else ctx.artifact_expr(stage, art)
+        if not any(c in art for c in "*?"):
+            return ctx.artifact_expr(stage, art)
+        return _slug(art) if _slug(art) not in _RESERVED else f"{_slug(art)}_files"
     named = [staged(i) for i in io["artifacts"]] + [c.name for c in io["path_cols"]] \
         + [i.name.lower() for i in (*io["collects"], *io["sheets"])] \
         + [n for p in io["shared_paths"] for n in (p.name.lower(), *([f"{p.name.lower()}_index"] if p.index_files else []))] \

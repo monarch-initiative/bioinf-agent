@@ -207,6 +207,8 @@ def _parse_sacct_output(text: str) -> list[dict]:
 #: often it looks again while it does.
 _WAIT_CAP_S = 540
 _POLL_S = 30
+#: ssh hops in one look: the manager's sacct row, the run's records, its tasks in flight.
+_HOPS_PER_LOOK = 3
 
 
 def cluster_job_status(project_name: str,
@@ -294,12 +296,20 @@ def cluster_job_status(project_name: str,
         look_s = time.monotonic() - started
         mark = _progress(out)
         deadline = started + min(max(int(wait_s or 0), 0), _WAIT_CAP_S)
-        # The next look starts only if one as long as the last still ends by the deadline.
+        # The next look starts only if one as long as the last still ends by the deadline,
+        # and each of its ssh hops is held to an equal share of the time left, so a look
+        # that hangs ends by the deadline too; the last answer then stands.
         while ("error" not in out and not _settled(out) and _progress(out) == mark
                and time.monotonic() + _POLL_S + look_s <= deadline):
             time.sleep(_POLL_S)
             looked = time.monotonic()
-            out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout)
+            hop_s = int((deadline - looked) / _HOPS_PER_LOOK)
+            if hop_s < 1:
+                break
+            try:
+                out = _observe(env, compute_env_name, norm_id, run_dir, timeout=min(timeout, hop_s))
+            except subprocess.TimeoutExpired:
+                break
             look_s = time.monotonic() - looked
         if wait_s and "error" not in out:
             out["waited_s"] = round(time.monotonic() - started)
@@ -386,9 +396,11 @@ def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
     script = (_SEEN_FN + f'out=$(ls -1 {q(run_dir)}/*-{job_id}.out 2>/dev/null | head -n 1); '
               f'if [ -z "$out" ]; then echo NOOUT; exit 0; fi; '
               f'echo "OUT=$out"; '
-              f'stamp=$(grep -o -m1 "runs/[0-9_]*" "$out" | head -n 1); echo "STAMP=$stamp"; '
+              # a requeued manager appends its next run to the same log: the last stamp
+              f'stamp=$(grep -o "runs/[0-9_]*" "$out" | tail -n 1); echo "STAMP=$stamp"; '
+              # `echo` ends a trace whose last line is still being written
               f'if [ -n "$stamp" ] && seen {q(run_dir)}/"$stamp"/trace.txt; then '
-              f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo TRACE_END; fi; '
+              f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo; echo TRACE_END; fi; '
               f'if [ -n "$stamp" ] && seen {q(run_dir)}/"$stamp"/nextflow.log; then '
               f'echo SUBMITTED_BEGIN; grep -o "submitted process .* > jobId: [0-9]*; workDir: [^ ]*" '
               f'{q(run_dir)}/"$stamp"/nextflow.log; echo SUBMITTED_END; fi; exit 0')
@@ -446,16 +458,18 @@ _TRACE_RECORD_RE = re.compile(r"^\d+\t")      # a record opens with its task_id
 
 
 def _parse_trace(text: str) -> list[dict]:
-    """Nextflow's tab-separated trace, by its header line. A record is the line that
-    opens with a task_id; a line that does not continues the record before it (a field
-    written over several lines), and belongs to that record's last column."""
+    """Nextflow's tab-separated trace, by its header line. When task_id is the first
+    column (the rendered config's), a record is the line that opens with a task_id and
+    a line that does not continues the record before it (a field written over several
+    lines), in its last column; under any other first column each line is a record."""
     lines = [ln for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
         return []
     header = lines[0].split("\t")
+    by_task_id = header[0] == "task_id"           # else every line is a record of its own
     records: list[str] = []
     for ln in lines[1:]:
-        if _TRACE_RECORD_RE.match(ln):
+        if not by_task_id or _TRACE_RECORD_RE.match(ln):
             records.append(ln)
         elif records:
             records[-1] += "\n" + ln.strip()
@@ -543,27 +557,17 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
                                    {r.get("native_id") for r in trace_rows}, timeout=timeout)
     tasks = [_task_view(r) for r in trace_rows] + in_flight
     summary = dict(Counter(t.get("status", "") for t in tasks))
-    return {"run_dir": run_dir, "manager_log": out_log, "stamp": stamp,
+    # the verdict and the summary lead: the task list is as long as the run
+    return {"run_dir": run_dir, "verdict": _pipeline_verdict(tasks, manager_rows),
+            "task_summary": summary, "manager_log": out_log, "stamp": stamp,
             "run_records": f"{run_dir}/{stamp}" if stamp else None,
-            "task_summary": summary, "tasks": tasks,
-            "verdict": _pipeline_verdict(tasks, manager_rows),
-            **({"scheduler_unread": unread} if unread else {})}
+            **({"scheduler_unread": unread} if unread else {}), "tasks": tasks}
 
 
 # ---------------------------------------------------------------------------
-# remote_paths_exist — loud input precondition for run_step_on_cluster
+# jobs_in_dir — which of the user's jobs the scheduler still holds in a directory
 # ---------------------------------------------------------------------------
-#
-# run_step_on_cluster uploads only the 3 rendered workflow files; it does NOT
-# stage input DATA (unlike run_step_in_container, which bind-mounts local
-# paths). So a declared input that isn't already on the cluster fails DEEP
-# inside the Nextflow run — an opaque, wasted SLURM submission. This does a
-# single ssh `test -e` batch BEFORE sbatch so the caller gets the offending
-# path immediately instead. Fail-loud, no auto-staging (the user's rails say
-# where data may go; we don't invent an upload).
 
-# An absolute path made only of filesystem-safe chars. Anything else is
-# refused BEFORE it reaches the shell — no metacharacter can ride in.
 def jobs_in_dir_sh(d: str) -> str:
     """Shell that prints `LIVE=<job id> <state>` for each job of this user the
     scheduler still holds that runs in `d` or under it, by the path as given or as
@@ -587,6 +591,20 @@ def jobs_in_dir(lines: list[str]) -> tuple[list[str], Optional[str]]:
     return [ln[len("LIVE="):] for ln in lines if ln.startswith("LIVE=")], None
 
 
+# ---------------------------------------------------------------------------
+# remote_paths_exist — loud input precondition for run_step_on_cluster
+# ---------------------------------------------------------------------------
+#
+# run_step_on_cluster uploads only the 3 rendered workflow files; it does NOT
+# stage input DATA (unlike run_step_in_container, which bind-mounts local
+# paths). So a declared input that isn't already on the cluster fails DEEP
+# inside the Nextflow run — an opaque, wasted SLURM submission. This does a
+# single ssh `seen` batch BEFORE sbatch so the caller gets the offending
+# path immediately instead. Fail-loud, no auto-staging (the user's rails say
+# where data may go; we don't invent an upload).
+
+# An absolute path made only of filesystem-safe chars. Anything else is
+# refused BEFORE it reaches the shell — no metacharacter can ride in.
 _ABS_SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9_./+\-]{1,4096}$")
 
 

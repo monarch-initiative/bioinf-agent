@@ -259,13 +259,25 @@ class TestGates:
         assert not (d / "run1").exists(), "refused before anything was copied"
 
     @pytest.mark.integration
+    def test_a_spreadsheets_byte_order_mark_is_read_as_nextflow_reads_it(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        sheet = tmp_path / "excel.csv"
+        sheet.write_text(f"\ufeffsample,reads\ns1,{fq}\n", encoding="utf-8")
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=str(sheet),
+                       access=_local_access(tmp_path, str(d)))
+        assert r["outcome"] == "proven", r
+
+    @pytest.mark.integration
     @pytest.mark.parametrize("row,code", [
         ('"s1",{fq}', "samplesheet_unsafe_cell"),
         ("s1, {fq}", "samplesheet_unsafe_cell"),
         ("s1,{fq} ", "samplesheet_unsafe_cell"),
         ("s1,{fq},extra", "samplesheet_malformed"),
         ("s1", "samplesheet_malformed"),
-    ], ids=["quoted", "padded", "trailing_space", "extra_field", "missing_field"])
+        ("s1,{fq},", "samplesheet_malformed"),
+    ], ids=["quoted", "padded", "trailing_space", "extra_field", "missing_field", "empty_column_name"])
     def test_a_sheet_nextflow_reads_differently_is_refused(self, tmp_path, local_ok, row, code):
         """Nextflow's splitCsv(header: true) keeps quotes and spaces in the value, drops
         a row's extra fields and reads a missing one as empty; Python's csv unquotes,
@@ -274,7 +286,8 @@ class TestGates:
         d = tmp_path / "proj"; d.mkdir()
         fq = d / "r1.fq"; fq.write_text("x")
         sheet = tmp_path / "odd.csv"
-        sheet.write_text("sample,reads\n" + row.format(fq=fq) + "\n")
+        head = "sample,reads," if row.endswith(",") else "sample,reads"
+        sheet.write_text(head + "\n" + row.format(fq=fq) + "\n")
         r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=str(sheet),
                        access=_local_access(tmp_path, str(d)))
         assert (r["outcome"], r["code"]) == ("refused", f"run_production.{code}"), r
@@ -328,6 +341,22 @@ class TestGates:
             assert r.get("success", False) is ok, r
             if not ok:
                 assert str(out / perms[0]) in r["error"] and "main.nf" not in r["error"], r
+
+    @pytest.mark.integration
+    def test_results_in_the_reference_data_zone_are_refused(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        common = tmp_path / "common"; common.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _write(tmp_path, {
+            "compute_envs": [{"name": "laptop", "type": "local", "container_upload_target": None,
+                              "agent_common_data_target": {"path": str(common),
+                                                           "permissions": ["upload", "download", "exec"]}}],
+            "projects": [{"name": "demo", "compute_envs": ["laptop"], "directories": [
+                {"env": "laptop", "path": str(d), "permissions": ["upload", "exec"], "description": "x"}]}]})
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                       params={"outdir": str(common / "results")}, access=ap)
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.outdir_zone"), r
 
     @pytest.mark.integration
     def test_an_empty_outdir_is_refused(self, tmp_path, local_ok):
