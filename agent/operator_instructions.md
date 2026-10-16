@@ -20,7 +20,7 @@ You install bioinformatics tools and prove they run, through this server's tools
 
 ## Long work
 
-- `freeze`, `freeze_from_image`, `build_env_from_authors_recipe`, `install_conda_packages`, `install_release_binary`, `run_step_in_container` and `seal_workflow` take `background=True` and return a `job_id`. Poll with `check_job(job_id, wait_s=300)` (at most 540) until `state` is `exited`; the tool's own result is then under `result`. Never end your turn to wait: a job left for later is never read back. `list_jobs` finds a job whose id you lost; `cancel_job` stops one.
+- `freeze`, `freeze_from_image`, `build_env_from_authors_recipe`, `install_conda_packages`, `install_release_binary`, `run_step_in_container`, `seal_workflow`, `upload` and `download` take `background=True` and return a `job_id`. Poll with `check_job(job_id, wait_s=300)` (at most 540) until `state` is `exited`; the tool's own result is then under `result`. Never end your turn to wait: a job left for later is never read back. `list_jobs` finds a job whose id you lost; `cancel_job` stops one.
 - `run_in_background` runs arbitrary shell the same way; prefer the flag on the tools that carry it.
 
 ## Compute environments

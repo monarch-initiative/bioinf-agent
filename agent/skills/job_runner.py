@@ -67,6 +67,8 @@ def main() -> int:
 
     # Force synchronous mode in the child — see the module docstring.
     args["background"] = False
+    from agent.skills.backgroundable import DETACHED_ENV
+    os.environ[DETACHED_ENV] = tool
 
     try:
         # Lazy import: the tool surface pulls in Docker SDKs and conda tooling.

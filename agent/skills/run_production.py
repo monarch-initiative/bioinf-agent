@@ -17,9 +17,11 @@ sealed anchor exists. A reference that diverged launches, reported as `degraded`
 as a bare success.
 
 A run directory is Nextflow's launch directory, and `-resume` only works from the same
-one: a second call naming a `run_dir` that already holds this pipeline launches there
-again without re-copying (the samples.csv in place is the one used), and a `run_dir`
-holding a different render is refused.
+one. The first launch creates it (on a cluster, as one transfer of the whole directory);
+a second call naming a `run_dir` that holds all of this pipeline launches there again
+without re-copying (the samples.csv in place is the one used). Any other existing
+directory is refused: one holding a different render, one holding part of this one, or
+one holding no run at all.
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional, Collection
@@ -470,12 +473,14 @@ def _disclose(result: dict, reference_check: Mapping) -> dict:
 # The run directory
 # ---------------------------------------------------------------------------
 
-def _remote_run_dir_state(env: dict, run_dir: str, *, timeout: int) -> dict:
-    """What `run_dir` holds on the cluster: a rendered main.nf, a samplesheet, and the
-    manifest text if there is one. One ssh hop."""
+def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: int) -> dict:
+    """What `run_dir` holds on the cluster: whether it exists, which of the carried
+    files `rels` it lacks, whether it holds a samplesheet, and the manifest text if
+    there is one. One ssh hop."""
     q = shlex.quote
-    script = (f'[ -e {q(run_dir + "/main.nf")} ] && echo MAIN=1 || echo MAIN=0; '
-              f'[ -e {q(run_dir + "/" + SAMPLESHEET_FILENAME)} ] && echo SHEET=1 || echo SHEET=0; '
+    script = (f'[ -e {q(run_dir)} ] && echo EXISTS=1 || echo EXISTS=0; '
+              + "".join(f'[ -e {q(run_dir + "/" + rel)} ] || echo {q("MISSING=" + rel)}; ' for rel in rels)
+              + f'[ -e {q(run_dir + "/" + SAMPLESHEET_FILENAME)} ] && echo SHEET=1 || echo SHEET=0; '
               f'echo MANIFEST_BEGIN; cat {q(run_dir + "/" + MANIFEST_PATH)} 2>/dev/null; echo MANIFEST_END')
     argv = _ssh_argv(env, f"bash -lc {q(script)}")
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
@@ -489,22 +494,36 @@ def _remote_run_dir_state(env: dict, run_dir: str, *, timeout: int) -> dict:
     if "MANIFEST_BEGIN" in lines and "MANIFEST_END" in lines:
         a, b = lines.index("MANIFEST_BEGIN"), lines.index("MANIFEST_END")
         manifest = "\n".join(lines[a + 1:b]).strip()
-    return {"main_nf": "MAIN=1" in lines, "samplesheet": "SHEET=1" in lines, "manifest": manifest}
+    return {"exists": "EXISTS=1" in lines,
+            "missing": [ln[len("MISSING="):] for ln in lines if ln.startswith("MISSING=")],
+            "samplesheet": "SHEET=1" in lines, "manifest": manifest}
 
 
 def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: str) -> bool:
-    """True when `run_dir` already holds THIS render (a re-launch, nothing copied);
-    False when it is empty of a render (copy everything). Anything else is refused."""
-    if not state["main_nf"]:
+    """True when `run_dir` already holds all of THIS render (a re-launch, nothing
+    copied); False when it does not exist yet (the first launch creates it). Anything
+    else is refused, so a launch never writes over files it did not put there, and
+    never starts in a directory its first copy did not finish."""
+    if "main.nf" in state["missing"]:
+        if state["exists"]:
+            raise _refuse("run_production.run_dir_exists",
+                          f"{run_dir} already exists and holds no run of this pipeline",
+                          remedy="name a run directory that does not exist yet: the first launch creates it")
         if not samplesheet:
             raise _refuse("run_production.samplesheet_required",
                           f"{run_dir} holds no run yet and no samplesheet was given",
                           remedy="samplesheet=<local CSV>: one row per sample; it becomes the run's samples.csv")
         return False
-    if state["manifest"].strip() != ours.strip():
+    if state["manifest"] and state["manifest"].strip() != ours.strip():
         raise _refuse("run_production.run_dir_holds_another_render",
                       f"{run_dir} already holds a pipeline that is not this render",
                       remedy="use a new run directory, or re-render the pipeline that lives there")
+    if state["missing"]:
+        raise _refuse("run_production.run_dir_incomplete",
+                      f"{run_dir} holds part of this pipeline: it lacks {state['missing'][:5]}",
+                      remedy="if the first launch's upload is still running, wait for it "
+                             "(globus_task_status) and launch again; otherwise launch into a new "
+                             "run directory")
     if samplesheet:
         raise _refuse("run_production.samplesheet_already_there",
                       f"{run_dir} already holds {SAMPLESHEET_FILENAME}; a re-launch resumes with it",
@@ -517,24 +536,40 @@ def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: st
     return True
 
 
+def _place_run_files(pdir: Path, rels: list[str], samplesheet: str, run_dir: Path) -> list[str]:
+    """Create `run_dir` with a run's first contents: every carried file (copied with
+    its mode, so the render's scripts stay executable) and the samplesheet as
+    samples.csv. Returns their relative paths."""
+    sources = [(rel, pdir / rel) for rel in rels] + [(SAMPLESHEET_FILENAME, Path(samplesheet))]
+    for rel, src in sources:
+        dst = run_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+    return [rel for rel, _ in sources]
+
+
 def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir: str, pdir: Path,
                         rels: list[str], samplesheet: str, access_path: Optional[str], timeout: int) -> dict:
-    # run_dir need not exist: the first upload into it creates the directory chain, and
-    # only there, under the path the project is authorized to write.
-    state = _remote_run_dir_state(env, run_dir, timeout=timeout)
+    # The run directory is assembled here and sent as ONE transfer, which creates it on
+    # the cluster, and only there, under the path the project is authorized to write.
+    state = _remote_run_dir_state(env, run_dir, rels, timeout=timeout)
     if _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=run_dir, samplesheet=samplesheet):
         return {"reused": True, "files_uploaded": []}
-    uploaded: list[str] = []
-    for rel in rels + [SAMPLESHEET_FILENAME]:
-        local = str(pdir / rel) if rel != SAMPLESHEET_FILENAME else samplesheet
-        up = transfer.upload(project_name=project_name, compute_env_name=env_name, local_path=local,
-                             remote_abs_path=f"{run_dir}/{rel}", access_path=access_path, timeout=timeout)
-        if "error" in up:
-            raise _Refusal(broke("run_production.upload_failed",
-                                 error=f"upload of {rel} failed before launch: {up['error']}",
-                                 files_uploaded=uploaded))
-        uploaded.append(up.get("remote_abs_path", f"{run_dir}/{rel}"))
-    return {"reused": False, "files_uploaded": uploaded}
+    staged = Path(tempfile.mkdtemp(prefix="run_", dir=transfer.staging_dir("cluster_render_staging")))
+    tree = staged / "run"     # made with the usual mode; mkdtemp's 0700 would travel with `scp -p`
+    placed = _place_run_files(pdir, rels, samplesheet, tree)
+    up = transfer.upload(project_name=project_name, compute_env_name=env_name, local_path=str(tree),
+                         remote_abs_path=run_dir, access_path=access_path, timeout=timeout)
+    if "error" in up:
+        # The staged copy stays: a transfer that stopped waiting may still be reading it.
+        raise _Refusal(broke("run_production.upload_failed",
+                             error=f"the run directory did not arrive before launch: {up['error']}",
+                             staged=str(tree), **({"task_id": up["task_id"]} if up.get("task_id") else {}),
+                             remedy="if the transfer is still running (globus_task_status), wait for it "
+                                    "to succeed and launch again with the same run_dir and no "
+                                    "samplesheet; otherwise launch into a new run directory"))
+    shutil.rmtree(staged)
+    return {"reused": False, "files_uploaded": [f"{run_dir}/{rel}" for rel in placed]}
 
 
 def _materialize_local(*, run_dir: str, pdir: Path, rels: list[str], samplesheet: str) -> dict:
@@ -543,23 +578,13 @@ def _materialize_local(*, run_dir: str, pdir: Path, rels: list[str], samplesheet
         raise _refuse("run_production.run_dir_is_the_template",
                       f"{run_dir} is the rendered template itself; a run lives in its own directory",
                       remedy="make a new directory for the run; the template stays a template")
-    rd.mkdir(parents=True, exist_ok=True)
     manifest_here = rd / MANIFEST_PATH
-    state = {"main_nf": (rd / "main.nf").is_file(), "samplesheet": (rd / SAMPLESHEET_FILENAME).is_file(),
+    state = {"exists": rd.exists(), "missing": [rel for rel in rels if not (rd / rel).is_file()],
+             "samplesheet": (rd / SAMPLESHEET_FILENAME).is_file(),
              "manifest": manifest_here.read_text() if manifest_here.is_file() else ""}
     if _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=run_dir, samplesheet=samplesheet):
         return {"reused": True, "files_copied": []}
-    copied: list[str] = []
-    for rel in rels:
-        dst = rd / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(pdir / rel, dst)
-        if rel.endswith(".sh") or rel.startswith("bin/"):
-            dst.chmod(dst.stat().st_mode | 0o111)
-        copied.append(str(dst))
-    shutil.copy2(samplesheet, rd / SAMPLESHEET_FILENAME)
-    copied.append(str(rd / SAMPLESHEET_FILENAME))
-    return {"reused": False, "files_copied": copied}
+    return {"reused": False, "files_copied": [str(rd / rel) for rel in _place_run_files(pdir, rels, samplesheet, rd)]}
 
 
 # ---------------------------------------------------------------------------
@@ -584,10 +609,11 @@ def run_production_pipeline(project_name: str,
     """Run the rendered `pipeline` in production in `run_dir` on `compute_env_name`.
 
     pipeline:    a name under <workspace>/pipelines/, or a rendered directory's path.
-    run_dir:     an absolute path on the env — the launch directory, created if it does
-                 not exist yet; it may be in the env's pipelines zone, the agent's scratch,
-                 or a directory the project grants with `upload` and `exec`. A directory
-                 that already holds this pipeline is re-launched (`-resume`), nothing copied.
+    run_dir:     an absolute path on the env — the launch directory, created by the first
+                 launch (on the cluster, as one transfer); it may be in the env's pipelines
+                 zone, the agent's scratch, or a directory the project grants with `upload`
+                 and `exec`. A directory that already holds this pipeline is re-launched
+                 (`-resume`), nothing copied; any other existing directory is refused.
     samplesheet: a local CSV, one row per sample, with the columns the pipeline reads
                  (`sample` first); it becomes the run's samples.csv. Required on the first
                  launch into a directory; refused on a re-launch.

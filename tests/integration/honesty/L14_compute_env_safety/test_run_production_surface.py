@@ -322,6 +322,31 @@ class TestLocalLaunch:
         assert with_sheet["code"] == "run_production.samplesheet_already_there"
 
     @pytest.mark.integration
+    def test_an_existing_directory_that_holds_no_run_is_refused(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        (d / "run1").mkdir()
+        (d / "run1" / "params.yaml").write_text("mine: 1\n")
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                       access=_local_access(tmp_path, str(d)))
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.run_dir_exists"), r
+        assert (d / "run1" / "params.yaml").read_text() == "mine: 1\n"
+
+    @pytest.mark.integration
+    def test_a_directory_holding_part_of_this_render_is_refused(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap)["success"]
+        (d / "run1" / "params.yaml").unlink()
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.run_dir_incomplete"), r
+        assert "params.yaml" in r["error"]
+
+    @pytest.mark.integration
     def test_a_directory_holding_another_render_is_refused(self, tmp_path, local_ok):
         _render(tmp_path, "a")
         _render(tmp_path, "b", spec=sealed_rnaseq_spec(["SRR1039508"]))
@@ -361,8 +386,11 @@ class _Remote:
     def __init__(self, *, existing=(), sifs=(), run_state=None):
         self.existing = set(existing)
         self.sifs = set(sifs)
-        self.run_state = run_state or {"main_nf": False, "samplesheet": False, "manifest": ""}
+        # `missing: None` stands for "every carried file": nothing of the render is there.
+        self.run_state = run_state or {"exists": False, "missing": None, "samplesheet": False, "manifest": ""}
         self.uploads = []
+        self.sent = {}      # what the uploads carried: {remote path: bytes}
+        self.upload_error = ""
         self.sbatch = None
 
     def install(self, monkeypatch):
@@ -374,12 +402,22 @@ class _Remote:
         monkeypatch.setattr(run_production, "_remote_prefixes_exist",
                             lambda env, prefixes, *, timeout: {"ok": True, "missing": []})
         monkeypatch.setattr(stage_apptainer, "_remote_sif_exists", lambda env, sif, *, timeout=120: sif in self.sifs)
-        monkeypatch.setattr(run_production, "_remote_run_dir_state", lambda env, run_dir, *, timeout: dict(self.run_state))
+        def run_dir_state(env, run_dir, rels, *, timeout):
+            missing = self.run_state["missing"]
+            return {**self.run_state, "missing": list(rels) if missing is None else list(missing)}
+        monkeypatch.setattr(run_production, "_remote_run_dir_state", run_dir_state)
         monkeypatch.setattr(run_production, "_observe_cluster",
                             lambda env, paths, *, timeout: {p: {"exists": True, "sha256": ""} for p in paths})
 
         def upload(project_name, compute_env_name, local_path, remote_abs_path, access_path=None, timeout=600):
             self.uploads.append((local_path, remote_abs_path))
+            if self.upload_error:
+                return {"error": self.upload_error, "task_id": "33333333-3333-3333-3333-333333333333"}
+            src = Path(local_path)
+            files = sorted(f for f in src.rglob("*") if f.is_file()) if src.is_dir() else [src]
+            for f in files:
+                rel = f.relative_to(src).as_posix() if src.is_dir() else ""
+                self.sent[f"{remote_abs_path}/{rel}".rstrip("/")] = f.read_bytes()
             return {"remote_abs_path": remote_abs_path}
         monkeypatch.setattr(transfer, "upload", upload)
 
@@ -451,16 +489,54 @@ class TestClusterLaunch:
         assert "/data/r1.fq" in r["missing_inputs"]
 
     @pytest.mark.integration
-    def test_the_run_dir_is_made_by_the_first_upload_never_probed_first(self, tmp_path, monkeypatch):
-        # /work/pipelines/new is not on the cluster yet: the launch goes ahead, the uploads
-        # into it create it (the transfer provider makes the parent), and nothing probes it.
+    def test_the_run_dir_is_made_by_one_upload_of_the_whole_run(self, tmp_path, monkeypatch):
+        # /work/pipelines/new is not on the cluster yet: the launch goes ahead, and ONE
+        # transfer of the assembled run directory creates it (parents included).
         remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
         _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
         r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/new/run1",
                      samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
         assert r["outcome"] == "proven" and r["code"] == "run_production.submitted", r
-        assert "/work/pipelines/new/run1/main.nf" in [dst for _, dst in remote.uploads]
+        assert [dst for _, dst in remote.uploads] == ["/work/pipelines/new/run1"]
+        assert "/work/pipelines/new/run1/main.nf" in remote.sent
+        assert sorted(r["files_uploaded"]) == sorted(remote.sent)
         assert remote.sbatch["dir"] == "/work/pipelines/new/run1"
+
+    @pytest.mark.integration
+    def test_an_existing_directory_that_holds_no_run_is_refused(self, tmp_path, monkeypatch):
+        """A launch never writes over files it did not put there: an existing directory is
+        either this pipeline's run (a re-launch) or refused before a byte moves."""
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values()),
+                         run_state={"exists": True, "missing": None, "samplesheet": False,
+                                    "manifest": ""}).install(monkeypatch)
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1",
+                     samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.run_dir_exists"), r
+        assert remote.uploads == [] and remote.sbatch is None
+
+    @pytest.mark.integration
+    def test_a_directory_its_first_copy_did_not_finish_is_never_launched(self, tmp_path, monkeypatch):
+        pdir = _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        remote = _Remote(existing=_REFS, sifs=set(_SIF.values()),
+                         run_state={"exists": True, "missing": ["nextflow.config"], "samplesheet": True,
+                                    "manifest": (pdir / MANIFEST_PATH).read_text()}).install(monkeypatch)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1")
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.run_dir_incomplete"), r
+        assert "nextflow.config" in r["error"] and remote.sbatch is None
+
+    @pytest.mark.integration
+    def test_an_upload_that_did_not_finish_keeps_its_staged_copy_and_says_what_to_do(self, tmp_path, monkeypatch):
+        """A transfer that stopped waiting may still be reading the staged run directory,
+        so it is never deleted under it; the refusal names it and the way on."""
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        remote.upload_error = "Globus task 3333 did not reach a terminal state within the 300s sync-wait cap"
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1",
+                     samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert (r["outcome"], r["code"]) == ("broke", "run_production.upload_failed"), r
+        assert (Path(r["staged"]) / "main.nf").is_file() and r["task_id"].startswith("3333")
+        assert "same run_dir and no samplesheet" in r["remedy"] and remote.sbatch is None
 
     @pytest.mark.integration
     def test_uploads_the_render_and_the_sheet_then_sbatches_with_the_tokens(self, tmp_path, monkeypatch):
@@ -472,11 +548,12 @@ class TestClusterLaunch:
                      params={"stranded": "reverse", "outdir": "/work/pipelines/run1/out"}, walltime="1-00:00:00")
         assert r["outcome"] == "proven" and r["code"] == "run_production.submitted", r
         assert r["job_id"] == "4242" and r["locus"] == "cluster"
-        remotes = [dst for _, dst in remote.uploads]
-        assert "/work/pipelines/run1/main.nf" in remotes and "/work/pipelines/run1/launcher.sh" in remotes
-        assert f"/work/pipelines/run1/{MANIFEST_PATH}" in remotes
-        assert (sheet, "/work/pipelines/run1/samples.csv") in remote.uploads
-        assert (str(pdir / "samples.csv"), "/work/pipelines/run1/samples.csv") not in remote.uploads
+        assert len(remote.uploads) == 1, "the run directory goes up as one transfer"
+        assert "/work/pipelines/run1/main.nf" in remote.sent and "/work/pipelines/run1/launcher.sh" in remote.sent
+        assert f"/work/pipelines/run1/{MANIFEST_PATH}" in remote.sent
+        # the run's samples.csv is the samplesheet given, never the template's example
+        assert remote.sent["/work/pipelines/run1/samples.csv"] == Path(sheet).read_bytes()
+        assert remote.sent["/work/pipelines/run1/samples.csv"] != (pdir / "samples.csv").read_bytes()
         assert remote.sbatch == {"dir": "/work/pipelines/run1", "sbatch_args": ["--time=1-00:00:00"],
                                  "script_args": ["--stranded", "reverse", "--outdir", "/work/pipelines/run1/out"]}
         assert "run_dir='/work/pipelines/run1'" in r["follow_up"]["poll"]
@@ -509,7 +586,8 @@ class TestClusterLaunch:
         pdir = _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
         ours = (pdir / MANIFEST_PATH).read_text()
         remote = _Remote(existing={"/work/pipelines"} | _REFS, sifs=set(_SIF.values()),
-                         run_state={"main_nf": True, "samplesheet": True, "manifest": ours}).install(monkeypatch)
+                         run_state={"exists": True, "missing": [], "samplesheet": True,
+                                    "manifest": ours}).install(monkeypatch)
         r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1")
         assert r["outcome"] == "proven" and r["reused_run_dir"] is True and remote.uploads == []
         assert remote.sbatch["script_args"] == []

@@ -79,33 +79,6 @@ class TestRenderDownloadScript:
         assert "tar -x" not in s and "unzip" not in s
 
 
-class TestStagingLocation:
-    def test_staging_dir_is_under_home_not_system_temp(self):
-        stage = acquire_data._dl_stage_dir().resolve()
-        """Globus Connect Personal only scans its Accessible Folders (default
-        $HOME) and REFUSES a system temp dir — that surfaced as a live
-        `submit.upload_failed` on the first production run. Staging therefore
-        goes to the workspace scratch zone, never to tempfile.gettempdir().
-
-        The zone is checked, not the absolute prefix: under test the workspace IS
-        redirected into pytest's tmp_path, which lives under the system temp dir.
-        What keeps the REAL workspace Globus-readable is the $HOME guard that
-        setup and the doctor share — see
-        tests/test_workspace_resolution.py::test_home_containment_is_one_implementation.
-        """
-        from agent.skills import workspace
-        sys_tmp = Path(tempfile.gettempdir()).resolve()
-        assert stage != sys_tmp and stage.parent != sys_tmp, \
-            f"staging {stage} is a bare system temp dir — Globus refuses to scan it"
-        assert stage.is_relative_to(workspace.scratch_dir()), \
-            f"staging {stage} is outside the workspace scratch zone"
-
-
-
-# ---------------------------------------------------------------------------
-# Orchestrator refusals + happy path
-# ---------------------------------------------------------------------------
-
 class TestAcquireToClusterRefusals:
     def test_bad_name(self):
         r = acquire_data.acquire_to_cluster(

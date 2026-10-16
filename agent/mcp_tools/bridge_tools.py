@@ -47,6 +47,7 @@ from __future__ import annotations
 # need one goes through `_ms.X` like every other agent/mcp_tools/ submodule (see
 # feedback-mcp-tools-conventions).
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
+from agent.skills.backgroundable import backgroundable
 
 
 def _resolve_access_path() -> str | None:
@@ -61,12 +62,13 @@ def _resolve_access_path() -> str | None:
 
 
 @mcp.tool()
+@backgroundable("project_name")
 def upload(project_name: str,
            compute_env_name: str,
            local_path: str,
            remote_abs_path: str) -> dict:
-    """Push a local file to an ABSOLUTE path on a compute env. The auth
-    family is auto-routed by where the path falls — agent scratch
+    """Push a local file, or a whole directory, to an ABSOLUTE path on a
+    compute env. The auth family is auto-routed by where the path falls — agent scratch
     sandbox, env's shared common_data zone, or one of the project's
     explicit `directories[]` workspaces.
 
@@ -99,15 +101,18 @@ def upload(project_name: str,
     Path safety: `remote_abs_path` must be absolute, ≤4096 chars, no
     '..' traversal, no shell metacharacters, no whitespace.
 
-    `local_path`: must exist, be a regular file (symlinks refused), and
-    be under the 5 GiB cap, which applies on every wire. Larger data is
-    pulled by a compute node instead (`download_reference_database` with
-    `compute_env`, or `acquire_reference_via_recipe`).
+    `local_path`: must exist, be a regular file or a directory of them
+    (symlinks refused anywhere in it), and be under the 5 GiB cap, which
+    applies on every wire. Larger data is pulled by a compute node instead
+    (`download_reference_database` with `compute_env`, or
+    `acquire_reference_via_recipe`). A directory moves as one transfer, every
+    file checked, and the result adds `files` and `checksums` (a
+    `sha256sum -c` list beside the receipt).
 
     Returns {success, project, compute_env, zone, direction:"upload",
     local_path, remote_abs_path, provider, task_id?, bytes, duration_s,
-    local_sha256, remote_sha256?, verified_method, manifest} on success;
-    {"error": "...", "manifest": "..."} on any failure."""
+    local_sha256, remote_sha256?, verified_method, manifest, files?,
+    checksums?} on success; {"error": "...", "manifest": "..."} on any failure."""
     from agent.skills import transfer
     return transfer.upload(
         project_name=project_name,
@@ -119,11 +124,18 @@ def upload(project_name: str,
 
 
 @mcp.tool()
+@backgroundable("project_name")
 def download(project_name: str,
              compute_env_name: str,
              remote_abs_path: str,
              local_path: str) -> dict:
-    """Pull a file from an ABSOLUTE path on a compute env to this laptop.
+    """Pull a file, or a whole directory, from an ABSOLUTE path on a compute
+    env to this laptop. A directory moves as one transfer: every file is
+    checked against the source, symlinks are not followed (a tree holding one
+    is refused over scp, and reported incomplete over Globus), and the result
+    adds `files` and `checksums` (a `sha256sum -c` list beside the receipt).
+    A transfer that may outlast the ~9-minute wait (a large directory) is one
+    to start with `background=True`.
     Symmetric to `upload`: same zone routing (auto-classified by where
     remote_abs_path falls), same auth (the matched zone must declare
     `download` in its permissions; `upload` alone does NOT satisfy
@@ -136,8 +148,8 @@ def download(project_name: str,
 
     Returns {success, project, compute_env, zone, direction:"download",
     local_path, remote_abs_path, provider, task_id?, bytes, duration_s,
-    local_sha256, remote_sha256?, verified_method, manifest} on success;
-    {"error": "...", "manifest": "..."} on any failure."""
+    local_sha256, remote_sha256?, verified_method, manifest, files?,
+    checksums?} on success; {"error": "...", "manifest": "..."} on any failure."""
     from agent.skills import transfer
     return transfer.download(
         project_name=project_name,
@@ -254,7 +266,8 @@ def globus_task_status(project_name: str,
     `globus_sync_wait_exceeded`: we stopped waiting, but Globus did not
     stop transferring. This answers how the task actually ended. The
     outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
-    ACTIVE/INACTIVE -> loop (poll again).
+    ACTIVE/INACTIVE -> loop (poll again). A directory task that SUCCEEDED
+    but skipped files or left symlinks behind -> broke: not a whole copy.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.
@@ -270,7 +283,7 @@ def globus_task_status(project_name: str,
     so a smuggled metacharacter can't reach the `globus` CLI.
 
     Returns {success, task_id, status, nice_status, bytes_transferred,
-    files_transferred, files_skipped, fatal_error, type, captured_at}
+    files_transferred, files_skipped, symlinks, fatal_error, type, captured_at}
     on success. `status` is one of ACTIVE, INACTIVE, SUCCEEDED, FAILED.
     {"error": "..."} on failure (cli missing, auth, network)."""
     from agent.skills import compute_access, transfer, transfer_providers
@@ -355,11 +368,11 @@ def run_production_pipeline(project_name: str,
     Inputs:
       pipeline     the name of a directory `render_pipeline` wrote under <workspace>/pipelines/,
                    or a rendered directory's absolute path.
-      run_dir      absolute path on the env: the launch directory, created if it does not
-                   exist yet. It may be under the env's pipelines zone, the agent's scratch,
-                   or a project `directories[]` grant with `upload` and `exec`. A run_dir that already
-                   holds this pipeline is re-launched with `-resume`; one holding another
-                   render is refused.
+      run_dir      absolute path on the env: the launch directory, created by the first
+                   launch (on the cluster, as one transfer). It may be under the env's pipelines
+                   zone, the agent's scratch, or a project `directories[]` grant with `upload`
+                   and `exec`. A run_dir that already holds this pipeline is re-launched with
+                   `-resume`; any other existing directory is refused.
       samplesheet  local CSV, one row per sample, with the columns the pipeline reads
                    (`sample` first; paths absolute AT THE LOCUS). Required on the first
                    launch into a run_dir; omit on a re-launch.
@@ -476,7 +489,8 @@ def run_step_on_cluster(pipeline_id: str,
 
     `inputs` are REMOTE absolute paths that must already exist on the cluster (they become
     `${params.x}` verbatim). This primitive uploads no input data: `upload(...)` it into
-    scratch first, or point at data already there. `outputs`: `{placeholder: bare
+    scratch first (outside the workflow_dir, which the step creates), or point at data
+    already there. `outputs`: `{placeholder: bare
     filename}`. `download_local_dir`: where fetched outputs land (created if absent).
     `output_types`: optional `{basename|ext: validator_type}`, as in run_step_in_container.
 

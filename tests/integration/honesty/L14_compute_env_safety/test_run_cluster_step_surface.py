@@ -332,12 +332,12 @@ class TestHappyPath:
                                                     "apptainer_inspect_ok": True,
                                                     "raw": ""})
 
-        # 2. transfer.upload — succeeds 3 times (main.nf / config /
-        # launcher.sh). The unified primitive routes to scratch zone
+        # 2. transfer.upload — succeeds once: the rendered directory (main.nf /
+        # config / launcher.sh). The unified primitive routes to scratch zone
         # because remote_abs_path is under env.agent_scratch_target.
         uploads: list = []
         def fake_upload(**kw):
-            uploads.append(kw)
+            uploads.append({**kw, "files": sorted(p.name for p in Path(kw["local_path"]).iterdir())})
             return {"success": True, "compute_env": kw["compute_env_name"],
                     "remote_abs_path": kw["remote_abs_path"],
                     "zone": "scratch",
@@ -432,17 +432,12 @@ class TestHappyPath:
         assert r["resource_usage"]["peak_rss_mb"] == 12.3
         assert r["resource_usage"]["locus"] == "cluster"
 
-        # All 3 rendered files uploaded via the unified transfer.upload
-        # primitive; each remote_abs_path lands inside the scratch
-        # workflow_dir (project-prefixed + workflow_name).
-        assert len(uploads) == 3
-        sub_names = {u["remote_abs_path"] for u in uploads}
-        assert sub_names == {
-            f"{expected_dir}/main.nf",
-            f"{expected_dir}/nextflow.config",
-            f"{expected_dir}/launcher.sh"}
-        for u in uploads:
-            assert u["project_name"] == "phase_b_samtools_demo"
+        # The 3 rendered files go up as ONE transfer of a directory that
+        # becomes the scratch workflow_dir (project-prefixed + workflow_name).
+        assert len(uploads) == 1
+        assert uploads[0]["remote_abs_path"] == expected_dir
+        assert uploads[0]["files"] == ["launcher.sh", "main.nf", "nextflow.config"]
+        assert uploads[0]["project_name"] == "phase_b_samtools_demo"
 
         # Output captured + validated
         assert len(r["detected_outputs"]) == 1
@@ -751,6 +746,34 @@ class TestInputPrecondition:
         assert staged["called"] is False, \
             "must refuse BEFORE staging the .sif — no cluster mutation on a doomed run"
 
+    @pytest.mark.integration
+    def test_an_existing_workflow_dir_is_refused_with_the_name_to_change(self, tmp_path, monkeypatch):
+        """The rendered files go up as one directory that creates workflow_dir, so a
+        reused workflow_name is refused in the caller's terms, and nothing is left
+        staged behind."""
+        from agent.skills import stage_apptainer as _sa, cluster_jobs as _cj, transfer as _tr
+        monkeypatch.setattr(_cj, "remote_paths_exist", lambda env, paths, **kw: {"ok": True, "checked": list(paths)})
+        monkeypatch.setattr(_sa, "stage_apptainer_image",
+                            lambda **kw: {"success": True, "sif_path": "/x.sif", "image_digest": "sha256:a"})
+        monkeypatch.setattr(_sa, "inspect_staged_sif",
+                            lambda env, sif, **kw: {"sif_sha256": "f"*64, "inspect": {"data": {}},
+                                                    "apptainer_inspect_ok": True, "raw": ""})
+        monkeypatch.setattr(_tr, "upload", lambda **kw: {
+            "outcome": "refused", "code": "transfer.remote_exists",
+            "error": f"remote path already exists: {kw['remote_abs_path']!r}"})
+        r = run_cluster_step.run_step_on_cluster(
+            pipeline_id="P1", freeze_request_key="x", project_name="phase_b_samtools_demo",
+            compute_env_name="fakehpc", workflow_name="w1", tool_name="t",
+            command="t ${input_bam} > ${o}", inputs={"input_bam": "/work/u/p/in.bam"},
+            outputs={"o": "out.bam"}, download_local_dir=str(tmp_path / "downloads"),
+            apptainer_module="apptainer/1", nextflow_module="nextflow/2",
+            slurm={"time": "00:01:00", "mem": "1G", "cpus": 1},
+            poll_interval=0, max_polls=3, access_path=str(_good_access(tmp_path)),
+            _pipeline_state=_FakePipelineState(), _validator=_FakeValidator(), _env_mgr=_FakeEnvMgr())
+        assert (r["outcome"], r["code"]) == ("refused", "run_cluster.workflow_dir_exists"), r
+        assert "fresh workflow_name" in r["remedy"]
+        assert list(_tr.staging_dir("cluster_render_staging").iterdir()) == []
+
 
 # ===========================================================================
 # C2 — the shipped-image badge for a CLUSTER step requires a real on-cluster
@@ -797,18 +820,17 @@ class TestClusterShippedImageBadge:
 
 
 # ===========================================================================
-# Globus staging (live-acceptance fix): rendered workflow files must stage
-# under the repo (which is under $HOME), never in a system temp dir — Globus
-# Connect Personal only scans its Accessible Folders and refuses /var/folders
-# or /tmp. Regression guard for the fix surfaced by the real HPC-cluster run.
+# Globus staging: what an upload sends is put together under the workspace
+# (which is under $HOME), never in a system temp dir — Globus Connect Personal
+# only scans its Accessible Folders and refuses /var/folders or /tmp.
 # ===========================================================================
 
 class TestRenderStagingLocation:
     @pytest.mark.integration
     def test_render_stage_dir_is_under_home_not_system_temp(self):
         import tempfile
-        import agent.skills.run_cluster_step as rcs
-        stage = rcs._render_stage_dir().resolve()
+        from agent.skills import transfer
+        stage = transfer.staging_dir("cluster_render_staging").resolve()
         """Globus Connect Personal only scans its Accessible Folders (default
         $HOME) and REFUSES a system temp dir — that surfaced as a live
         `submit.upload_failed` on the first production run. Staging therefore

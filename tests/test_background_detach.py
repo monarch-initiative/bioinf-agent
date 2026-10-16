@@ -57,6 +57,14 @@ MINIMAL_ARGS: dict[str, dict] = {
     "seal_workflow": {
         "pipeline_id": "pid-detach", "freeze_request_key": "rk-detach",
         "workflow_name": "detach_wf"},
+    # A directory pulled over Globus outlasts the ~9-minute sync wait: a results tree
+    # of tens of thousands of files does, at the rate measured against the cluster.
+    "upload": {
+        "project_name": "detach_proj", "compute_env_name": "hpc",
+        "local_path": "/tmp/detach_src", "remote_abs_path": "/work/detach_dst"},
+    "download": {
+        "project_name": "detach_proj", "compute_env_name": "hpc",
+        "remote_abs_path": "/work/detach_src", "local_path": "/tmp/detach_dst"},
 }
 
 # The slug each tool's `name_from` should pull out of MINIMAL_ARGS above.
@@ -68,6 +76,8 @@ EXPECTED_SLUG = {
     "install_release_binary": "dorado",        # tool_name before env_name
     "run_step_in_container": "samtools",         # `tool` before pipeline_id
     "seal_workflow": "detach_wf",                # workflow_name before pipeline_id
+    "upload": "detach_proj",
+    "download": "detach_proj",
 }
 
 
