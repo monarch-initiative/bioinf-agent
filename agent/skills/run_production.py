@@ -23,19 +23,12 @@ a second call naming a `run_dir` that holds all of this pipeline launches there 
 without re-copying (the samples.csv in place is the one used). Any other existing
 directory is refused: one holding a different render, one holding part of this one, or
 one holding no run at all.
-
-A run can wait for another (`after=`, the upstream's run directory): the jobs the
-scheduler still holds there are waited on (`--dependency=afterok`), and what the upstream
-writes (its run directory, its outdir) is promised, so those paths are neither checked
-nor compared against the seal's pins at launch; the manifest names them. An upstream
-that already succeeded is no wait; one that failed is refused.
 """
 from __future__ import annotations
 
 import csv
 import glob
 import io
-import json
 import os
 import base64
 import re
@@ -436,53 +429,6 @@ def _value_check(record: PipelineRecord, effective: Mapping[str, str], rows: lis
                          for name, values in sorted(bound.items()) if name in ran_with and values - ran_with[name]]}
 
 
-def _upstream(env: dict, project_name: str, env_name: str, after: str, *,
-              access_path: Optional[str], timeout: int) -> dict:
-    """What a launch with after= waits for: {run_dir, jobs, waits_on, promised_roots}.
-    The jobs the scheduler still holds in the upstream run directory are waited on,
-    however they were launched; with none, the newest launch into it recorded here
-    decides: still queued or running, waited on; succeeded, no wait; failed or
-    unknown, refused. While there is something to wait for, the run directory and
-    its outdir are where the paths it promises live."""
-    there = _remote_run_dir_state(env, after, [], timeout=timeout)
-    jobs = there["live"]
-    if not jobs:
-        recorded = []
-        for f in (submit_workflow._manifest_root() / project_name).glob("*.submission.json"):
-            try:
-                m = json.loads(f.read_text())
-            except (OSError, ValueError):
-                continue
-            if m.get("run_dir") == after and m.get("compute_env") == env_name and m.get("locus") == "cluster":
-                recorded.append(m)
-        unknown = "once the upstream run has succeeded, launch without after="
-        if not recorded:
-            raise _refuse("run_production.after_unknown",
-                          f"nothing in {after} is queued or running on {env_name}, and no launch into it "
-                          f"is recorded here", remedy=unknown)
-        job_id = str(max(recorded, key=lambda m: m.get("submitted_at") or "")["job_id"])
-        status = cluster_jobs.cluster_job_status(project_name, env_name, job_id,
-                                                 access_path=access_path, timeout=timeout)
-        if "error" in status:
-            raise _Refusal(broke("run_production.after_unreadable",
-                                 error=f"could not ask the scheduler about job {job_id} of {after}: "
-                                       f"{status['error']}", **({"hint": status["hint"]} if status.get("hint") else {})))
-        rows = status.get("jobs") or []
-        if not rows:
-            raise _refuse("run_production.after_unknown",
-                          f"the scheduler keeps no record of job {job_id} of {after}", remedy=unknown)
-        if any(r.get("verdict") == cluster_jobs.DIED for r in rows):
-            raise _refuse("run_production.after_failed",
-                          f"job {job_id} of {after} ended without success: {rows[0].get('verdict_reason')}",
-                          remedy="fix and re-launch the upstream run first")
-        jobs = [f"{job_id} {rows[0].get('state')}"]
-        if not any(r.get("verdict") == cluster_jobs.RUNNING for r in rows):
-            return {"run_dir": after, "jobs": jobs, "waits_on": [], "promised_roots": []}
-    outdir = _parse_params(there["texts"][_PARAMS_FILE], f"{after}/{_PARAMS_FILE}").get("outdir", "")
-    return {"run_dir": after, "jobs": jobs, "waits_on": [j.split()[0] for j in jobs],
-            "promised_roots": sorted({after, os.path.normpath(os.path.join(after, outdir))})}
-
-
 def _observe_cluster(env: dict, paths: list[str], *, timeout: int) -> dict:
     """{path: {exists, sha256}} observed on the cluster: the sidecar hash where the
     download job left one, never a hash computed on the head node."""
@@ -498,12 +444,10 @@ def _observe_cluster(env: dict, paths: list[str], *, timeout: int) -> dict:
 
 
 def _reference_check(record: PipelineRecord, shared: Mapping[str, str], *, locus: str,
-                     env: dict, timeout: int, prefixes: Collection[str] = (),
-                     promised: Collection[str] = ()) -> dict:
+                     env: dict, timeout: int, prefixes: Collection[str] = ()) -> dict:
     """The shared references this run binds against what the workflow was SEALED with.
     Grouped by the sealed workflow each parameter belongs to; one verdict. A `prefixes`
-    entry names a family of files (an index), observed as such rather than as one file;
-    a `promised` one (an upstream run writes it) is not observed at all."""
+    entry names a family of files (an index), observed as such rather than as one file."""
     if not shared:
         return {"status": data_pins.NOT_ATTEMPTED, "reason": "the pipeline binds no shared path parameter",
                 "locus": locus, "findings": []}
@@ -512,9 +456,9 @@ def _reference_check(record: PipelineRecord, shared: Mapping[str, str], *, locus
         by_spec.setdefault(_spec_for(record, key), {})[key] = path
     observed: dict[str, dict] = {}
     if locus == "cluster":
-        plain = sorted(set(shared.values()) - set(prefixes) - set(promised))
+        plain = sorted(set(shared.values()) - set(prefixes))
         observed = _observe_cluster(env, plain, timeout=timeout) if plain else {}
-        family = sorted(set(shared.values()) & set(prefixes) - set(promised))
+        family = sorted(set(shared.values()) & set(prefixes))
         if family:
             missing = set(_remote_prefixes_exist(env, family, timeout=timeout)["missing"])
             observed.update({p: {"exists": p not in missing, "sha256": ""} for p in family})
@@ -540,8 +484,6 @@ def _reference_check(record: PipelineRecord, shared: Mapping[str, str], *, locus
             step = produced[f["slot"]].split(":", 1)[1]
             f["reason"] = (f"produced by the sealed workflow's own step {step}; the seal recorded no "
                            f"external anchor for it, so nothing pins the copy at this path")
-        elif f["verdict"] == data_pins.UNVERIFIED and f["path"] in promised:
-            f["reason"] = "the upstream run (after=) writes this path; there was nothing to compare yet"
     counts = {v: sum(1 for f in findings if f["verdict"] == v)
               for v in (data_pins.MATCH, data_pins.DIVERGED, data_pins.UNANCHORED, data_pins.UNVERIFIED)}
     # Four answers, stated apart: a pinned reference that CHANGED (diverged — the run
@@ -767,7 +709,6 @@ def run_production_pipeline(project_name: str,
                             samplesheet: str = "",
                             params: Optional[Mapping] = None,
                             walltime: str = "",
-                            after: str = "",
                             access_path: Optional[str] = None,
                             timeout: int = 300,
                             _job_manager=None) -> dict:
@@ -787,23 +728,11 @@ def run_production_pipeline(project_name: str,
                  launch, by this tool or by hand, runs the same. A path, a word or a number.
     walltime:    the manager job's SLURM time limit, written into the run directory's
                  launcher.sh header the same way. ssh envs only.
-    after:       the run_dir of an upstream run this one reads from. While the scheduler
-                 holds jobs there (however they were launched), this launch waits for them
-                 to succeed (`--dependency=afterok`; SLURM drops it if one fails), and paths
-                 under that directory or its outdir are promised: not checked or compared
-                 against the seal now. With none held, the newest launch into it recorded
-                 here decides: still queued or running, waited on; succeeded, no wait;
-                 failed or unknown, refused. ssh only.
     """
     try:
         if walltime and not _WALLTIME_RE.match(str(walltime)):
             raise _refuse("run_production.bad_walltime", f"walltime {walltime!r} is not a SLURM time",
                           remedy="minutes, MM:SS, HH:MM:SS, D-HH, D-HH:MM or D-HH:MM:SS")
-        try:
-            after_dir = submit_workflow._validate_workflow_dir(after) if after else ""
-        except ValueError as e:
-            raise _refuse("run_production.bad_after", f"after={after!r} is not a run directory: {e}",
-                          remedy="the absolute run_dir the upstream run was launched in")
         access = compute_access.load_access(Path(access_path) if access_path else None)
         project = compute_access.get_project(project_name, access)
         env = compute_access.get_compute_env(compute_env_name, access)
@@ -817,10 +746,6 @@ def run_production_pipeline(project_name: str,
             raise _refuse("run_production.walltime_on_local",
                           "walltime= sets a cluster manager job's time limit; a local run has none",
                           remedy="launch without walltime=")
-        if after and env_type != "ssh":
-            raise _refuse("run_production.after_on_local",
-                          "after= chains a cluster job to another; a local run starts at once",
-                          remedy="launch without after=, once the upstream run has finished")
 
         record, pdir, manifest, edited = _load_pipeline(pipeline)
         rels = _carried_files(pdir, manifest)
@@ -861,26 +786,13 @@ def run_production_pipeline(project_name: str,
         time_line = _TIME_LINE_RE.search(config[_LAUNCHER])
 
         shared, prefixes, cells = _bound_paths(record, effective, rows)
-        upstream = (_upstream(env, project_name, compute_env_name, after_dir,
-                              access_path=access_path, timeout=timeout) if after_dir else {})
-        # what the upstream run writes is promised: nothing can check it before it does
-        roots = upstream.get("promised_roots", [])
-        promised = sorted(p for p in {*shared.values(), *cells}
-                          if any(os.path.normpath(p) == r or os.path.normpath(p).startswith(r + "/") for r in roots))
-        unsafe = [p for p in promised if not cluster_jobs._ABS_SAFE_PATH_RE.match(p)]
-        if unsafe:
-            raise _refuse("run_production.unsafe_input_path",
-                          f"path(s) hold characters the stages' shell commands cannot carry: {unsafe[:5]}",
-                          remedy="letters, digits and . _ - + / only")
-        chain = {"after": upstream, "promised_paths": promised} if upstream else {}
         # A prefix names a family of files (<prefix>*), never a file of its own.
-        plain = sorted(((set(shared.values()) - set(prefixes)) | set(cells)) - set(promised))
-        prefixes_now = [p for p in prefixes if p not in promised]
+        plain = sorted((set(shared.values()) - set(prefixes)) | set(cells))
 
         # ─── AT THE LOCUS: images, paths, the data pins ─────────────────
         if env_type == "ssh":
             _check_images_cluster(record, env, compute_env_name, project_name, timeout)
-            _check_paths_cluster(env, plain, prefixes_now, timeout=timeout)
+            _check_paths_cluster(env, plain, prefixes, timeout=timeout)
         else:
             from agent import mcp_server as _ms
             docker_refusal = _ms._check_docker_available()
@@ -894,7 +806,7 @@ def run_production_pipeline(project_name: str,
             _check_images_local(record)
             _check_paths_local(plain, prefixes)
         reference_check = _reference_check(record, shared, locus=locus, env=env, timeout=timeout,
-                                           prefixes=prefixes, promised=promised)
+                                           prefixes=prefixes)
         # a re-launch reads the samples.csv the run directory already holds
         value_check = _value_check(record, effective, rows if samplesheet else
                                    list(csv.DictReader(io.StringIO(state["texts"].get(SAMPLESHEET_FILENAME, "")))))
@@ -912,15 +824,9 @@ def run_production_pipeline(project_name: str,
         # ─── Launch ─────────────────────────────────────────────────────
         submitted_at = datetime.now(timezone.utc).isoformat()
         if env_type == "ssh":
-            waits_on = upstream.get("waits_on")
-            wait = ["--dependency=afterok:" + ":".join(waits_on), "--kill-on-invalid-dep=yes"] if waits_on else []
-            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout, sbatch_args=wait)
+            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout)
             if "error" in sb:
-                # the next launch looks again, so an upstream that ended meanwhile is seen
-                return {**sb, **placed, "remedy": f"the run directory is in place: launch again with "
-                                                  f"run_dir={normed_dir!r}"
-                                                  + (f", after={after_dir!r}" if after_dir else "")
-                                                  + " and no samplesheet"}
+                return {**sb, **placed}
             job_id = sb["job_id"]
             launch = sb.get("sbatch_command", "")
             follow_up = {"poll": f"cluster_job_status(project_name={project_name!r}, compute_env_name="
@@ -959,7 +865,7 @@ def run_production_pipeline(project_name: str,
             "params": effective, "params_overridden": {str(k): str(v) for k, v in (params or {}).items()},
             "walltime": (time_line.group(1) if time_line and env_type == "ssh" else None), "launch": launch,
             "edited_since_render": edited, "reference_check": dict(reference_check),
-            "value_check": value_check, **chain,
+            "value_check": value_check,
             "submitted_at": submitted_at, "follow_up": follow_up,
         }
         manifest_path = submit_workflow._write_submission_manifest(
@@ -971,7 +877,7 @@ def run_production_pipeline(project_name: str,
                         **{k: v for k, v in placed.items() if k != "reused"},
                         samplesheet=manifest_record["samplesheet"], params=effective,
                         launch=launch, submitted_at=submitted_at, manifest_path=manifest_path,
-                        edited_since_render=edited, follow_up=follow_up, **chain)
+                        edited_since_render=edited, follow_up=follow_up)
         return _disclose(result, reference_check, value_check)
 
     except _Refusal as r:
