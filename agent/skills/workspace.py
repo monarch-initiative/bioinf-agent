@@ -34,6 +34,7 @@ Unusable roots are diagnosed by ``scripts/doctor.py``, where a human can act.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 #: The artifact root's directory name under $HOME. A default CONVENTION, not a
@@ -131,6 +132,13 @@ def conda_envs_dir() -> Path:
 ENVIRONMENTS = "environments"
 ENV_CACHE_FILE = "_env_cache.json"
 WORKFLOW_SUFFIX = ".workflow.yaml"
+#: A spec a re-seal with supersede=True keeps beside the live one.
+_SUPERSEDED_RE = re.compile(r"\.superseded\.\d+" + re.escape(WORKFLOW_SUFFIX) + "$")
+
+
+def superseded_workflow_name(name: str, n: int) -> str:
+    """The file name the n-th superseded spec of workflow `name` is kept under."""
+    return f"{name}.superseded.{n}{WORKFLOW_SUFFIX}"
 
 
 def environments_dir() -> Path:
@@ -166,11 +174,13 @@ def env_cache_path() -> Path:
 
 
 def sealed_workflow_paths() -> list[Path]:
-    """Every sealed workflow spec, across every env directory, sorted by name."""
+    """Every live sealed workflow spec, across every env directory, sorted by name;
+    a spec a re-seal superseded is kept on disk but is not one of them."""
     root = workspace_root() / ENVIRONMENTS
     if not root.is_dir():
         return []
-    return sorted((p for p in root.glob(f"*/*{WORKFLOW_SUFFIX}") if p.is_file()),
+    return sorted((p for p in root.glob(f"*/*{WORKFLOW_SUFFIX}")
+                   if p.is_file() and not _SUPERSEDED_RE.search(p.name)),
                   key=lambda p: (p.name, str(p)))
 
 

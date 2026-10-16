@@ -138,6 +138,25 @@ class TestLocalCopy:
         assert dest.read_text() == "payload"
         assert not (dest.parent / ".x.txt.partial").exists()
 
+    @pytest.mark.integration
+    def test_a_local_write_that_fails_is_a_typed_failure_not_a_missing_manifest(self, tmp_path):
+        from tests.integration.honesty.L14_compute_env_safety.test_transfer_surface import _make_access
+        access = _make_access(tmp_path)
+        src = tmp_path / "x.txt"
+        src.write_text("payload")
+        locked = tmp_path / "fakescratch" / "demo_project" / "ro"
+        locked.mkdir(parents=True)
+        locked.chmod(0o500)
+        try:
+            out = transfer.upload("demo_project", "fakehpc", str(src), str(locked / "x.txt"),
+                                  access_path=str(access))
+        finally:
+            locked.chmod(0o700)
+        assert (out["outcome"], out["code"]) == ("broke", "transfer.local_io_failed"), out
+        missing = transfer.upload("demo_project", "fakehpc", str(src), str(locked / "y.txt"),
+                                  access_path=str(tmp_path / "nowhere.yaml"))
+        assert missing["code"] == "transfer.access_config_missing", missing
+
 
 def _globus_access(tmp_path: Path) -> Path:
     p = tmp_path / "projects_access.yaml"

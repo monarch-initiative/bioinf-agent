@@ -36,6 +36,7 @@ from agent.models.core_data import record_is_gated as _record_is_gated
 
 from agent.models.core_data import shipped_binaries as _shipped_binaries
 from agent.models.core_data import tool_identities as _tool_identities
+from agent.skills.env_recipe import requested_ref
 from agent.skills.env_honesty import (
     ESTABLISHED as _ESTABLISHED,
     FAILED as _FAILED,
@@ -423,7 +424,7 @@ def _dockerfile_source_block(r: dict) -> list[str]:
     P: list[str] = []
     pin = [("Repository", f'<code>{_e(ds["repo"])}</code>' if ds.get("repo") else ""),
            ("Commit", f'<code>{_e(ds["commit"])}</code>'
-                      + (f' <span class="note">(tag {_e(ds["tag"])})</span>' if ds.get("tag") else "")
+                      + (f' <span class="note">(requested as {_e(requested_ref(ds))})</span>' if requested_ref(ds) else "")
                       if ds.get("commit") else ""),
            ("Dockerfile", f'<code>{_e(ds["recipe_path"])}</code>' if ds.get("recipe_path") else ""),
            ("Build args", " ".join(f'<code>{_e(k)}={_e(v)}</code>'

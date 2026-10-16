@@ -604,7 +604,7 @@ def test_the_recorded_patches_reach_every_deliverable(tmp_path, monkeypatch):
     assert recipe["dockerfile_source"]["patches"][0]["find"] == _GIT_PATCH["find"]
     assert recipe["dockerfile_source"]["patches"][0]["reason"] == _GIT_PATCH["reason"]
     md = (tmp_path / "talos.recipe.md").read_text()
-    assert "### Patches applied to the authors' source (1)" in md
+    assert "### Patches to apply to the checkout before building (1)" in md
     assert "`docker/Dockerfile`** · uv clones a git dependency" in md
     assert "--- find\napt-get install -y curl\n+++ replace\napt-get install -y curl git" in md
     assert "the 1 recorded patch above would have to be re-applied to the pinned source" in md
@@ -713,7 +713,7 @@ def test_patches_apply_in_order_and_each_sees_the_previous_result(tmp_path, monk
     assert ds["patches"][0]["sha256_after"] == ds["patches"][1]["sha256_before"]
     assert "apt-get install -y curl git ca-certificates" in ds["dockerfile"]
     md = (tmp_path / "talos.recipe.md").read_text()
-    assert "Patches applied to the authors' source (2)" in md
+    assert "Patches to apply to the checkout before building (2)" in md
     assert "the 2 recorded patches above would have to be re-applied" in md
 
 

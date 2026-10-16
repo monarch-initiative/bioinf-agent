@@ -162,6 +162,11 @@ def test_repeated_supersede_never_collides(tmp_path):
     _guard_spec_overwrite(_spec(content_digest="cd-C", image_digest="sha256:C"), _env(), supersede=True)
     assert (_env() / "wf1.superseded.1.workflow.yaml").exists()
     assert (_env() / "wf1.superseded.2.workflow.yaml").exists()
+    # what is kept is history: the live list holds the current spec alone
+    from agent.skills import workspace
+    _write(_env(), _spec(content_digest="cd-C", image_digest="sha256:C"))
+    assert workspace.sealed_workflow_names() == ["wf1"]
+    assert workspace.sealed_workflow_path("wf1") == _env() / "wf1.workflow.yaml"
 
 
 def test_next_superseded_path_picks_the_first_free_integer(tmp_path):

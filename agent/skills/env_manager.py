@@ -2156,7 +2156,7 @@ class EnvManager:
         on a stray petabyte tmp file). A file above the cap returns sha = '' —
         the seal-time check treats that the same as 'missing'.
         """
-        import hashlib as _h
+        from agent.models.core_data import sha256_file
         out: dict[str, str] = {}
         for p in paths or []:
             try:
@@ -2165,11 +2165,7 @@ class EnvManager:
                     continue
                 if f.stat().st_size > max_bytes:
                     continue
-                h = _h.sha256()
-                with f.open("rb") as fh:
-                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                        h.update(chunk)
-                out[p] = h.hexdigest()
+                out[p] = sha256_file(f)
             except Exception:
                 # Any error (permission, symlink loop, …) → skip silently. The
                 # contract is "if hash recorded, lineage is checked"; we do not

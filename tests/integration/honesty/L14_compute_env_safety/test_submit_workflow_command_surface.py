@@ -50,6 +50,7 @@ class TestSbatchParsableParser:
         ("12345;rc1",        "12345"),
         ("123456789012\n",   "123456789012"),
         ("  98765  \n",      "98765"),
+        ("Welcome to the cluster\nmodule: loaded defaults\n4242;rc1\n", "4242"),   # a login banner first
     ])
     def test_extracts_job_id(self, stdout, want):
         assert submit_workflow._parse_sbatch_parsable(stdout) == want

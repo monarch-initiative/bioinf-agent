@@ -25,7 +25,7 @@ import re
 from typing import Any, Optional
 
 from agent.skills import freeze as _freeze
-from agent.skills.env_recipe import AUTHORS_METHODS as _AUTHORS_METHODS
+from agent.skills.env_recipe import AUTHORS_METHODS as _AUTHORS_METHODS, requested_ref
 from agent.models.core_data import shipped_binaries as _shipped_binaries
 from agent.models.core_data import tool_identities as _tool_identities
 
@@ -258,43 +258,27 @@ def _channels(recipe: dict) -> str:
     return "-c conda-forge -c bioconda"
 
 
-def _conda_block(recipe: dict) -> list[str]:
+def _conda_block(recipe: dict, step: int) -> list[str]:
+    """Step `step`, the conda/pip layer: materialized from the captured lock when there
+    is one (what the build ran, `pixi install --locked`), else re-solved from the specs.
+    A lock with no named specs is still a layer the later steps run inside."""
     deps = [d for d in (recipe.get("conda_deps") or []) if d]
-    locked = bool(recipe.get("conda_lock"))
-    if not deps and locked:
-        # THE ENV LAYER EXISTS BUT NOBODY ASKED FOR IT BY NAME. `conda_deps` is the
-        # REQUEST; `conda_lock` is what was GOT. An env whose conda layer was solved
-        # from an install primitive's own specs (a pip-with-flags tool, say) records an
-        # empty conda_deps and a full pixi.toml/pixi.lock — so this early-returned [] and
-        # the recipe rendered NO step 1 at all, while step 2 went on to say
-        # `pixi run bash -c '...'`. The reader was told to run a command inside an
-        # environment the document never created. Absence of the request read as absence
-        # of the layer; the lock is the proof it is there.
-        #
-        # And materializing the lock is not a reconstruction — it is literally what the
-        # build ran (`engine.materialize_lines()` → `pixi install --locked`), so this is
-        # the conda layer's half of the transcript.
-        return ["# 1. materialize the env from the captured lock — this is exactly what "
+    if recipe.get("conda_lock"):
+        return [f"# {step}. materialize the env from the captured lock — this is exactly what "
                 "the build ran, and it re-solves nothing:",
                 *_fence(["# write pixi.toml and pixi.lock from the machine recipe's "
                          "`conda_lock` block (*.recipe.yaml), then:",
                          "pixi install --locked"]),
                 "> The lock pins every package by URL+sha256, so this reproduces the "
                 "identical package set on any machine — which a `conda create` re-solve "
-                "does not. The commands in step 2 run INSIDE this env (that is what the "
-                "`pixi run` prefix does).", ""]
+                "does not"
+                + (f" (the specs asked for: {', '.join(f'`{d}`' for d in deps)})" if deps else "")
+                + ". Later steps run INSIDE this env (that is what the `pixi run` prefix does).", ""]
     if not deps:
         return []
-    out = [f"# 1. create the conda/pip env "
-           + ("(pinned by the captured lockfile — see machine recipe)" if locked
-              else "(re-solved from specs)") + ":"]
-    out += _fence([f"conda create -y -n {recipe.get('name','env')} {_channels(recipe)} \\",
-                   "    " + " ".join(deps)])
-    if locked:
-        out += ["> The machine recipe (`*.recipe.yaml`) carries the exact `conda_lock` "
-                "(URL+sha256 per package). Materialising from that lock — rather than "
-                "re-solving — reproduces the identical package set across machines/time.", ""]
-    return out
+    return [f"# {step}. create the conda/pip env (re-solved from specs):",
+            *_fence([f"conda create -y -n {recipe.get('name','env')} {_channels(recipe)} \\",
+                     "    " + " ".join(deps)])]
 
 
 def _apt_block(record: Optional[dict]) -> list[str]:
@@ -350,7 +334,9 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
            "there (validated == shipped). To reproduce by hand, in a Linux build context "
            f"(base image `{base}` pinned by digest in the machine recipe):", ""]
     out += _apt_block(record)
-    out += _conda_block(recipe)
+    conda = _conda_block(recipe, 1)
+    out += conda
+    step = 2 if conda else 1
     # `$PREFIX` appeared in the cargo/go lines and was DEFINED NOWHERE in the document —
     # a paste that silently installs to the wrong place (or fails under `set -u`). If a
     # rendered command references it, the recipe has to say what it is.
@@ -378,8 +364,9 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
         # THE TRANSCRIPT WINS. These are the exact strings this image was built from —
         # emit_dockerfile baked each one as `RUN <command>` — so the reader runs what ran
         # rather than a per-tier paraphrase of it. See extract_recipe's `built_commands`.
-        out += ["# 2. install the non-conda tools — these are the EXACT commands that "
+        out += [f"# {step}. install the non-conda tools — these are the EXACT commands that "
                 "built this image, recorded at build time and reproduced verbatim:"]
+        step += 1
         for c in built:
             body = []
             if c.get("purpose"):
@@ -412,7 +399,7 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
             "`pip install`) never produces one: its exact bytes are pinned by the "
             "lock carried in `recipe.yaml`, which is the stronger anchor."
             if recipe.get("conda_lock") else ".")
-        out += ["# 2. install the non-conda tools (each baked + validated in the image):",
+        out += [f"# {step}. install the non-conda tools (each baked + validated in the image):",
                 "",
                 "> ⚠ **Derived, not recorded.** This recipe carries no verbatim build "
                 "transcript for these steps, so the commands below are RECONSTRUCTED "
@@ -425,7 +412,8 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
             cmds = render_step_commands(p)
             if cmds:
                 out += _fence(cmds)
-    out += ["# 3. bake into an image, then convert to a cluster .sif:"]
+        step += 1
+    out += [f"# {step}. bake into an image, then convert to a cluster .sif:"]
     # "assemble the above into a Dockerfile" left the reader to work out the one thing
     # this step is for. With the transcript recorded, the mapping is exact and can be
     # stated: each command in step 2 is one RUN line, in the order shown.
@@ -504,7 +492,7 @@ def _section_authors(recipe: dict, record: Optional[dict]) -> list[str]:
     ds = recipe.get("dockerfile_source") or (record or {}).get("dockerfile_source") or {}
     repo = ds.get("repo") or ""
     commit = ds.get("commit") or ds.get("commit_sha") or ""
-    tag_ref = ds.get("tag") or ""
+    tag_ref = requested_ref(ds)
     recipe_path = ds.get("recipe_path") or ""
     build_args = ds.get("build_args") or {}
     platform = ds.get("platform") or "linux/amd64"
@@ -543,18 +531,18 @@ def _section_authors(recipe: dict, record: Optional[dict]) -> list[str]:
     out += ["To reproduce:", ""]
     out += _fence([f"git clone {repo} src",
                    f"cd src && git checkout {commit}"
-                   + (f"   # tag {tag_ref}" if tag_ref else ""),
-                   " \\\n".join(build)])
+                   + (f"   # requested as {tag_ref}" if tag_ref else "")])
+    out += _patches_block(ds)
+    out += _fence([" \\\n".join(build)])
     out += _local_sif_block(img)
     pin = f"> Source pin: `{repo}` commit `{commit}`"
-    pin += f" (tag `{tag_ref}`)." if tag_ref else "."
+    pin += f" (requested as `{tag_ref}`)." if tag_ref else "."
     if recipe_path:
         pin += f" Built from `{recipe_path}`."
     if build_args:
         pin += (" Build args are pinned above — without them the Dockerfile's own `ARG`"
                 " defaults apply, which is a DIFFERENT image.")
     out += [pin + " The Dockerfile is included alongside this recipe for inspection.", ""]
-    out += _patches_block(ds)
     return out
 
 
@@ -568,10 +556,10 @@ def _patches_block(ds: dict) -> list[str]:
     if not patches:
         return []
     n = len(patches)
-    out = [f"### Patches applied to the authors' source ({n})", "",
-           f"The checkout above was edited before `docker build` — {n} exact "
-           f"substitution{'s' if n != 1 else ''}, written by the agent, recorded here so the "
-           "build is reproducible: re-apply each one to the pinned commit before building. "
+    out = [f"### Patches to apply to the checkout before building ({n})", "",
+           f"The build edited the checkout before `docker build` — {n} exact "
+           f"substitution{'s' if n != 1 else ''}, written by the agent and recorded so the "
+           "build is reproducible: apply each one to the pinned commit, then build. "
            "The sha256 values are of the whole file before and after the edit.", ""]
     for i, p in enumerate(patches, 1):
         file = str(p.get("file") or "(file not recorded)")
@@ -686,13 +674,17 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
           "written after the fact. There are two ways to obtain the env; prefer Option A.", ""]
 
     # Option A — reuse the exact bytes (always available; strongest guarantee)
+    pullable = "@sha256:" in str(recipe.get("adopt_image") or "")
     L += ["## Option A — reuse the exact image (no rebuild) — preferred", "",
-          "The frozen image *is* the environment. Ship the `.sif` (or pull the image by "
-          "digest) and run it — byte-identical, nothing to install:", ""]
+          "The frozen image *is* the environment. Ship the `.sif` "
+          + ("(or pull the image by digest) " if pullable else
+             "(or the image itself, which its image digest identifies) ")
+          + "and run it — byte-identical, nothing to install:", ""]
     img = record.get("image") or (recipe.get("adopt_image") or f"{name}:{ver or 'latest'}")
     L += _fence([f"apptainer exec --cleanenv {name}.sif <command>",
                  f"# image: {img}",
-                 f"# content digest: {content_digest or '(none)'}"])
+                 f"# image digest: {record.get('image_digest') or '(not recorded)'}",
+                 f"# content digest (of the build's inputs): {content_digest or '(none)'}"])
 
     # Option B — rebuild from scratch (method-specific)
     if method == "adopt":

@@ -1124,7 +1124,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
 
     head_rows = [
         ("Sealed", _e(_created_line(s.get("created_at", "")))),
-        ("Validated on",
+        ("Validated",
          "; ".join(_e(_LOCUS_WORDS.get(x, x)) for x in loci) if loci else "—"),
         # STATED BY THE SEAL, NEVER RENDERED. `derive_pipeline_status` computes this
         # correctly and writes it into the spec — a spec containing a failed step carries

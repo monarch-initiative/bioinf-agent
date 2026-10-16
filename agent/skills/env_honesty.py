@@ -1023,7 +1023,8 @@ def _clause_license(result: dict) -> tuple[ClauseCoverage, list[dict]]:
     # so "nothing restricted" is never read as "every licence was understood".
     reach = (f"{len(pkgs) - len(unknown)}/{len(pkgs)} package licences recognised"
              + (f"; {len(unknown)} unrecognised ("
-                + ", ".join(p["name"] for p in unknown[:5]) + ")"
+                + ", ".join(p["name"] for p in unknown[:5])
+                + (f", and {len(unknown) - 5} more" if len(unknown) > 5 else "") + ")"
                 if unknown else "")) if pkgs else "no conda/pip closure to read licences from"
 
     if not (declared or observed):

@@ -968,8 +968,15 @@ def _do_transfer(*, direction: str,
         normed_remote = _validate_remote_abs_path(remote_abs_path)
 
         # 2) Load YAML + resolve project (synthesizing _ad_hoc if needed) + env.
-        access = compute_access.load_access(
-            Path(access_path) if access_path else None)
+        try:
+            access = compute_access.load_access(
+                Path(access_path) if access_path else None)
+        except FileNotFoundError as e:
+            # an absent manifest is an interpretable refusal: nothing to authorize against
+            mpath = _journal(result="error", zone="?",
+                              error_msg=f"access manifest not found: {e}")
+            return refused("transfer.access_config_missing",
+                    error=str(e), manifest=str(mpath))
         project = _get_project_or_ad_hoc(project_name, access)
         env = compute_access.get_compute_env(compute_env_name, access)
 
@@ -1192,17 +1199,6 @@ def _do_transfer(*, direction: str,
         return refused("transfer.config_error",
                 error=f"ConfigError: {e}",
                 manifest=str(mpath))
-    except FileNotFoundError as e:
-        # load_access() raises this when projects_access.yaml is ABSENT (a
-        # malformed manifest is ConfigError, above). It's the ONLY
-        # FileNotFoundError source in this body — the local-path validators
-        # raise TransferError, not this. A missing access manifest is an
-        # interpretable refusal (no manifest ⇒ nothing to authorize against),
-        # never an uncaught crash the agent can't branch on (C4).
-        mpath = _journal(result="error", zone="?",
-                          error_msg=f"access manifest not found: {e}")
-        return refused("transfer.access_config_missing",
-                error=str(e), manifest=str(mpath))
     except KeyError as e:
         # get_project / get_compute_env raise KeyError for an unknown name.
         # A hostile/typo'd project or env is a clean auth failure, not a crash
@@ -1215,6 +1211,12 @@ def _do_transfer(*, direction: str,
         msg = f"subprocess timed out after {e.timeout}s"
         mpath = _journal(result="error", zone="?", error_msg=msg)
         return broke("transfer.timeout", error=msg, manifest=str(mpath))
+    except OSError as e:
+        # this machine's side: the access file unreadable, a local copy that
+        # could not be read or written
+        msg = f"{type(e).__name__}: {e}"
+        mpath = _journal(result="error", zone="?", error_msg=msg)
+        return broke("transfer.local_io_failed", error=msg, manifest=str(mpath))
 
 
 def resolve_globus_task(project_name: str, env: dict, task_id: str) -> dict:
