@@ -130,8 +130,21 @@ def _access(tmp_path):
     ap = tmp_path / "a.yaml"
     ap.write_text(yaml.safe_dump({
         "compute_envs": [{"name": "hpc", "type": "ssh", "host": "h", "user": "u"}],
-        "projects": [{"name": "demo", "compute_envs": ["hpc"], "directories": []}]}))
+        "projects": [{"name": "demo", "compute_envs": ["hpc"],
+                      "directories": [{"env": "hpc", "path": "/w", "permissions": ["download"]}]}]}))
     return str(ap)
+
+
+def test_a_run_dir_the_project_does_not_grant_is_never_read(tmp_path, monkeypatch):
+    """The run's log and trace come back through this call: reading them is a download,
+    from a directory the project grants, like any other."""
+    import subprocess
+    called = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a) or None)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/home/someone_else/proj",
+                              access_path=_access(tmp_path))
+    assert r["outcome"] == "refused" and "PermissionDenied" in r["error"], r
+    assert called == [], "refused before any ssh"
 
 
 def _sacct(*rows):

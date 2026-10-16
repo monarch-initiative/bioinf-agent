@@ -326,7 +326,8 @@ def cluster_job_status(project_name: str,
     Does not submit, cancel, or modify anything.
 
     `run_dir`: a pipeline's launch directory (what `run_production_pipeline`
-    returned). The job is then its manager, and `pipeline` reports the work:
+    returned), in a zone or directory the project may `download` from — its log
+    and trace are read back. The job is then its manager, and `pipeline` reports the work:
     every finished task from the run's trace, every task submitted and not
     finished with the scheduler's state for it (PENDING and why, RUNNING where
     and for how long), and a verdict over the tasks: succeeded, failed, running,

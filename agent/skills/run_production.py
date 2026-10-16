@@ -49,7 +49,7 @@ from agent.skills.outcomes import proven, refused, broke, degraded
 from agent.skills.pipeline_record import PipelineRecord, load_pipeline_record
 from agent.skills.pipeline_render import (MANIFEST_PATH, RECORD_PATH, SAMPLESHEET_FILENAME,
                                           _edited_since_render, parse_manifest)
-from agent.skills.pipeline_render_nextflow import RUN_LOCAL, SAMPLESHEET_PARAM, params_yaml_line
+from agent.skills.pipeline_render_nextflow import OUTDIR_PARAM, RUN_LOCAL, SAMPLESHEET_PARAM, params_yaml_line
 from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
 #: A params= value: a path, a word, a number. Nextflow pastes params into the pipeline's
@@ -58,6 +58,8 @@ _VALUE_RE = re.compile(r"^[A-Za-z0-9_./+:,=@%-]{0,4096}$")
 #: A SLURM walltime: minutes, M:S, H:M:S, D-H, D-H:M, D-H:M:S.
 _WALLTIME_RE = re.compile(r"^(\d+|\d+:\d{2}|\d+:\d{2}:\d{2}|\d+-\d+|\d+-\d+:\d{2}|\d+-\d+:\d{2}:\d{2})$")
 _SAMPLE_KEY = "sample"
+_SAMPLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_CSV_BREAKERS = re.compile(r'[,"\r\n]')
 _PARAMS_FILE = "params.yaml"
 _LAUNCHER = "launcher.sh"
 #: What a launch reads of a run directory beyond which files are there: the manifest
@@ -192,18 +194,26 @@ def _read_samplesheet(path: str, record: PipelineRecord) -> tuple[list[str], lis
     if not sp.is_file():
         raise _refuse("run_production.samplesheet_missing", f"samplesheet {path!r} is not a file on this machine",
                       remedy="give the local path of a CSV with one row per sample")
-    with sp.open(newline="", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        header = [h.strip() for h in (reader.fieldnames or [])]
-        rows = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in reader]
+    return _check_samplesheet(sp.read_text(encoding="utf-8"), record, path)
+
+
+def _check_samplesheet(text: str, record: PipelineRecord, where: str) -> tuple[list[str], list[dict]]:
+    """A samplesheet's header and rows, refused unless every column the pipeline reads
+    is there and every cell can be run: the sample names a directory and the files
+    under it, a bound value is pasted into the stage's shell command (the rule params=
+    values follow), a path is absolute and plain, and no cell holds what splits a CSV
+    row without quoting (Nextflow reads samples.csv that way)."""
+    reader = csv.DictReader(io.StringIO(text))
+    header = [h.strip() for h in (reader.fieldnames or [])]
+    rows = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in reader]
     need = [c.name for c in record.samplesheet.columns]
     missing = [c for c in need if c not in header]
     if missing:
         raise _refuse("run_production.samplesheet_columns",
-                      f"samplesheet {path} lacks column(s) {missing}; the pipeline reads {need}",
+                      f"samplesheet {where} lacks column(s) {missing}; the pipeline reads {need}",
                       required_columns=need, remedy="add the column(s); columns beyond these are carried through")
     if not rows:
-        raise _refuse("run_production.samplesheet_empty", f"samplesheet {path} has no rows",
+        raise _refuse("run_production.samplesheet_empty", f"samplesheet {where} has no rows",
                       remedy="one row per sample under the header line")
     ids = [r.get(_SAMPLE_KEY, "") for r in rows]
     if any(not s for s in ids) or len(set(ids)) != len(ids):
@@ -211,13 +221,24 @@ def _read_samplesheet(path: str, record: PipelineRecord) -> tuple[list[str], lis
                       "every row needs a unique, non-empty `sample`",
                       remedy="`sample` is the row key: it tags every task and names results/<sample>/")
     for col in record.samplesheet.columns:
-        if col.value_kind != "path":
-            continue
-        bad = [r.get(col.name, "") for r in rows if not r.get(col.name, "").startswith("/")]
+        cells = [r.get(col.name, "") for r in rows]
+        if col.name == _SAMPLE_KEY:
+            bad, rule = [c for c in cells if not _SAMPLE_RE.match(c)], "letters, digits and ._- (it names a directory)"
+        elif col.value_kind in ("path", "prefix"):
+            relative = [c for c in cells if not c.startswith("/")]
+            if relative:
+                raise _refuse("run_production.samplesheet_relative_path",
+                              f"column {col.name!r} must hold absolute paths at the locus; got {relative[:3]}",
+                              remedy="absolute paths for data: a run resolves relative ones against its launch directory")
+            bad, rule = [c for c in cells if not cluster_jobs._ABS_SAFE_PATH_RE.match(c)], "an absolute path of letters, digits and ._/+-"
+        elif not col.read_by:
+            bad, rule = [c for c in cells if not _VALUE_RE.match(c)], "a path, a word or a number (it is pasted into a command)"
+        else:
+            bad, rule = [c for c in cells if _CSV_BREAKERS.search(c)], "no comma, quote or line break"
         if bad:
-            raise _refuse("run_production.samplesheet_relative_path",
-                          f"column {col.name!r} must hold absolute paths at the locus; got {bad[:3]}",
-                          remedy="absolute paths for data: a run resolves relative ones against its launch directory")
+            raise _refuse("run_production.samplesheet_unsafe_cell",
+                          f"samplesheet {where}: column {col.name!r} holds {bad[:3]}; each cell must be {rule}",
+                          remedy=f"rename or move the value(s) so column {col.name!r} holds {rule}")
     return header, rows
 
 
@@ -254,6 +275,12 @@ def _bound_paths(record: PipelineRecord, effective: Mapping[str, str], rows: lis
 
 _ZONE_TARGET = {"scratch": compute_access.get_agent_scratch_target,
                 "pipelines": compute_access.get_agent_pipelines_target}
+
+
+def _results_dir(run_dir: str, effective: Mapping[str, str]) -> str:
+    """Where the run publishes: params.yaml's outdir, resolved against the run
+    directory Nextflow starts in."""
+    return os.path.normpath(os.path.join(run_dir, effective.get(OUTDIR_PARAM[0], OUTDIR_PARAM[1])))
 
 
 def _authorize_run_dir(project: dict, env: dict, env_name: str, run_dir: str) -> str:
@@ -553,9 +580,14 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
                         f'echo {q("END " + rel)}; ' for rel in _RUN_TEXTS)
               + f"( cd {q(run_dir)} 2>/dev/null && sha256sum -- {' '.join(q(r) for r in rels)} "
                 f"2>/dev/null | sed 's/^/SUM /' ); "
-              # the run's own jobs the scheduler still holds: sbatch ran in run_dir
-              + f"squeue -h -u \"$USER\" -o '%i %T %Z' 2>/dev/null | "
-                f"awk -v d={q(run_dir)} '$3 == d {{print \"LIVE=\" $1 \" \" $2}}'")
+              # The run's own jobs the scheduler still holds: the manager ran in run_dir and
+              # its tasks under run_dir/work, by the path as given or as resolved (a link).
+              # A scheduler that cannot answer is said so, never read as "nothing runs".
+              + f"p=$(cd {q(run_dir)} 2>/dev/null && pwd -P); "
+                f"held=$(squeue -h -u \"$USER\" -o '%i %T %Z') || echo SQUEUE_FAILED; "
+                f"printf '%s\\n' \"$held\" | awk -v d={q(run_dir)} -v p=\"$p\" "
+                f"'$3 == d || index($3, d \"/\") == 1 || (p != \"\" && ($3 == p || index($3, p \"/\") == 1)) "
+                f"{{print \"LIVE=\" $1 \" \" $2}}'")
     argv = _ssh_argv(env, f"bash -lc {q(script)}")
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     if res.returncode != 0:
@@ -564,6 +596,12 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
                              error=f"could not inspect {run_dir} on the cluster (rc={res.returncode}): "
                                    f"{(res.stderr or '').strip()[:300]}", **({"hint": hint} if hint else {})))
     lines = (res.stdout or "").splitlines()
+    if "SQUEUE_FAILED" in lines:
+        raise _Refusal(broke("run_production.run_dir_probe_failed",
+                             error=f"the scheduler could not say whether a run of {run_dir} is still "
+                                   f"queued or running (squeue failed); a launch must not start over one",
+                             remedy="launch again in a minute; `squeue -u $USER` on the login node says "
+                                    "whether the scheduler answers"))
     texts = {}
     for rel in _RUN_TEXTS:
         a, b = lines.index(f"BEGIN {rel}"), lines.index(f"END {rel}")
@@ -575,15 +613,20 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
             "live": [ln[len("LIVE="):] for ln in lines if ln.startswith("LIVE=")]}
 
 
-def _local_run_dir_state(run_dir: Path, rels: list[str]) -> dict:
-    """`_remote_run_dir_state`, for a run directory on this machine."""
+def _local_run_dir_state(run_dir: Path, rels: list[str], jobs: list[dict]) -> dict:
+    """`_remote_run_dir_state`, for a run directory on this machine; `jobs` are the
+    job manager's, and one still running in `run_dir` is a run in progress."""
+    here = run_dir.resolve()
+    live = [f"{j.get('job_id')} running" for j in jobs
+            if j.get("state") == "running" and j.get("working_dir")
+            and Path(j["working_dir"]).resolve() == here]
     return {"exists": run_dir.exists(), "missing": [rel for rel in rels if not (run_dir / rel).is_file()],
             "samplesheet": (run_dir / SAMPLESHEET_FILENAME).is_file(),
             "texts": {rel: (run_dir / rel).read_text() if (run_dir / rel).is_file() else ""
                       for rel in _RUN_TEXTS},
             "sums": {rel: core_data.sha256_file(run_dir / rel) for rel in rels
                      if (run_dir / rel).is_file()},
-            "live": []}
+            "live": live}
 
 
 def _write_remote(env: dict, run_dir: str, texts: Mapping[str, str], *, timeout: int) -> None:
@@ -778,11 +821,18 @@ def run_production_pipeline(project_name: str,
         # params= and walltime= are written into the run's own params.yaml and launcher.sh
         # (a first launch's copies, or a re-launch's files in place), so the directory is
         # the record of what runs in it.
-        state = (_remote_run_dir_state(env, normed_dir, rels, timeout=timeout) if env_type == "ssh"
-                 else _local_run_dir_state(Path(normed_dir), rels))
+        if env_type == "ssh":
+            state = _remote_run_dir_state(env, normed_dir, rels, timeout=timeout)
+        else:
+            from agent import mcp_server as _ms
+            jm = _job_manager or _ms._job_manager
+            state = _local_run_dir_state(Path(normed_dir), rels, jm.list_jobs(include_terminated=False))
         reused = _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=normed_dir,
                                   samplesheet=samplesheet)
         if reused:
+            # a re-launch runs the samples.csv the run directory holds: held to the same rules
+            header, rows = _check_samplesheet(state["texts"].get(SAMPLESHEET_FILENAME, ""), record,
+                                              f"{normed_dir}/{SAMPLESHEET_FILENAME}")
             # What runs is the run directory's copy, not the template it came from. The
             # two files a launch writes itself are reported by what they hold (`params`,
             # `walltime`), not as edits.
@@ -797,6 +847,10 @@ def run_production_pipeline(project_name: str,
                   _LAUNCHER: (_with_walltime(base[_LAUNCHER], walltime, where[_LAUNCHER]) if walltime
                               else base[_LAUNCHER])}
         changed = {rel: text for rel, text in config.items() if text != base[rel]}
+        results = _results_dir(normed_dir, effective)
+        if not transfer._under(normed_dir, results):
+            # the run writes its results there: the same grant a run directory needs
+            _authorize_run_dir(project, env, compute_env_name, results)
         time_line = _TIME_LINE_RE.search(config[_LAUNCHER])
 
         shared, prefixes, cells = _bound_paths(record, effective, rows)
@@ -821,9 +875,7 @@ def run_production_pipeline(project_name: str,
             _check_paths_local(plain, prefixes)
         reference_check = _reference_check(record, shared, locus=locus, env=env, timeout=timeout,
                                            prefixes=prefixes)
-        # a re-launch reads the samples.csv the run directory already holds
-        value_check = _value_check(record, effective, rows if samplesheet else
-                                   list(csv.DictReader(io.StringIO(state["texts"].get(SAMPLESHEET_FILENAME, "")))))
+        value_check = _value_check(record, effective, rows)
 
         # ─── The run directory ──────────────────────────────────────────
         if env_type == "ssh":
@@ -845,14 +897,12 @@ def run_production_pipeline(project_name: str,
             launch = sb.get("sbatch_command", "")
             follow_up = {"poll": f"cluster_job_status(project_name={project_name!r}, compute_env_name="
                                  f"{compute_env_name!r}, job_id={job_id!r}, run_dir={normed_dir!r})",
-                         "results": f"{normed_dir}/{effective.get('outdir', 'results')}/ — download(…) to fetch",
+                         "results": f"{results}/ — download(…) to fetch",
                          "run_records": f"{normed_dir}/runs/<stamp>/ (params.json, samples.csv, trace.txt, "
                                         f"report.html, timeline.html, nextflow.log)",
                          "manager_log": f"{normed_dir}/{record.name}-{job_id}.out"}
             code = "run_production.submitted"
         else:
-            from agent import mcp_server as _ms
-            jm = _job_manager or _ms._job_manager
             launch = f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}"
             started = jm.start(command=launch, job_id=f"pipeline_{record.name}_{_stamp()}",
                                working_dir=normed_dir, tool="run_production_pipeline")
@@ -860,7 +910,7 @@ def run_production_pipeline(project_name: str,
                 return {**started, **placed}
             job_id = started.get("job_id", "")
             follow_up = {"poll": f"check_job(job_id={job_id!r}, wait_s=300)",
-                         "results": f"{normed_dir}/{effective.get('outdir', 'results')}/",
+                         "results": f"{results}/",
                          "run_records": f"{normed_dir}/runs/<stamp>/ (params.json, samples.csv, trace.txt, "
                                         f"report.html, timeline.html)"}
             code = "run_production.local_launched"

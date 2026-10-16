@@ -408,6 +408,7 @@ class JobManager:
                 "tool":            status.get("tool", ""),
                 "command":         (status.get("command") or "")[:120],
                 "env_name":        status.get("env_name", ""),
+                "working_dir":     status.get("working_dir", ""),
                 "start_time_iso":  status.get("start_time_iso"),
                 "elapsed_seconds": status.get("elapsed_seconds", 0.0),
             }

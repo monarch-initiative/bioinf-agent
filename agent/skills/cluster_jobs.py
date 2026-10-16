@@ -282,6 +282,12 @@ def cluster_job_status(project_name: str,
         if run_dir and not _ABS_SAFE_PATH_RE.match(run_dir):
             return refused("cluster.unsafe_run_dir", error=
                 f"run_dir {run_dir!r} is not an absolute safe path (refused before ssh)")
+        if run_dir:
+            # reading a run's log and trace back is a download from that directory
+            from agent.skills import transfer
+            transfer._validate_remote_abs_path(run_dir)
+            transfer._classify_zone_and_authorize(project=project, env=env, remote_abs_path=run_dir,
+                                                  op="download", primitive_name="download")
 
         started = time.monotonic()
         out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout)
