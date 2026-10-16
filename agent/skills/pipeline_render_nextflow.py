@@ -255,6 +255,9 @@ def _check_record(record: PipelineRecord) -> None:
                     f"param {p.name}: default {p.default!r} contains a single quote or a "
                     f"newline and cannot be written into main.nf; re-seal with a value "
                     f"free of both") from None
+    for c in record.samplesheet.columns:
+        _check_identifier(f"samples.csv column {c.name}", c.name,
+                          "rename the column in the samplesheet the sealed run read, and re-seal")
     for s in record.stages:
         _check_identifier(f"stage {s.name}: process name", s.name,
                           "pass stage_names= to derive_pipeline_record")

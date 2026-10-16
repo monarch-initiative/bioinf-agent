@@ -393,6 +393,13 @@ class TestNfQuote:
         with pytest.raises(ValueError):
             workflow_render._nf_quote("first\nsecond")
 
+    @pytest.mark.integration
+    def test_backslash_reads_back_as_written(self):
+        """Groovy single quotes process escapes: `'\\t'` is a tab, `'c\\d'` does not
+        compile. A doubled backslash reads back as the one written."""
+        assert workflow_render._nf_quote("a\\tb") == "'a\\\\tb'"
+        assert workflow_render._nf_quote("C:\\") == "'C:\\\\'"
+
 
 # ===========================================================================
 # Command-line discipline

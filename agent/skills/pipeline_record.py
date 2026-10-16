@@ -477,13 +477,13 @@ def _thread_slot(ph: str, values: list[str], declared: Mapping, caller_named: se
     """A placeholder declared `format: threads`, as a `cpus` param: every trial must
     bind one and the same positive whole number — the stage's CPU request needs ONE
     count, and a count is what a thread flag takes. Refuses, naming the remedy, when
-    the caller tried to make it a column or a params.yaml value instead."""
+    the caller tried to make it a column, a params.yaml value or a collected input."""
     if ph in caller_named:
         raise PipelineDerivationError(
             "pipeline.threads_kind",
             f"{ph} is declared `format: {THREADS_FORMAT}`, which binds it to the stage's CPU request; "
-            f"it cannot be a samplesheet column or a params.yaml value",
-            "drop it from per_sample= / shared=, or change the how-to input's format")
+            f"it cannot be a samplesheet column, a params.yaml value or a collected input",
+            "drop it from per_sample= / shared= / collect=, or change the how-to input's format")
     bad = sorted({v for v in values if not _COUNT_RE.match(v)})
     if bad:
         raise PipelineDerivationError(
@@ -508,13 +508,13 @@ def _sheet_slot(ph: str, values: list[str], declared: Mapping, caller_named: set
     """A placeholder declared `format: samplesheet`: the pipeline's own samples.csv,
     handed to the stage as a file. Every trial binds the sheet it was proven with;
     the render binds `params.samplesheet` instead. Refuses a caller who tried to make
-    it a column or a params.yaml value."""
+    it a column, a params.yaml value or a collected input."""
     if ph in caller_named:
         raise PipelineDerivationError(
             "pipeline.samplesheet_kind",
             f"{ph} is declared `format: {SAMPLESHEET_FORMAT}`, which binds it to the pipeline's own "
-            f"samplesheet; it cannot be a samplesheet column or a params.yaml value",
-            "drop it from per_sample= / shared=, or change the how-to input's format")
+            f"samplesheet; it cannot be a samplesheet column, a params.yaml value or a collected input",
+            "drop it from per_sample= / shared= / collect=, or change the how-to input's format")
     return PipelineParam(
         name=ph, kind="samplesheet", value_kind="path", default=values[0], source="usage_input",
         format=declared.get("format"), description=declared.get("description"), used_by=[],
@@ -657,6 +657,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     # ── params: shared vs per-sample ───────────────────────────────────────
     per_sample_set = set(per_sample or [])
     shared_set = set(shared or [])
+    caller_named = per_sample_set | shared_set | set(collected_set)
     unknown = (per_sample_set | shared_set) - set(in_placeholders)
     if unknown:
         raise PipelineDerivationError(
@@ -697,11 +698,11 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         v0 = values[0]
         fmt_declared = str((declared_inputs.get(ph) or {}).get("format") or "").lower()
         if fmt_declared == THREADS_FORMAT:
-            params.append(_thread_slot(ph, values, declared_inputs.get(ph) or {}, per_sample_set | shared_set))
+            params.append(_thread_slot(ph, values, declared_inputs.get(ph) or {}, caller_named))
             notes.append(f"{ph}: cpus ({params[-1].reason})")
             continue
         if fmt_declared == SAMPLESHEET_FORMAT:
-            params.append(_sheet_slot(ph, values, declared_inputs.get(ph) or {}, per_sample_set | shared_set))
+            params.append(_sheet_slot(ph, values, declared_inputs.get(ph) or {}, caller_named))
             notes.append(f"{ph}: samplesheet ({params[-1].reason})")
             continue
         if ph in collected_set:
@@ -1339,8 +1340,6 @@ def _attach_cohort(record: PipelineRecord, req: CohortRequest, *,
         resources=resources, env_names=env_names, sif_paths=sif_paths,
         compute_env=record.compute_env, modules=record.modules, local_runtime=None,
         samplesheet_files=samplesheet_files, index_files=index_files, _collected=req.collect)
-    undeclared = [i.name for i in sub.params if i.name in req.collect and i.kind != "collected"]
-    assert not undeclared
     missing = sorted(set(req.collect) - {p.name for p in sub.params})
     if missing:
         raise PipelineDerivationError(
