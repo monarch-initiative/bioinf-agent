@@ -25,7 +25,8 @@ from typing import Any, Optional
 # config too, and the cost of going through `_ms.` is one attribute lookup.
 from agent import mcp_server as _ms
 from agent.models.core_data import (executed_commands as _executed_commands, key_packages as _key_packages,
-                                    validated_in_shipped_image as _validated_in_shipped_image)
+                                    validated_in_shipped_image as _validated_in_shipped_image,
+                                    is_script_path as _is_script_path)
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
 from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import broke, degraded, proven, refused  # terminal outcome tags
@@ -1224,13 +1225,20 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     return _ms._pipeline_state.patch(pipeline_id, patches)
 
 
+#: The largest file whose full text an authored-artifact record keeps: a script up to
+#: this size is carried verbatim into a rendered pipeline's bin/.
+SPEC_FULL_LIMIT = 65536
+
+
 def record_generated_artifact(pipeline_id: str, path: str, role: str,
                               description: str, generated_by: str,
                               language: str = "") -> tuple[Optional[int], dict]:
     """THE one construction of a generated_by-mode authored-artifact record.
 
     Reads the existing file at `path`, builds the artifact dict (sha256 anchor, size,
-    binary preview excerpt, genesis command) and merges it into the draft. Returns
+    genesis command, and, for a script of UTF-8 text up to 64 KiB, its full text as
+    content mode keeps it, so a render carries it into bin/; any other file gets a
+    binary preview and stays a path input) and merges it into the draft. Returns
     (artifact_index | None-for-unknown-pipeline, artifact). Raises OSError if the file
     cannot be read — callers stage files they just observed on disk.
 
@@ -1242,6 +1250,10 @@ def record_generated_artifact(pipeline_id: str, path: str, role: str,
     """
     p = Path(path)
     raw = p.read_bytes()
+    try:
+        text = raw.decode("utf-8") if _is_script_path(path) and len(raw) <= SPEC_FULL_LIMIT else None
+    except UnicodeDecodeError:
+        text = None
     artifact = {
         "path":        str(p),
         "role":        role,
@@ -1249,8 +1261,8 @@ def record_generated_artifact(pipeline_id: str, path: str, role: str,
         "sha256":      hashlib.sha256(raw).hexdigest(),
         "size_bytes":  len(raw),
         "created_at":  datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "content_excerpt": f"<binary; first 64 bytes hex: {raw[:64].hex()}>",
-        "content_full_in_spec": False,
+        "content_excerpt": text if text is not None else f"<binary; first 64 bytes hex: {raw[:64].hex()}>",
+        "content_full_in_spec": text is not None,
         "generated_by": generated_by,
     }
     if language:
@@ -1289,15 +1301,20 @@ def stage_authored_artifact(
       generated_by mode — supply `generated_by` (the shell command you ran),
                           with the file already on disk at `path`. The runtime
                           records the command as the genesis and sha256s the
-                          bytes. Use for a small fixture you produced (a staged
-                          BAM slice, a pickled model). A reference you downloaded
+                          bytes, keeping a script's full text (up to 64 KiB)
+                          as content mode does. Use for a small fixture you
+                          produced (a staged BAM slice, a pickled model) or an
+                          existing script run unchanged (`cp <script> <path>`
+                          as the genesis), so it is never re-sent as text.
+                          A reference you downloaded
                           or BUILT — an index, an annotation, a reference subset,
                           any directory — is a reference database instead:
                           download_reference_database(name, url) or
                           download_reference_database(name, url="", local_path=…).
 
-    At render, a content-mode script is carried into the pipeline's bin/; a
-    generated_by file bound to a step input stays a path input pinned by sha256.
+    At render, a file whose full text the record keeps (any content-mode file, or a
+    generated_by script up to 64 KiB) is carried into the pipeline's bin/; any other
+    file bound to a step input stays a path input pinned by sha256.
 
     Honesty effect:
       - Path is added to the I8 universe of external sources, so downstream
@@ -1390,8 +1407,7 @@ def stage_authored_artifact(
     sha256 = hashlib.sha256(raw).hexdigest()
     size_bytes = len(raw)
 
-    # Embed the full text up to ~64 KiB; otherwise an excerpt.
-    SPEC_FULL_LIMIT = 65536
+    # Embed the full text up to SPEC_FULL_LIMIT; otherwise an excerpt.
     if size_bytes <= SPEC_FULL_LIMIT:
         excerpt = content
         content_full_in_spec = True

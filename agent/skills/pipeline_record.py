@@ -678,8 +678,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         notes.append(f"{ph}: {kind} ({why})")
     # a shared path that is an authored artifact of the workflow is either a SCRIPT —
     # its full text in the record, carried verbatim into bin/, the param defaulting to
-    # that relative path — or an authored DATA file (staged with generated_by, or too
-    # large to carry): that stays a path input, anchored by the record's sha256. A
+    # that relative path — or an authored DATA file (or a script too large to carry):
+    # that stays a path input, anchored by the record's sha256. A
     # script-suffixed path the seal only excerpted is the one shape refused: the render
     # cannot carry a script it does not have.
     scripts: list[PipelineScript] = []
@@ -700,7 +700,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                     "pipeline.script_not_carried",
                     f"{p.name} names the authored script {p.default}, but the sealed record does not carry "
                     f"its full text (size {art.get('size_bytes')} bytes)",
-                    "stage scripts under 64 KiB in content mode so the seal carries them verbatim")
+                    "stage scripts under 64 KiB (content mode, or generated_by for a script "
+                    "already on disk) so the seal carries them verbatim")
             bn = Path(p.default).name
             p.source = f"authored_artifact:{bn}"
             p.reason += "; an authored data file, kept as a path input and pinned by its sha256"

@@ -330,10 +330,11 @@ class AuthoredArtifact(BaseModel):
                         writes the file AND records the verbatim content in
                         the spec so a reviewer can audit what the agent
                         authored.
-      generated_by    — file is binary or large (BAM, FASTA, indexed db) and
-                        was produced by a shell command the agent ran. The
-                        primitive records the genesis command instead of the
-                        bytes.
+      generated_by    — the file was produced by a shell command the agent
+                        ran (a BAM slice, an index, an existing script copied
+                        in). The primitive records the genesis command; a
+                        script's text is kept as in content mode, any other
+                        file's bytes are not.
 
     In both cases the runtime computes sha256(file_on_disk) at stage-time;
     finalize re-computes and refuses to write the spec if it has drifted.
@@ -347,9 +348,9 @@ class AuthoredArtifact(BaseModel):
     size_bytes:            int
     created_at:            str
     language:              Optional[str] = None   # hint: "r", "python", "bash", "tsv", "json", ...
-    content_excerpt:       Optional[str] = None   # first N bytes for human review (text mode)
+    content_excerpt:       Optional[str] = None   # the text (content mode, a generated_by script) or a preview
     content_full_in_spec:  bool = False           # True if content fit fully in spec
-    generated_by:          Optional[str] = None   # shell command that produced the file (binary mode)
+    generated_by:          Optional[str] = None   # shell command that produced the file (generated_by mode)
 
 
 # ---------------------------------------------------------------------------
