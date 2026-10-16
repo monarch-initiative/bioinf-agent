@@ -448,6 +448,11 @@ def _value_check(record: PipelineRecord, effective: Mapping[str, str], rows: lis
                 ran_with.setdefault(slot, set()).add(str(value))
     if not ran_with:
         return {"status": "unrecorded", "unproven": []}
+    # a column a stage reads through the samplesheet ran with the sealed sheet's own values
+    if record.samplesheet.rows_from == "proven":
+        for c in record.samplesheet.columns:
+            if c.read_by and c.placeholder == c.name:
+                ran_with.setdefault(c.name, {r.get(c.name, "") for r in record.samplesheet.rows})
     bound = {p.name: {effective.get(p.name.lower(), "")} for p in record.params
              if p.kind == "shared" and p.value_kind == "value"}
     bound |= {c.placeholder: {r.get(c.name, "") for r in rows} for c in record.samplesheet.columns

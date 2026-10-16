@@ -335,3 +335,38 @@ def sealed_tree_spec(samples: Optional[list[str]] = None):
         "envs": [{"request_key": REQUEST_KEY, "image": f"monarch_phenologs@{DIGEST}", "image_digest": DIGEST}],
     }
     return WorkflowSpec.model_validate(spec)
+
+
+def probe_spec(templates: list[str], trials: list[tuple[str, dict]], outputs: list[dict], *,
+               inputs: Optional[list[dict]] = None, step_outputs=None):
+    """A small sealed spec for one how-to shape: `trials` are (name, substitutions
+    without OUTPUT_DIR); every template ran once per trial in one image, writing what
+    `step_outputs(template index, run dir, substitutions)` returns. For pinning a
+    derivation edge without the rnaseq chain around it."""
+    from agent.models.core_data import WorkflowSpec, fill_slots
+    steps, proven = [], []
+    for name, subs in trials:
+        run = f"/runs/{name}"
+        s = dict(subs, OUTPUT_DIR=run)
+        for ti, t in enumerate(templates):
+            outs = step_outputs(ti, run, s) if step_outputs else []
+            steps.append(_step(t.split()[0], fill_slots(t, s), [], outs, wall=1.0, rss=10.0))
+        scratch = f"/scratch/i4/{name}"
+        ts = dict(subs, OUTPUT_DIR=scratch)
+        proven.append({"name": name, "ok": True, "commands_run": [fill_slots(t, ts) for t in templates],
+                       "substitutions": ts, "output_slots": ["OUTPUT_DIR"],
+                       "produced_files": [], "validation_results": []})
+    for n, st in enumerate(steps, 1):
+        st["step"] = n
+    return WorkflowSpec.model_validate({
+        "workflow_name": "probe_wf", "description": "probe", "created_at": "2026-10-16T00:00:00+00:00",
+        "env_request_key": REQUEST_KEY, "env_content_digest": "sha256:c", "env_image": f"x@{DIGEST}",
+        "pipeline_status": "fully_validated", "usage_verified": True,
+        "usage_verification": {"status": "verified", "reason": "", "locus": "native",
+                               "trial_count": len(proven), "passed": len(proven), "trials": proven},
+        "validated_in_shipped_image": True,
+        "usage": {"description": "probe", "command_template": templates, "inputs": inputs or [],
+                  "outputs": outputs,
+                  "trials": [{"name": n, "substitutions": dict(s, OUTPUT_DIR=f"/out/{n}")} for n, s in trials]},
+        "pipeline_steps": steps,
+        "envs": [{"request_key": REQUEST_KEY, "image": f"x@{DIGEST}", "image_digest": DIGEST}]})

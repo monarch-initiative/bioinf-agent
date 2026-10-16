@@ -533,3 +533,18 @@ class TestRealNextflow:
         params = json.loads((runs[-1] / "params.json").read_text())
         assert params["merge_script"] == "bin/merge_counts.R" and params["design"] == "condition"
         assert (runs[-1] / "samples.csv").read_text().splitlines()[0] == "sample,reads,donor,condition"
+
+
+def test_a_launch_names_a_sheet_value_the_sealed_run_never_had(monkeypatch):
+    """`condition` reaches DESeq2 through the samplesheet, not a placeholder, so the
+    values it ran with are the sealed sheet's own: a launch with another is a run the
+    shipped how-to was not proven on, and says so."""
+    from agent.skills import run_production
+    rec = _composed()
+    specs = {rec.sealed_workflow_path: sealed_rnaseq_spec(SAMPLES), DE_PATH: sealed_deseq2_spec()}
+    monkeypatch.setattr(run_production, "_load_spec", lambda path: (specs[path], None))
+    ran = sorted({r["condition"] for r in rec.samplesheet.rows})
+    same = run_production._value_check(rec, {}, [dict(r) for r in rec.samplesheet.rows])
+    assert not any(u["param"] == "condition" for u in same["unproven"]), same
+    other = run_production._value_check(rec, {}, [{**r, "condition": "knockout"} for r in rec.samplesheet.rows])
+    assert {"param": "condition", "values": ["knockout"], "proven": ran} in other["unproven"], other

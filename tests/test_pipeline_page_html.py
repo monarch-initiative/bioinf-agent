@@ -249,7 +249,7 @@ def _key_sheet(*samples: str) -> pr.Samplesheet:
     return pr.Samplesheet(
         columns=[pr.SamplesheetColumn(name="sample", placeholder="SAMPLE", value_kind="value", format=None,
                                       description="the row key: it tags every task and names results/<sample>/",
-                                      read_by=[])],
+                                      read_by=[], index_files=[])],
         rows=[{"sample": s} for s in samples], rows_from="proven")
 
 
@@ -264,7 +264,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
              10: [9], 11: [10, 0]}
     params = {p: pr.PipelineParam(name=p, kind="shared", value_kind="path", default=f"/data/{p.lower()}",
                                   source="literal", format=None, description=None, used_by=[],
-                                  reason="synthetic") for p in P}
+                                  reason="synthetic", index_files=[]) for p in P}
     stages = []
     for i, name in enumerate(S):
         uses = sorted({P[i % n_params], P[(i * 5 + 1) % n_params], P[(i * 7 + 3) % n_params]})
