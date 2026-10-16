@@ -388,9 +388,11 @@ def run_production_pipeline(project_name: str,
       samplesheet  local CSV, one row per sample, with the columns the pipeline reads
                    (`sample` first; paths absolute AT THE LOCUS). Required on the first
                    launch into a run_dir; omit on a re-launch.
-      params       {params.yaml key: value} for this run only — on the launch line, so it
-                   wins over params.yaml. A path, a word or a number.
-      walltime     the manager job's SLURM time for this submission (`sbatch --time=…`).
+      params       {params.yaml key: value}, written into the run directory's params.yaml
+                   before the launch, so the directory says what runs there and a later
+                   launch, by this tool or by hand, runs the same. A path, a word or a number.
+      walltime     the manager job's SLURM time, written into the run directory's launcher.sh.
+                   ssh envs only.
 
     Returns `{success, locus, pipeline, run_dir, job_id, samplesheet, params, launch,
     manifest_path, reference_check, follow_up, …}`; refusals name their remedy.

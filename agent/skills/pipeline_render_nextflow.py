@@ -858,6 +858,22 @@ def _yaml_line(key: str, value: Any) -> str:
                           allow_unicode=True).rstrip("\n")
 
 
+#: What Nextflow's YAML reader (SnakeYAML) takes as a float — `1e-5` included, which
+#: PyYAML leaves a string — and would hand the command respelled (`1.0E-5`).
+_NF_FLOAT_RE = re.compile(r"^[-+]?(\.[0-9]+|[0-9_]+(\.[0-9_]*)?)([eE][-+]?[0-9]+)?$")
+
+
+def params_yaml_line(key: str, value: str) -> str:
+    """One params.yaml line that Nextflow reads back as the value written: an integer
+    as a number; a float-shaped value (`1e-5`) or a word YAML would take as something
+    else (`yes`) quoted, so the command gets the text, never a respelling."""
+    if _INT_RE.match(value):
+        return _yaml_line(key, int(value))
+    if _NF_FLOAT_RE.match(value):
+        return f"{key}: '{value}'"
+    return _yaml_line(key, value)
+
+
 def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
     L = [f"# rendered from sealed workflow {record.sealed_workflow} (pipeline {record.name}) — "
          f"edit this file and samples.csv, not main.nf",
@@ -867,10 +883,7 @@ def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
         if p.kind != "shared":
             continue                                  # a samplesheet column or a thread slot
         L.append(f"# {_param_comment(record, p)}")
-        if p.default is not None and _INT_RE.match(p.default):
-            L.append(_yaml_line(p.name.lower(), int(p.default)))
-        else:
-            L.append(_yaml_line(p.name.lower(), p.default or ""))
+        L.append(params_yaml_line(p.name.lower(), p.default or ""))
     cols = ", ".join(c.name for c in record.samplesheet.columns)
     L.append(f"# The samplesheet: one row per sample, columns {cols}.")
     L.append(_yaml_line(*SAMPLESHEET_PARAM))
@@ -914,8 +927,9 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
           "# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,",
           "# report.html, timeline.html, nextflow.log), never overwritten; this job's .out file is",
           "# the manager's log.",
-          '# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for',
-          "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>",
+          '# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow: a value there',
+          "# wins over params.yaml for that one run only (sbatch launcher.sh --<param> <value>); to",
+          "# change what this directory runs, edit params.yaml.",
           RUN_HPC_NEXTFLOW,
           "",
           "# Work directories are never cleaned for you. Once the published outputs are where",

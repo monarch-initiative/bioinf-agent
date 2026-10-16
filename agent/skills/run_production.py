@@ -28,6 +28,7 @@ from __future__ import annotations
 import csv
 import glob
 import os
+import base64
 import re
 import shlex
 import shutil
@@ -45,16 +46,20 @@ from agent.skills.outcomes import proven, refused, broke, degraded
 from agent.skills.pipeline_record import PipelineRecord, load_pipeline_record
 from agent.skills.pipeline_render import (MANIFEST_PATH, RECORD_PATH, SAMPLESHEET_FILENAME,
                                           _edited_since_render, parse_manifest)
-from agent.skills.pipeline_render_nextflow import RUN_LOCAL, SAMPLESHEET_PARAM
+from agent.skills.pipeline_render_nextflow import RUN_LOCAL, SAMPLESHEET_PARAM, params_yaml_line
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
-#: A value handed to Nextflow on the launch line: a path, a word, a number. Every character
-#: is one `shlex.quote` leaves bare, so the line reads as written on both loci.
+#: A params= value: a path, a word, a number. Nextflow pastes params into the pipeline's
+#: shell commands, so a value never carries a character a shell would act on.
 _VALUE_RE = re.compile(r"^[A-Za-z0-9_./+:,=@%-]{1,4096}$")
 #: A SLURM walltime: minutes, M:S, H:M:S, D-H, D-H:M, D-H:M:S.
 _WALLTIME_RE = re.compile(r"^(\d+|\d+:\d{2}|\d+:\d{2}:\d{2}|\d+-\d+|\d+-\d+:\d{2}|\d+-\d+:\d{2}:\d{2})$")
 _SAMPLE_KEY = "sample"
 _PARAMS_FILE = "params.yaml"
+_LAUNCHER = "launcher.sh"
+#: What a launch reads of a run directory beyond which files are there: the manifest
+#: that names its render, and the two files a launch's params= and walltime= go into.
+_RUN_TEXTS = (MANIFEST_PATH, _PARAMS_FILE, _LAUNCHER)
 _REMOTE_CHECK_CHUNK = 400
 
 
@@ -110,42 +115,71 @@ def _carried_files(pdir: Path, manifest: Mapping[str, str]) -> list[str]:
     return rels
 
 
-def _params_file(pdir: Path) -> dict:
-    """params.yaml as the run will read it — the file, not the record, because the file
-    is the one a person edits after the render."""
+def _parse_params(text: str, where: str) -> dict:
+    """params.yaml's values, as text — the file, not the record, because the file is
+    the one a person edits after the render."""
     try:
-        raw = yaml.safe_load((pdir / _PARAMS_FILE).read_text()) or {}
+        raw = yaml.safe_load(text) or {}
     except Exception as e:
         raise _refuse("run_production.params_unreadable",
-                      f"{pdir / _PARAMS_FILE} is not valid YAML: {type(e).__name__}: {str(e)[:200]}",
+                      f"{where} is not valid YAML: {type(e).__name__}: {str(e)[:200]}",
                       remedy="fix the file; it is read as `-params-file`")
     if not isinstance(raw, dict):
-        raise _refuse("run_production.params_unreadable", f"{pdir / _PARAMS_FILE} is not a mapping",
+        raise _refuse("run_production.params_unreadable", f"{where} is not a mapping",
                       remedy="one `key: value` per line")
     return {str(k): ("" if v is None else str(v)) for k, v in raw.items()}
 
 
-def _effective_params(pdir: Path, overrides: Optional[Mapping]) -> tuple[dict[str, str], list[str]]:
-    """{params.yaml key: value} as the run will see it — the file's values under the
-    caller's overrides — and the launch-line tokens that carry the overrides."""
-    effective = _params_file(pdir)
-    allowed = set(effective) - {SAMPLESHEET_PARAM[0]}
-    tokens: list[str] = []
+def _check_params(overrides: Optional[Mapping], text: str, where: str) -> None:
+    """Refuse a params= key the pipeline lacks, or a value that is not a path, a word
+    or a number — before anything is asked of the env."""
+    allowed = set(_parse_params(text, where)) - {SAMPLESHEET_PARAM[0]}
     for key, value in (overrides or {}).items():
-        k = str(key)
+        k, sv = str(key), str(value)
         if k not in allowed:
             raise _refuse("run_production.unknown_param", f"{k!r} is not a parameter of this pipeline",
                           params=sorted(allowed),
                           remedy=f"params= takes the keys of {_PARAMS_FILE}; the samplesheet is always "
                                  f"{SAMPLESHEET_FILENAME} in the run directory")
-        sv = str(value)
         if not _VALUE_RE.match(sv):
             raise _refuse("run_production.unsafe_param_value",
-                          f"params[{k!r}] holds characters the launch line cannot carry: {sv[:80]!r}",
-                          remedy=f"a path, a word or a number; edit {_PARAMS_FILE} in the run directory for anything else")
-        effective[k] = sv
-        tokens += [f"--{k}", sv]
-    return effective, tokens
+                          f"params[{k!r}] is not a path, a word or a number: {sv[:80]!r}",
+                          remedy=f"edit {_PARAMS_FILE} in the run directory for anything else")
+
+
+def _with_params(text: str, overrides: Optional[Mapping], where: str) -> tuple[str, dict]:
+    """params.yaml with each override written onto its key's own line, every other
+    line (comments included) as it was, and the values it then holds. A key that is
+    not on one `key: value` line of its own is refused, as is a file that does not
+    read back each override as written."""
+    _check_params(overrides, text, where)
+    lines = text.splitlines(keepends=True)
+    for key, value in (overrides or {}).items():
+        k = str(key)
+        at = [i for i, line in enumerate(lines) if line.split(":", 1)[0] == k]
+        if len(at) == 1:
+            lines[at[0]] = params_yaml_line(k, str(value)) + "\n"
+        try:
+            reads_back = len(at) == 1 and _parse_params("".join(lines), where).get(k) == str(value)
+        except _Refusal:
+            reads_back = False          # the line was part of a longer value: the edit broke it
+        if not reads_back:
+            raise _refuse("run_production.param_line_not_found",
+                          f"{where} does not hold {k!r} on one `{k}: value` line of its own",
+                          remedy=f"set it in {where} by hand, or launch without params[{k!r}]")
+    return "".join(lines), _parse_params("".join(lines), where)
+
+
+_TIME_LINE_RE = re.compile(r"(?m)^#SBATCH --time=(\S*)")
+
+
+def _with_walltime(launcher: str, walltime: str, where: str) -> str:
+    """launcher.sh with the manager job's time limit set to `walltime`."""
+    text, n = _TIME_LINE_RE.subn(f"#SBATCH --time={walltime}", launcher, count=1)
+    if not n:
+        raise _refuse("run_production.launcher_without_time", f"{where} has no `#SBATCH --time=` line",
+                      remedy=f"add one to {where} by hand, or launch without walltime=")
+    return text
 
 
 def _read_samplesheet(path: str, record: PipelineRecord) -> tuple[list[str], list[dict]]:
@@ -475,13 +509,18 @@ def _disclose(result: dict, reference_check: Mapping) -> dict:
 
 def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: int) -> dict:
     """What `run_dir` holds on the cluster: whether it exists, which of the carried
-    files `rels` it lacks, whether it holds a samplesheet, and the manifest text if
-    there is one. One ssh hop."""
+    files `rels` it lacks, whether it holds a samplesheet, and the text of each of
+    `_RUN_TEXTS` there ("" when absent). One ssh hop."""
     q = shlex.quote
     script = (f'[ -e {q(run_dir)} ] && echo EXISTS=1 || echo EXISTS=0; '
               + "".join(f'[ -e {q(run_dir + "/" + rel)} ] || echo {q("MISSING=" + rel)}; ' for rel in rels)
               + f'[ -e {q(run_dir + "/" + SAMPLESHEET_FILENAME)} ] && echo SHEET=1 || echo SHEET=0; '
-              f'echo MANIFEST_BEGIN; cat {q(run_dir + "/" + MANIFEST_PATH)} 2>/dev/null; echo MANIFEST_END')
+              # `echo` after `cat` ends a file that has no last newline before the END line
+              + "".join(f'echo {q("BEGIN " + rel)}; cat {q(run_dir + "/" + rel)} 2>/dev/null; echo; '
+                        f'echo {q("END " + rel)}; ' for rel in _RUN_TEXTS)
+              # the run's own jobs the scheduler still holds: sbatch ran in run_dir
+              + f"squeue -h -u \"$USER\" -o '%i %T %Z' 2>/dev/null | "
+                f"awk -v d={q(run_dir)} '$3 == d {{print \"LIVE=\" $1 \" \" $2}}'")
     argv = _ssh_argv(env, f"bash -lc {q(script)}")
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     if res.returncode != 0:
@@ -490,13 +529,43 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
                              error=f"could not inspect {run_dir} on the cluster (rc={res.returncode}): "
                                    f"{(res.stderr or '').strip()[:300]}", **({"hint": hint} if hint else {})))
     lines = (res.stdout or "").splitlines()
-    manifest = ""
-    if "MANIFEST_BEGIN" in lines and "MANIFEST_END" in lines:
-        a, b = lines.index("MANIFEST_BEGIN"), lines.index("MANIFEST_END")
-        manifest = "\n".join(lines[a + 1:b]).strip()
+    texts = {}
+    for rel in _RUN_TEXTS:
+        a, b = lines.index(f"BEGIN {rel}"), lines.index(f"END {rel}")
+        texts[rel] = "\n".join(lines[a + 1:b])
     return {"exists": "EXISTS=1" in lines,
             "missing": [ln[len("MISSING="):] for ln in lines if ln.startswith("MISSING=")],
-            "samplesheet": "SHEET=1" in lines, "manifest": manifest}
+            "samplesheet": "SHEET=1" in lines, "texts": texts,
+            "live": [ln[len("LIVE="):] for ln in lines if ln.startswith("LIVE=")]}
+
+
+def _local_run_dir_state(run_dir: Path, rels: list[str]) -> dict:
+    """`_remote_run_dir_state`, for a run directory on this machine."""
+    return {"exists": run_dir.exists(), "missing": [rel for rel in rels if not (run_dir / rel).is_file()],
+            "samplesheet": (run_dir / SAMPLESHEET_FILENAME).is_file(),
+            "texts": {rel: (run_dir / rel).read_text() if (run_dir / rel).is_file() else ""
+                      for rel in _RUN_TEXTS},
+            "live": []}
+
+
+def _write_remote(env: dict, run_dir: str, texts: Mapping[str, str], *, timeout: int) -> None:
+    """Rewrite files of a run directory on the cluster, in one ssh hop: each sent as
+    base64 (one line, so any login shell passes it intact), written beside the file
+    and moved over it, so a failed write never leaves a file half written."""
+    if not texts:
+        return
+    q = shlex.quote
+    script = " && ".join(
+        f"printf %s {base64.b64encode(text.encode()).decode()} | base64 -d > {q(path + '.tmp')} && "
+        f"mv {q(path + '.tmp')} {q(path)} && echo {q('WROTE=' + rel)}"
+        for rel, text in texts.items() for path in [f"{run_dir}/{rel}"])
+    res = subprocess.run(_ssh_argv(env, f"bash -lc {q(script)}"), capture_output=True, text=True, timeout=timeout)
+    if res.returncode != 0:
+        wrote = [ln[len("WROTE="):] for ln in (res.stdout or "").splitlines() if ln.startswith("WROTE=")]
+        raise _Refusal(broke("run_production.config_write_failed",
+                             error=f"could not rewrite {sorted(set(texts) - set(wrote))} in {run_dir} "
+                                   f"(rc={res.returncode}): {(res.stderr or '').strip()[:300]}",
+                             rewritten=wrote))
 
 
 def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: str) -> bool:
@@ -504,6 +573,12 @@ def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: st
     copied); False when it does not exist yet (the first launch creates it). Anything
     else is refused, so a launch never writes over files it did not put there, and
     never starts in a directory its first copy did not finish."""
+    manifest = state["texts"][MANIFEST_PATH].strip()
+    if state["live"]:
+        raise _refuse("run_production.run_in_progress",
+                      f"{run_dir} has a run the scheduler still holds (job, state: {state['live']}); a second "
+                      f"launch would change what it runs or race it for the directory",
+                      remedy="wait for it (cluster_job_status(…, wait_s=300)) or cancel it, then launch again")
     if "main.nf" in state["missing"]:
         if state["exists"]:
             raise _refuse("run_production.run_dir_exists",
@@ -514,7 +589,7 @@ def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: st
                           f"{run_dir} holds no run yet and no samplesheet was given",
                           remedy="samplesheet=<local CSV>: one row per sample; it becomes the run's samples.csv")
         return False
-    if state["manifest"] and state["manifest"].strip() != ours.strip():
+    if manifest and manifest != ours.strip():
         raise _refuse("run_production.run_dir_holds_another_render",
                       f"{run_dir} already holds a pipeline that is not this render",
                       remedy="use a new run directory, or re-render the pipeline that lives there")
@@ -536,28 +611,32 @@ def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: st
     return True
 
 
-def _place_run_files(pdir: Path, rels: list[str], samplesheet: str, run_dir: Path) -> list[str]:
+def _place_run_files(pdir: Path, rels: list[str], samplesheet: str, run_dir: Path,
+                     texts: Mapping[str, str]) -> list[str]:
     """Create `run_dir` with a run's first contents: every carried file (copied with
-    its mode, so the render's scripts stay executable) and the samplesheet as
-    samples.csv. Returns their relative paths."""
+    its mode, so the render's scripts stay executable; a file in `texts` then holds
+    that text instead) and the samplesheet as samples.csv. Returns their relative paths."""
     sources = [(rel, pdir / rel) for rel in rels] + [(SAMPLESHEET_FILENAME, Path(samplesheet))]
     for rel, src in sources:
         dst = run_dir / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
+    for rel, text in texts.items():
+        (run_dir / rel).write_text(text)
     return [rel for rel, _ in sources]
 
 
 def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir: str, pdir: Path,
-                        rels: list[str], samplesheet: str, access_path: Optional[str], timeout: int) -> dict:
+                        rels: list[str], samplesheet: str, reused: bool, changed: Mapping[str, str],
+                        access_path: Optional[str], timeout: int) -> dict:
+    if reused:
+        _write_remote(env, run_dir, changed, timeout=timeout)
+        return {"reused": True, "files_uploaded": [], "files_rewritten": sorted(changed)}
     # The run directory is assembled here and sent as ONE transfer, which creates it on
     # the cluster, and only there, under the path the project is authorized to write.
-    state = _remote_run_dir_state(env, run_dir, rels, timeout=timeout)
-    if _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=run_dir, samplesheet=samplesheet):
-        return {"reused": True, "files_uploaded": []}
     staged = Path(tempfile.mkdtemp(prefix="run_", dir=transfer.staging_dir("cluster_render_staging")))
     tree = staged / "run"     # made with the usual mode; mkdtemp's 0700 would travel with `scp -p`
-    placed = _place_run_files(pdir, rels, samplesheet, tree)
+    placed = _place_run_files(pdir, rels, samplesheet, tree, changed)
     up = transfer.upload(project_name=project_name, compute_env_name=env_name, local_path=str(tree),
                          remote_abs_path=run_dir, access_path=access_path, timeout=timeout)
     if "error" in up:
@@ -572,19 +651,15 @@ def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir:
     return {"reused": False, "files_uploaded": [f"{run_dir}/{rel}" for rel in placed]}
 
 
-def _materialize_local(*, run_dir: str, pdir: Path, rels: list[str], samplesheet: str) -> dict:
+def _materialize_local(*, run_dir: str, pdir: Path, rels: list[str], samplesheet: str, reused: bool,
+                       changed: Mapping[str, str]) -> dict:
     rd = Path(run_dir)
-    if rd.resolve() == pdir.resolve():
-        raise _refuse("run_production.run_dir_is_the_template",
-                      f"{run_dir} is the rendered template itself; a run lives in its own directory",
-                      remedy="make a new directory for the run; the template stays a template")
-    manifest_here = rd / MANIFEST_PATH
-    state = {"exists": rd.exists(), "missing": [rel for rel in rels if not (rd / rel).is_file()],
-             "samplesheet": (rd / SAMPLESHEET_FILENAME).is_file(),
-             "manifest": manifest_here.read_text() if manifest_here.is_file() else ""}
-    if _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=run_dir, samplesheet=samplesheet):
-        return {"reused": True, "files_copied": []}
-    return {"reused": False, "files_copied": [str(rd / rel) for rel in _place_run_files(pdir, rels, samplesheet, rd)]}
+    if reused:
+        for rel, text in changed.items():
+            (rd / rel).write_text(text)
+        return {"reused": True, "files_copied": [], "files_rewritten": sorted(changed)}
+    return {"reused": False,
+            "files_copied": [str(rd / rel) for rel in _place_run_files(pdir, rels, samplesheet, rd, changed)]}
 
 
 # ---------------------------------------------------------------------------
@@ -617,10 +692,11 @@ def run_production_pipeline(project_name: str,
     samplesheet: a local CSV, one row per sample, with the columns the pipeline reads
                  (`sample` first); it becomes the run's samples.csv. Required on the first
                  launch into a directory; refused on a re-launch.
-    params:      {params.yaml key: value} for this run only, passed on the launch line
-                 and so winning over params.yaml. A path, a word or a number.
-    walltime:    the manager job's SLURM time limit for this submission
-                 (`sbatch --time=…`), overriding the launcher's header. ssh envs only.
+    params:      {params.yaml key: value}, written into the run directory's params.yaml
+                 before the launch, so the directory says what runs in it and a later
+                 launch, by this tool or by hand, runs the same. A path, a word or a number.
+    walltime:    the manager job's SLURM time limit, written into the run directory's
+                 launcher.sh header the same way. ssh envs only.
     """
     try:
         if walltime and not _WALLTIME_RE.match(str(walltime)):
@@ -635,26 +711,49 @@ def run_production_pipeline(project_name: str,
                           f"compute env {compute_env_name!r} has type={env_type!r}; "
                           f"run_production_pipeline supports 'local' and 'ssh'")
         locus = "cluster" if env_type == "ssh" else "local"
+        if walltime and env_type != "ssh":
+            raise _refuse("run_production.walltime_on_local",
+                          "walltime= sets a cluster manager job's time limit; a local run has none",
+                          remedy="launch without walltime=")
 
         record, pdir, manifest, edited = _load_pipeline(pipeline)
         rels = _carried_files(pdir, manifest)
         normed_dir = submit_workflow._validate_workflow_dir(run_dir)
         zone = _authorize_run_dir(project, env, compute_env_name, normed_dir)
-        effective, tokens = _effective_params(pdir, params)
-        if env_type == "ssh" and walltime:
-            tokens_sbatch = [f"--time={walltime}"]
-        else:
-            tokens_sbatch = []
         if env_type == "ssh" and record.compute_env and record.compute_env != compute_env_name:
             raise _refuse("run_production.rendered_for_other_env",
                           f"the pipeline was rendered for compute env {record.compute_env!r}, not "
                           f"{compute_env_name!r}: its nextflow.config names that env's images and modules",
                           remedy=f"render_pipeline(…, env={compute_env_name!r}, name=…) for this env")
+        if env_type == "local" and Path(normed_dir).resolve() == pdir.resolve():
+            raise _refuse("run_production.run_dir_is_the_template",
+                          f"{normed_dir} is the rendered template itself; a run lives in its own directory",
+                          remedy="make a new directory for the run; the template stays a template")
 
         header: list[str] = []
         rows: list[dict] = []
         if samplesheet:
             header, rows = _read_samplesheet(samplesheet, record)
+        _check_params(params, (pdir / _PARAMS_FILE).read_text(), str(pdir / _PARAMS_FILE))
+
+        # ─── The run directory, and the configuration that runs there ──
+        # params= and walltime= are written into the run's own params.yaml and launcher.sh
+        # (a first launch's copies, or a re-launch's files in place), so the directory is
+        # the record of what runs in it.
+        state = (_remote_run_dir_state(env, normed_dir, rels, timeout=timeout) if env_type == "ssh"
+                 else _local_run_dir_state(Path(normed_dir), rels))
+        reused = _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=normed_dir,
+                                  samplesheet=samplesheet)
+        base = ({rel: state["texts"][rel] for rel in (_PARAMS_FILE, _LAUNCHER)} if reused
+                else {rel: (pdir / rel).read_text() for rel in (_PARAMS_FILE, _LAUNCHER)})
+        where = {rel: f"{normed_dir}/{rel}" if reused else str(pdir / rel) for rel in base}
+        params_text, effective = _with_params(base[_PARAMS_FILE], params, where[_PARAMS_FILE])
+        config = {_PARAMS_FILE: params_text,
+                  _LAUNCHER: (_with_walltime(base[_LAUNCHER], walltime, where[_LAUNCHER]) if walltime
+                              else base[_LAUNCHER])}
+        changed = {rel: text for rel, text in config.items() if text != base[rel]}
+        time_line = _TIME_LINE_RE.search(config[_LAUNCHER])
+
         shared, prefixes, cells = _bound_paths(record, effective, rows)
         # A prefix names a family of files (<prefix>*), never a file of its own.
         plain = sorted((set(shared.values()) - set(prefixes)) | set(cells))
@@ -682,15 +781,16 @@ def run_production_pipeline(project_name: str,
         if env_type == "ssh":
             placed = _materialize_remote(project_name=project_name, env=env, env_name=compute_env_name,
                                          run_dir=normed_dir, pdir=pdir, rels=rels, samplesheet=samplesheet,
-                                         access_path=access_path, timeout=timeout)
+                                         reused=reused, changed=changed, access_path=access_path,
+                                         timeout=timeout)
         else:
-            placed = _materialize_local(run_dir=normed_dir, pdir=pdir, rels=rels, samplesheet=samplesheet)
+            placed = _materialize_local(run_dir=normed_dir, pdir=pdir, rels=rels, samplesheet=samplesheet,
+                                        reused=reused, changed=changed)
 
         # ─── Launch ─────────────────────────────────────────────────────
         submitted_at = datetime.now(timezone.utc).isoformat()
         if env_type == "ssh":
-            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout,
-                                                sbatch_args=tokens_sbatch, script_args=tokens)
+            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout)
             if "error" in sb:
                 return {**sb, **placed}
             job_id = sb["job_id"]
@@ -705,8 +805,7 @@ def run_production_pipeline(project_name: str,
         else:
             from agent import mcp_server as _ms
             jm = _job_manager or _ms._job_manager
-            launch = f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}" + \
-                     "".join(f" {t}" for t in tokens)
+            launch = f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}"
             started = jm.start(command=launch, job_id=f"pipeline_{record.name}_{_stamp()}",
                                working_dir=normed_dir, tool="run_production_pipeline")
             if "error" in started:
@@ -729,8 +828,8 @@ def run_production_pipeline(project_name: str,
             "reused_run_dir": placed["reused"], **{k: v for k, v in placed.items() if k != "reused"},
             "samplesheet": ({"source": samplesheet, "rows": len(rows), "columns": header} if samplesheet
                             else {"source": f"{normed_dir}/{SAMPLESHEET_FILENAME} (already there)"}),
-            "params": effective, "params_overridden": {t[2:]: v for t, v in zip(tokens[::2], tokens[1::2])},
-            "walltime": walltime or None, "launch": launch,
+            "params": effective, "params_overridden": {str(k): str(v) for k, v in (params or {}).items()},
+            "walltime": (time_line.group(1) if time_line and env_type == "ssh" else None), "launch": launch,
             "edited_since_render": edited, "reference_check": dict(reference_check),
             "submitted_at": submitted_at, "follow_up": follow_up,
         }

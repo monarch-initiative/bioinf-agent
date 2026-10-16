@@ -475,8 +475,9 @@ class TestLaunchRecord:
 
     def test_the_launcher_says_what_the_dollar_at_forwards_right_above_the_line_that_uses_it(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
-        assert ('# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for\n'
-                "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>\n"
+        assert ('# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow: a value there\n'
+                "# wins over params.yaml for that one run only (sbatch launcher.sh --<param> <value>); to\n"
+                "# change what this directory runs, edit params.yaml.\n"
                 + RUN_HPC_NEXTFLOW + "\n") in sh
 
     def test_the_launcher_takes_the_run_stamp_itself_and_points_nextflows_log_into_the_run_dir(self):

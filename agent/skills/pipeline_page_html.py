@@ -886,8 +886,9 @@ def _run_local_section(record: PipelineRecord) -> str:
          [f"cd /path/to/{record.name}"]),
         (make, make_lines),
         ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
-         "re-runs only the stages whose inputs or parameters changed. A value for this run only goes after the "
-         f"line — <code>{_e(_override_example(record))}</code> — and wins over <code>params.yaml</code>. "
+         "re-runs only the stages whose inputs or parameters changed. A value after the line — "
+         f"<code>{_e(_override_example(record))}</code> — wins over <code>params.yaml</code> for that one run "
+         "only; to change what the directory runs, edit <code>params.yaml</code>. "
          "Nextflow's own log stays at <code>.nextflow.log</code> here; to file it with the run records as the "
          "launcher does, start with <code>nextflow -log runs/&lt;stamp&gt;/nextflow.log run … --run_stamp "
          "&lt;stamp&gt;</code>.",

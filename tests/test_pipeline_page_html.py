@@ -769,9 +769,10 @@ class TestRunLocally:
         assert "launcher.sh" not in cd                                  # the launcher is the cluster's
         assert make.startswith("Make <code>nextflow</code> available")
         assert run == ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
-                       "re-runs only the stages whose inputs or parameters changed. A value for this run only goes "
-                       "after the line — <code>--stranded &lt;value&gt;</code> — and wins over "
-                       "<code>params.yaml</code>. Nextflow's own log stays at <code>.nextflow.log</code> here; to "
+                       "re-runs only the stages whose inputs or parameters changed. A value after the line — "
+                       "<code>--stranded &lt;value&gt;</code> — wins over <code>params.yaml</code> for that one run "
+                       "only; to change what the directory runs, edit <code>params.yaml</code>. "
+                       "Nextflow's own log stays at <code>.nextflow.log</code> here; to "
                        "file it with the run records as the launcher does, start with <code>nextflow -log "
                        "runs/&lt;stamp&gt;/nextflow.log run … --run_stamp &lt;stamp&gt;</code>."
                        f"<pre>{RUN_LOCAL}</pre>")
