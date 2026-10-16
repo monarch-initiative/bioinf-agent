@@ -16,8 +16,9 @@ The file set
                      locally, the .sif on the cluster; per-stage resources; trace, report
                      and timeline under runs/<stamp>/, one directory per run
   params.yaml        the shared parameters with the sealed run's defaults, the
-                     samplesheet and the output directory — nothing about WHERE the
-                     pipeline runs; that is nextflow.config's
+                     samplesheet, the output directory and how outputs are published
+                     there — nothing about WHERE the pipeline runs; that is
+                     nextflow.config's
   samples.csv        `pipeline_record.render_samplesheet`, the ONE rendering; a CSV
                      cannot carry the leading comment the other files do (splitCsv
                      would read it as the header)
@@ -191,6 +192,10 @@ RUN_RECORD_BLOCK = """\
 #: and main.nf spell them. The page reads the same pair.
 SAMPLESHEET_PARAM = ("samplesheet", "samples.csv")
 OUTDIR_PARAM = ("outdir", "results")
+PUBLISH_MODE_PARAM = ("publish_dir_mode", "copy")
+#: What PUBLISH_MODE_PARAM says, in both files that set it.
+_PUBLISH_MODE_NOTE = ("How outputs are published: copy, or link (a hard link, so no second copy on disk; "
+                      "results/ and work/ must share a filesystem)")
 
 
 # ── refusals ────────────────────────────────────────────────────────────────
@@ -471,6 +476,8 @@ def _render_params_block(record: PipelineRecord, ctx: _Context) -> str:
                  + ("; a cohort stage publishes flat into it." if any(s.scope == "cohort" for s in record.stages)
                     else "."))
     lines.append(f"params.{OUTDIR_PARAM[0]} = {_nf_quote(OUTDIR_PARAM[1])}")
+    lines.append(f"// {_PUBLISH_MODE_NOTE}.")
+    lines.append(f"params.{PUBLISH_MODE_PARAM[0]} = {_nf_quote(PUBLISH_MODE_PARAM[1])}")
     return "\n".join(lines)
 
 
@@ -585,15 +592,21 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     # per task, and the strict parser refuses the string form outright.
     if not cohort:
         body.append("tag { meta.sample }")
-    if stage.outputs:
+    published = [o for o in stage.outputs if o.published]
+    if published:
         # One results directory per row, shared by every stage — the layout the sealed
-        # how-to ran in. Every artifact a stage writes is published; names are unique
-        # within a row by construction (the seal wrote them all into one working
-        # directory). `overwrite: true` because Nextflow's default is false on -resume:
-        # a stage re-executed after a parameter change must replace its stale
-        # published copy. A cohort stage publishes flat: it has no row.
+        # how-to ran in. What the how-to declares as its result is published; when the
+        # stage writes more, `saveAs` keeps to the output block's own names for it.
+        # Names are unique within a row by construction (the seal wrote them all into
+        # one working directory). `overwrite: true` because Nextflow's default is false
+        # on -resume: a stage re-executed after a parameter change must replace its
+        # stale published copy. A cohort stage publishes flat: it has no row.
         base = '{ "${params.outdir}" }' if cohort else '{ "${params.outdir}/${meta.sample}" }'
-        body.append(f"publishDir {base}, mode: 'copy', overwrite: true")
+        line = f"publishDir {base}, mode: params.{PUBLISH_MODE_PARAM[0]}, overwrite: true"
+        if len(published) < len(stage.outputs):
+            names = ", ".join(ctx.artifact_expr(stage, o.artifact) for o in published)
+            line += f",\n{_INDENT * 2}saveAs: {{ f -> {_DECLARED_FN}(f, [{names}]) ? f : null }}"
+        body.append(line)
     if stage.stage_in_copy:
         body.append("stageInMode 'copy'                       // this stage rewrites an artifact it consumed")
 
@@ -675,6 +688,22 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
     return "\n".join(lines)
 
 
+#: The helper a stage's `saveAs` asks; main.nf defines it when a stage publishes part,
+#: but not all, of what it writes.
+_DECLARED_FN = "declared"
+_DECLARED_DEF = "\n".join([
+    f"// {_DECLARED_FN}(name, results): whether a file a stage wrote is one of the results it publishes;",
+    "// `results` are the output block's own names, a glob where the sealed run named the file per row.",
+    f"def {_DECLARED_FN}(String name, List results) {{",
+    f"{_INDENT}results.any {{ r ->",
+    f"{_INDENT * 2}if (r.toString() == name) return true",
+    f"{_INDENT * 2}try {{ return java.nio.file.FileSystems.getDefault().getPathMatcher(\"glob:${{r}}\")"
+    ".matches(java.nio.file.Path.of(name)) }",
+    f"{_INDENT * 2}catch (java.util.regex.PatternSyntaxException e) {{ return false }}   // a name, not a glob",
+    f"{_INDENT}}}",
+    "}"])
+
+
 def _render_main(record: PipelineRecord, ctx: _Context) -> str:
     n_cohort = sum(1 for s in record.stages if s.scope == "cohort")
     how = ("each stage run once per samples.csv row" if not n_cohort else
@@ -691,6 +720,8 @@ def _render_main(record: PipelineRecord, ctx: _Context) -> str:
         _render_params_block(record, ctx),
         "",
     ]
+    if any(0 < sum(o.published for o in s.outputs) < len(s.outputs) for s in record.stages):
+        parts += [_DECLARED_DEF, ""]
     for s in record.stages:
         parts += [_render_process(record, s, ctx), ""]
     parts.append(_render_workflow_block(record, ctx))
@@ -909,6 +940,8 @@ def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
     L.append(_yaml_line(*SAMPLESHEET_PARAM))
     L.append("# Where published outputs land.")
     L.append(_yaml_line(*OUTDIR_PARAM))
+    L.append(f"# {_PUBLISH_MODE_NOTE}.")
+    L.append(_yaml_line(*PUBLISH_MODE_PARAM))
     return "\n".join(L) + "\n"
 
 

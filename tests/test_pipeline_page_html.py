@@ -275,7 +275,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
                                             artifact=f"artifact_{p:02d}.bam"))
         consumers = [S[j] for j, ps in preds.items() if i in ps and j < n_stages]
         outputs = [pr.StageOutput(artifact=f"artifact_{i:02d}.bam", observed=None, directory=False, consumed_by=consumers,
-                                  declared_pattern="*.bam" if i % 3 == 0 else None)]
+                                  declared_pattern="*.bam" if i % 3 == 0 else None, published=True)]
         for p in uses:
             params[p].used_by.append(name)
         stages.append(pr.PipelineStage(
@@ -458,6 +458,11 @@ class TestTheDirectory:
 
     def test_a_results_directory_is_listed_only_when_a_stage_publishes_into_it(self):
         assert [x.name for x in directory_tree(_no_outputs()) if x.group == "written"] == ["runs/<timestamp>/", "work/"]
+        kept = _record()
+        for st in kept.stages:
+            for o in st.outputs:
+                o.published = False                   # written, but every file stays in work/
+        assert [x.name for x in directory_tree(kept) if x.group == "written"] == ["runs/<timestamp>/", "work/"]
         assert [x.name for x in directory_tree(_cohort()) if x.group == "written"] == [
             "results/<sample>/", "results/", "runs/<timestamp>/", "work/"]
         assert _entries(_cohort())["results/"].what == (
@@ -502,8 +507,10 @@ class TestThePicture:
         shared = [p for p in rec.params if p.kind == "shared"]
         assert svg.count('data-node="param"') == len(shared) == 3
         assert svg.count('data-node="column"') + svg.count('data-node="param"') == len(rec.params)
-        outputs = [o for s in rec.stages for o in s.outputs]   # every artifact a stage writes is published
-        assert svg.count('data-node="output"') == len(outputs) == 3
+        published = [o for s in rec.stages for o in s.outputs if o.published]   # the index with its BAM
+        assert svg.count('data-node="output"') == len(published) == 3
+        rec.stages[1].outputs[0].published = False        # the index, kept in work/: not drawn
+        assert _svg(_page(rec)).count('data-node="output"') == 2
         for p in rec.params:
             assert f'data-name="{p.name}"' in svg
         assert 'data-node="file"' not in svg                                # the files boxes are the other picture's

@@ -107,7 +107,10 @@ def render_pipeline(sealed_workflow: str,
     cluster (apptainer + SLURM; the launcher loads the modules). ``nextflow.config`` decides
     where (``local`` names the image, ``slurm`` the ``.sif``); ``params.yaml`` holds only
     parameters. ``pipeline.html`` shows all of it with the command run per stage; every run
-    writes ``runs/<timestamp>/trace.txt`` and ``report.html``.
+    writes ``runs/<timestamp>/trace.txt`` and ``report.html``. ``results/<sample>/`` gets
+    what the how-to's ``usage.outputs`` declare, with their sidecars (everything, when
+    they declare nothing the run wrote); the rest stays in ``work/``.
+    ``publish_dir_mode: link`` in params.yaml hard-links instead of copying.
 
     **Derived from the seal, or chosen.** The samplesheet's example rows are the I4 trials
     (``sample`` is the row key). A placeholder whose value differs across trials is a

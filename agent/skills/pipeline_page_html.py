@@ -389,6 +389,8 @@ def picture_layout(record: PipelineRecord) -> _Layout:
     outs: list[_Node] = []
     for st in record.stages:
         for o in st.outputs:
+            if not o.published:
+                continue
             d = _results_dir(st)
             shown = _display(record, o.artifact)
             outs.append(_Node(id=f"o:{st.name}/{o.artifact}", kind="output", name=o.artifact,
@@ -633,8 +635,8 @@ def directory_tree(record: PipelineRecord) -> list[DirEntry]:
     marked as the cluster's), then what a run adds — each directory with one line saying
     what it is and where it is set; a results directory only when a stage publishes
     into it."""
-    per_sample = any(o for s in record.stages if s.scope == "per_sample" for o in s.outputs)
-    cohort = any(o for s in record.stages if s.scope == "cohort" for o in s.outputs)
+    per_sample = any(o.published for s in record.stages if s.scope == "per_sample" for o in s.outputs)
+    cohort = any(o.published for s in record.stages if s.scope == "cohort" for o in s.outputs)
     rows = [DirEntry("files", _COPY_FILES[0], "", "", ()),
             DirEntry("files", _COPY_FILES[1], "", "", ()),
             DirEntry("files", _COPY_FILES[2], "", "", ()),

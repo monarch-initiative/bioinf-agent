@@ -36,8 +36,9 @@ Used by:
 
 from __future__ import annotations
 
+import fnmatch
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from collections.abc import Mapping
 from typing import Any, Literal, Optional, Union
 
@@ -2087,6 +2088,24 @@ def fill_slots(text: str, substitutions: Mapping[str, Any]) -> str:
     for slot, val in substitutions.items():
         out = out.replace("{" + str(slot) + "}", str(val))
     return out
+
+
+def output_pattern(pattern: str, substitutions: Mapping[str, Any]) -> str:
+    """One `usage.outputs[*].files` pattern as the self-test reads it: relative to the
+    output directory (a leading `{OUTPUT_DIR}/`, however that slot is spelled, is
+    dropped) and every other slot filled from `substitutions` — the glob a file the
+    how-to wrote, by its path under that directory or by its name, is matched against."""
+    p = pattern or ""
+    m = SLOT_RE.match(p)
+    if m and is_output_slot(m.group(1)) and p[m.end():].startswith("/"):
+        p = p[m.end() + 1:]
+    return fill_slots(p, {k: v for k, v in substitutions.items() if not is_output_slot(str(k))})
+
+
+def output_matches(rel_path: str, pattern: str) -> bool:
+    """Whether a file the how-to wrote — by its path under the output directory — is one
+    an `output_pattern` names: by that path, or by its name."""
+    return fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(PurePosixPath(rel_path).name, pattern)
 
 
 def usage_slot_problems(usage: Any) -> list[str]:

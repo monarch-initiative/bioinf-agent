@@ -227,7 +227,7 @@ class TestNextflow:
         block = main[main.rindex("// stage 4 of 5", 0, i): main.index("}\n", i) + 2]
         assert "// A cohort stage: runs ONCE, over every row, after HTSEQ_COUNT has finished for every sample." in block
         assert "tag {" not in block
-        assert '    publishDir { "${params.outdir}" }, mode: \'copy\', overwrite: true\n' in block
+        assert '    publishDir { "${params.outdir}" }, mode: params.publish_dir_mode, overwrite: true\n' in block
         assert "    path 'counts_dir/*'" in block and "// every row's <sample>.counts.tsv, from HTSEQ_COUNT, in one directory" in block
         assert "    path merge_script\n" in block
         assert "    path('counts_matrix.tsv'), emit: counts_matrix_tsv\n" in block

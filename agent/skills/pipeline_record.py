@@ -3,8 +3,10 @@ pipeline_record — the typed PIPELINE record, derived from a sealed WorkflowSpe
 
 A pipeline is a RENDER of a sealed workflow, and it invents nothing: the stages are
 the sealed how-to's commands, the images are the sealed steps' observed digests, the
-samplesheet columns are the how-to's per-sample inputs, and every artifact a stage
-writes into the row's directory is published, as the sealed run left it. This module
+samplesheet columns are the how-to's per-sample inputs, and what the how-to declares
+as its result (`usage.outputs`), with its sidecars, is published into the row's
+directory, as the sealed run left it — every artifact, when it declares none the run
+wrote. This module
 derives that record — the ONE thing the Nextflow renderer and the explain page read —
 and refuses, naming the remedy, when the seal cannot support the render.
 
@@ -42,7 +44,6 @@ Vocabulary
 """
 from __future__ import annotations
 
-import fnmatch
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,7 +53,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 from agent.models import core_data
-from agent.models.core_data import SLOT_RE, is_output_slot, slots_in as placeholders
+from agent.models.core_data import SLOT_RE, is_output_slot, output_matches, output_pattern, slots_in as placeholders
 from agent.skills.spec_writer import _SIDECAR_SUFFIXES
 
 #: Characters that can appear in a filename token named inside an output slot.
@@ -132,6 +133,7 @@ class StageOutput(BaseModel):
     directory: bool                            # the artifact is a directory the stage writes a tree into
     consumed_by: list[str]
     declared_pattern: Optional[str]            # the usage.outputs glob that matched, if any
+    published: bool                            # into results/: declared, a declared file's sidecar, or all when nothing is
 
 
 class StageResources(BaseModel):
@@ -381,13 +383,32 @@ def _common_suffix_glob(names: list[str]) -> str:
     return "*" + suffix if suffix else "*"
 
 
+#: An index that replaces its file's extension rather than adding to it (GATK, Picard).
+_REPLACING_SIDECARS = {".bai": (".bam",), ".crai": (".cram",), ".dict": (".fa", ".fasta", ".fna")}
+
+
 def _sidecar_of(name: str, produced: Mapping[str, int]) -> Optional[str]:
-    """`x.bam.bai` is a sidecar of `x.bam` when `x.bam` is a known artifact."""
+    """`x.bam.bai` — or `x.bai` — is a sidecar of `x.bam` when `x.bam` is a known artifact."""
     low = name.lower()
     for suf in _SIDECAR_SUFFIXES:
         if low.endswith(suf) and name[: -len(suf)] in produced:
             return name[: -len(suf)]
+    for suf, exts in _REPLACING_SIDECARS.items():
+        if low.endswith(suf):
+            return next((name[: -len(suf)] + e for e in exts if name[: -len(suf)] + e in produced), None)
     return None
+
+
+def _observed_files(step: Mapping, out_dirs: list[str], name: str) -> list[str]:
+    """The files a sealed step was observed writing as artifact `name` (the file itself,
+    or every file of the tree), each by its path under the directory it wrote into."""
+    rels = []
+    for o in (step.get("detected_outputs") or []):
+        p = str(o)
+        if _artifact_key(p, out_dirs)[0] == name:
+            root = next((d.rstrip("/") + "/" for d in out_dirs if p.startswith(d.rstrip("/") + "/")), "")
+            rels.append(p[len(root):] if root else Path(p).name)
+    return rels
 
 
 def _artifact_key(path: str, out_dirs: list[str]) -> tuple[str, bool]:
@@ -1025,7 +1046,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             resources=res))
 
     # ── wire inputs / outputs at stage level ───────────────────────────────
-    declared_globs = [(str(o.get("name")), str(f)) for o in declared_outputs for f in (o.get("files") or [])]
+    # each declared pattern, and its reading with the slots kept (for an artifact no step observed)
+    declared_forms = [(str(f), output_pattern(str(f), {})) for o in declared_outputs for f in (o.get("files") or [])]
 
     # inputs: an artifact comes from the stage that last wrote it before the consuming
     # command — the latest version, when a stage in between rewrote it
@@ -1075,6 +1097,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
 
     # outputs: every artifact a stage's commands wrote, declared once, as its last command
     # in the stage left it
+    pending: list[tuple[PipelineStage, dict]] = []
     for st in stage_recs:
         out_toks: list[str] = []
         for i in st.templates:
@@ -1095,18 +1118,28 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             else:
                 art = tok
             is_dir = tok in directories
-            pattern = None
-            for _slot, glob in declared_globs:
-                cand = obs0 or art
-                if fnmatch.fnmatch(cand, glob) or fnmatch.fnmatch(art, glob) \
-                        or (is_dir and (glob.startswith(cand + "/") or glob.startswith(art + "/"))):
-                    pattern = glob
-                    break
+            # declared when a pattern, read as the self-test reads it, names one of the files
+            # the first row's step wrote as this artifact — or, unobserved, the artifact itself
+            ri0, step0 = (matched.get(last_i) or [(0, None)])[0]
+            files = (_observed_files(step0, wrote_into.get(int(step0.get("step", 0)), []), obs0)
+                     if step0 is not None and obs0 else [])
+            subs0 = rows[ri0].get("substitutions") or {}
+            pattern = next((glob for glob, kept in declared_forms
+                            if (any(output_matches(f, output_pattern(glob, subs0)) for f in files) if files
+                                else output_matches(art, kept) or kept.startswith(art + "/"))), None)
             consumed = sorted({stage_recs[stage_of_template[c]].name for a, c, p in edges
                                if a == tok and p in st.templates and stage_of_template[c] != st.index})
-            st.outputs.append(StageOutput(
-                artifact=art, observed=obs0, directory=is_dir,
-                consumed_by=consumed, declared_pattern=pattern))
+            pending.append((st, dict(artifact=art, observed=obs0, directory=is_dir,
+                                     consumed_by=consumed, declared_pattern=pattern)))
+    # results/ gets the declared outputs and their sidecars (`x.bam.bai`, `x.bai` with
+    # `x.bam`); a how-to that declares no output the run wrote names no result, so all
+    declared = dict.fromkeys(kw["artifact"] for _st, kw in pending if kw["declared_pattern"])
+    for st, kw in pending:
+        st.outputs.append(StageOutput(**kw, published=not declared or kw["declared_pattern"] is not None
+                                      or _sidecar_of(kw["artifact"], declared) is not None))
+    for glob in sorted({g for g, _ in declared_forms} - {kw["declared_pattern"] for _st, kw in pending}):
+        notes.append(f"usage.outputs pattern {glob!r} names no output a stage writes; "
+                     + ("nothing is published for it" if declared else "every output is published"))
 
     # ── samplesheet: always — `sample` (the row key) first, one row per trial ──
     # The key's placeholder is the how-to's own sample identifier when it has one, so
@@ -1148,7 +1181,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     defaults = [
         PipelineDefault(key="stage_cut", value="explicit groups" if stages else "one stage per how-to command",
                         source="caller" if stages else "default"),
-        PipelineDefault(key="publish", value="every artifact a stage writes, into the row's directory", source="default"),
+        PipelineDefault(key="publish", value="what usage.outputs declares and its sidecars (every artifact when it "
+                        "declares none), into the row's directory, by copy (publish_dir_mode)", source="default"),
         PipelineDefault(key="resume", value="on: the launch line carries -resume; drop it for a fresh run", source="default"),
         PipelineDefault(key="errors", value="finish: a failure submits nothing new and in-flight tasks complete; "
                         "`-resume` re-runs what failed; no retries", source="default"),
