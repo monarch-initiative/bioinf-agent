@@ -83,6 +83,10 @@ def _register_local_reference(*, name: str, local_path: str, version: str, descr
                         "not recorded — pass pipeline_id to anchor it in a draft"))
 
 
+# The archives download_reference_database unpacks when `extract` is set.
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar", ".zip")
+
+
 @mcp.tool()
 def download_reference_database(
     name: str,
@@ -154,10 +158,17 @@ def download_reference_database(
             extract=extract, pipeline_id=pipeline_id)
 
     # A local download lands in the local common-data zone unless the caller says
-    # where — the same place a cluster download lands on its env.
+    # where — the same place a cluster download lands on its env. An archive that is
+    # unpacked is recorded by the directory it unpacks into, named after the archive
+    # without its suffix; the archive itself is downloaded beside that directory.
     if not (local_path or "").strip():
         filename = url.rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0] or name
-        local_path = str(_workspace.common_data_dir() / name / filename)
+        stem = filename
+        for suffix in _ARCHIVE_SUFFIXES:
+            if extract and url.endswith(suffix):
+                stem = filename[: -len(suffix)] or name
+                break
+        local_path = str(_workspace.common_data_dir() / name / stem)
 
     target = Path(local_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -169,6 +180,8 @@ def download_reference_database(
     # bytes over time. `available`/`sha256`/`size_bytes` are folded back into
     # the ReferenceDatabase record from disk at seal (see workflow_tools). The
     # portable hasher works on both Linux (sha256sum) and macOS (shasum -a256).
+    # `--fail`: an HTTP error page is not the artifact — a 404 ends the chain with
+    # curl's own error and leaves no file to hash, unpack or resume onto.
     q = shlex.quote
     sidecar = f"{target}.source.sha256"
     def _hash_into_sidecar(artifact: str) -> str:
@@ -179,7 +192,7 @@ def download_reference_database(
         # Download to a sibling .zip, unpack into local_path, remove the zip.
         zip_path = target.parent / Path(url).name
         cmd = (
-            f"curl -L --progress-bar -C - -o {q(str(zip_path))} {q(url)} "
+            f"curl -L --fail --progress-bar -C - -o {q(str(zip_path))} {q(url)} "
             f"&& {_hash_into_sidecar(str(zip_path))} "
             f"&& mkdir -p {q(str(target))} "
             f"&& unzip -o {q(str(zip_path))} -d {q(str(target.parent))} "
@@ -188,7 +201,7 @@ def download_reference_database(
     elif extract and (url.endswith(".tar.gz") or url.endswith(".tgz")):
         tar_path = target.parent / Path(url).name
         cmd = (
-            f"curl -L --progress-bar -C - -o {q(str(tar_path))} {q(url)} "
+            f"curl -L --fail --progress-bar -C - -o {q(str(tar_path))} {q(url)} "
             f"&& {_hash_into_sidecar(str(tar_path))} "
             f"&& mkdir -p {q(str(target))} "
             f"&& tar -xzf {q(str(tar_path))} -C {q(str(target))} "
@@ -197,7 +210,7 @@ def download_reference_database(
     elif extract and url.endswith(".tar"):
         tar_path = target.parent / Path(url).name
         cmd = (
-            f"curl -L --progress-bar -C - -o {q(str(tar_path))} {q(url)} "
+            f"curl -L --fail --progress-bar -C - -o {q(str(tar_path))} {q(url)} "
             f"&& {_hash_into_sidecar(str(tar_path))} "
             f"&& mkdir -p {q(str(target))} "
             f"&& tar -xf {q(str(tar_path))} -C {q(str(target))} "
@@ -205,7 +218,7 @@ def download_reference_database(
         )
     else:
         cmd = (
-            f"curl -L --progress-bar -C - -o {q(str(target))} {q(url)} "
+            f"curl -L --fail --progress-bar -C - -o {q(str(target))} {q(url)} "
             f"&& {_hash_into_sidecar(str(target))}"
         )
 

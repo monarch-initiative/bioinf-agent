@@ -2091,7 +2091,8 @@ def usage_slot_problems(usage: Any) -> list[str]:
     is named with its rename; a template needs an output slot (OUTPUT_SLOT_RULE) and at
     least one slot at all; every other slot is declared under inputs[*].name, at least one
     trial is declared, and every trial binds each of them and nothing the template lacks;
-    a path on this machine written into the template is a slot that was not declared."""
+    a path on this machine written into the template is a slot that was not declared, and a
+    write into the image or a package install inside the template is a patch, not a how-to."""
     commands = usage_commands(usage)
     template = "\n".join(commands)
     if not template.strip():
@@ -2164,6 +2165,14 @@ def usage_slot_problems(usage: Any) -> list[str]:
                         "mounted, and a how-to that carries a machine path cannot be re-run anywhere "
                         "else: write it as a slot (`{INDEX}`, `{GTF}`), declare it under inputs[*].name "
                         "and bind the path in every trial's substitutions")
+    from agent.skills.env_honesty import image_mutation
+    patch = image_mutation(template)
+    if patch:
+        problems.append(f"command_template modifies the image before running the tool (`{patch}`): a "
+                        "how-to runs in the shipped image as it is, and a patch applied at run time "
+                        "proves the patched container and degrades the tool anywhere else. Build the fix "
+                        "into the image (build_env_from_authors_recipe with a patch, or a Dockerfile "
+                        "layer) and freeze that, or say the host cannot run the tool as shipped")
     stray = [n for n in input_names if n and n not in slots]
     if stray:
         problems.append(f"inputs[*].name {', '.join(repr(n) for n in stray)} match no slot in the "
