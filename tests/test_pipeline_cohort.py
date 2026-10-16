@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 from pipeline_fixtures import (DESEQ2_SCRIPT, DESEQ2_TEXT, DESIGN, DIGEST, DIGEST_DE, MERGE_SCRIPT, MERGE_TEXT,
                                REQUEST_KEY, REQUEST_KEY_DE, SHEET, TEMPLATES_DE, sealed_deseq2_spec,
-                               sealed_rnaseq_spec, sheet_text)
+                               probe_spec, sealed_rnaseq_spec, sheet_text)
 
 from agent.skills import pipeline_record as pr
 from agent.skills.pipeline_page_html import directory_tree, picture_layout, render_pipeline_page
@@ -249,7 +249,8 @@ class TestNextflow:
                 "   // runs once, after every row's <sample>.counts.tsv from HTSEQ_COUNT\n") in main
         assert ("    DESEQ2(MERGE_COUNTS.out.counts_matrix_tsv, file(params.samplesheet, checkIfExists: true), "
                 "file(params.deseq2_script))\n") in main
-        assert ".map { r -> tuple([sample: r.sample, donor: r.donor, condition: r.condition], " in main
+        # donor and condition reach DESeq2 through the sheet file; no command binds them
+        assert ".map { r -> tuple([sample: r.sample], " in main and "r.condition" not in main
         assert "3 per-sample stage(s) run once per samples.csv row and 2 cohort stage(s) run once over every row" in main
 
     def test_params_yaml_and_main_nf_carry_the_cohort_params_and_point_at_bin(self):
@@ -548,3 +549,25 @@ def test_a_launch_names_a_sheet_value_the_sealed_run_never_had(monkeypatch):
     assert not any(u["param"] == "condition" for u in same["unproven"]), same
     other = run_production._value_check(rec, {}, [{**r, "condition": "knockout"} for r in rec.samplesheet.rows])
     assert {"param": "condition", "values": ["knockout"], "proven": ran} in other["unproven"], other
+
+
+def test_a_column_a_stage_binds_keeps_the_command_rule_when_a_script_reads_it_too():
+    """`donor` is bound into the per-sample command AND read by DESeq2 through the
+    sheet: the cell is pasted into a shell command, so it follows the rule params=
+    values follow, whatever else reads it."""
+    from agent.skills import run_production
+    counts = probe_spec(["htseq-count --tag {DONOR} {BAM} > {OUTPUT_DIR}/{SAMPLE}.counts.tsv"],
+                        [(s, {"BAM": f"/data/{s}.bam", "DONOR": DESIGN[s][0], "SAMPLE": s}) for s in SAMPLES],
+                        [{"name": "OUTPUT_DIR", "files": ["*.counts.tsv"]}],
+                        inputs=[{"name": "BAM", "format": "bam"}, {"name": "DONOR"}, {"name": "SAMPLE"}],
+                        step_outputs=lambda ti, run, s: [f"{run}/{s['SAMPLE']}.counts.tsv"])
+    rec = pr.derive_pipeline_record(
+        counts, name="probe", samplesheet_files={SHEET: sheet_text(SAMPLES)},
+        cohort=[pr.CohortRequest(spec=sealed_deseq2_spec(SAMPLES), spec_path=DE_PATH, spec_sha256="d" * 64,
+                                 collect={"COUNTS_DIR": "{SAMPLE}.counts.tsv"})])
+    donor = next(c for c in rec.samplesheet.columns if c.name == "donor")
+    assert donor.placeholder == "DONOR" and donor.read_by, donor
+    rows = "\n".join(f"{s},/data/{s}.bam,N1;touch x,{DESIGN[s][1]}" for s in SAMPLES)
+    with pytest.raises(run_production._Refusal) as e:
+        run_production._check_samplesheet(f"sample,bam,donor,condition\n{rows}\n", rec, "samples.csv")
+    assert e.value.result["code"] == "run_production.samplesheet_unsafe_cell" and "donor" in e.value.result["error"]

@@ -18,13 +18,13 @@ Two providers live here today:
 
   ScpHeadNodeProvider — the legacy default. scp over ssh + sha256sum
     round-trip on the remote side; we compare hashes ourselves. Its
-    no-overwrite check is `ssh test -e`; its parent-dir prep is
-    `ssh mkdir -p`. Fine for small files; pisses off head-node policy
+    no-overwrite check is the login-node `seen` over ssh; its parent-dir
+    prep is `ssh mkdir -p`. Fine for small files; pisses off head-node policy
     when used for the GB-scale .sif images that stage_apptainer_image
     ships.
 
   GlobusProvider — `globus transfer` end-to-end, fully off the head
-    node. Its no-overwrite check is `globus ls` on the parent dir (a
+    node. Its no-overwrite check is `globus stat` on the path (a
     read-only op that doesn't even need data_access consent); its
     parent-dir prep is a NO-OP because the Globus Transfer service
     auto-creates the destination directory tree. Net effect: a Globus
@@ -88,8 +88,8 @@ class TransferProvider:
     def remote_exists(self, *, env: dict, abs_remote_path: str,
                       timeout: int) -> dict:
         """No-overwrite pre-check: does `abs_remote_path` already exist
-        on the remote? Transport-specific (ssh `test -e` vs `globus
-        ls`). Returns {exists: bool} or {error: ...}. The PRIMITIVE owns
+        on the remote? Transport-specific (ssh `seen` vs `globus
+        stat`). Returns {exists: bool} or {error: ...}. The PRIMITIVE owns
         the policy (refuse when exists); the PROVIDER owns the mechanism
         so the check doesn't assume ssh on a Globus data plane."""
         raise NotImplementedError
@@ -178,7 +178,7 @@ class ScpHeadNodeProvider(TransferProvider):
 
     def remote_exists(self, *, env: dict, abs_remote_path: str,
                       timeout: int) -> dict:
-        """ssh `test -e` no-overwrite check. Delegates to the shared
+        """ssh `seen` no-overwrite check. Delegates to the shared
         helper in transfer.py (which carries the ControlMaster-aware
         failure hint). Needs a live ssh session."""
         from agent.skills.transfer import _remote_existence_check
@@ -556,12 +556,11 @@ class GlobusProvider(TransferProvider):
             direction="upload",
             local_path=local_path, local_sha256=local_sha256,
             timeout=timeout, label=label, tree=tree)
-        if pr.get("code") == "transfer.globus_sync_wait_exceeded":
-            fields = {k: v for k, v in pr.items() if k not in ("outcome", "code", "error")}
-            return loop("transfer.globus_sync_wait_exceeded", partial_path=part, **fields,
-                        error=(f"{pr['error']} The bytes are landing at {part}; "
-                               f"globus_task_status renames them to {abs_remote_path} "
-                               f"once the task has SUCCEEDED."))
+        if pr.get("outcome") == "loop":             # the task may still run: its end is unobserved
+            pr["partial_path"] = part
+            pr["error"] += (f" The bytes are landing at {part}; globus_task_status renames "
+                            f"them to {abs_remote_path} once the task has SUCCEEDED.")
+            return pr
         if "error" in pr:
             return pr
         moved = self.rename(part, abs_remote_path)
@@ -576,7 +575,7 @@ class GlobusProvider(TransferProvider):
             direction="download",
             local_path=local_path, local_sha256="",
             timeout=timeout, label=label)
-        if "error" in pr and pr.get("code") != "transfer.globus_sync_wait_exceeded":
+        if "error" in pr and pr.get("outcome") != "loop":
             _discard_local(local_path)    # the task is over or stopped; nothing still writes
         return pr
 
@@ -652,10 +651,11 @@ class GlobusProvider(TransferProvider):
                                f"are at {src}")
         return {"renamed_to": dst}
 
-    def _cancel(self, task_id: str) -> str:
-        """Stop a task that cannot finish without someone acting (expired
-        credentials, a denied path): left alive it resumes once that is fixed,
-        and a retry would then race it. Returns the sentence to append."""
+    def _stopped(self, out: dict, task_id: str) -> dict:
+        """`out`, for a task that cannot finish without someone acting (expired
+        credentials, a denied path), once the task is cancelled: left alive it
+        resumes when that is fixed, and a retry would race it. When the cancel
+        fails, the task's end is unobserved and the result says so."""
         try:
             res = subprocess.run(["globus", "task", "cancel", task_id],
                                  capture_output=True, text=True,
@@ -663,9 +663,12 @@ class GlobusProvider(TransferProvider):
         except (FileNotFoundError, subprocess.TimeoutExpired):
             res = None
         if res is not None and res.returncode == 0:
-            return " The task was cancelled, so a retry cannot race it."
-        return (f" Cancelling the task failed: it may resume on its own, so check "
-                f"globus_task_status(task_id='{task_id}') before any retry.")
+            out["error"] += " The task was cancelled, so a retry cannot race it."
+            return out
+        fields = {k: v for k, v in out.items() if k not in ("outcome", "code", "error")}
+        return loop("transfer.globus_task_unobserved", **fields, error=(
+            f"{out['error']} Cancelling the task failed, so it may resume once that is fixed: "
+            f"globus_task_status(task_id='{task_id}') says how it ended; retry only after it does."))
 
     # ─── internals ─────────────────────────────────────────────────────
 
@@ -698,33 +701,34 @@ class GlobusProvider(TransferProvider):
         while True:
             status = self._task_show(task_id, timeout=self._SUBMIT_TIMEOUT_S)
             if "error" in status:
-                return {**status, "task_id": task_id}
+                fields = {k: v for k, v in status.items() if k not in ("outcome", "code", "error")}
+                return loop("transfer.globus_task_unobserved", **fields, task_id=task_id, error=(
+                    f"{status['error']}. Globus task {task_id} was submitted and its end was "
+                    f"not observed: globus_task_status(task_id='{task_id}') says how it "
+                    f"ended; do not re-run the transfer before it does."))
             last_status = status
             # PERMISSION_DENIED while ACTIVE — task will hang indefinitely
             # (Globus keeps retrying the doomed operation). Classify the
             # event-list immediately and surface the right fix rather
             # than burning the sync-wait cap on a task that can't recover.
             if self._is_permission_denied(status):
-                out = self._permission_denied_error(task_id, status)
-                out["error"] += self._cancel(task_id)
-                return out
+                return self._stopped(self._permission_denied_error(task_id, status), task_id)
             if status.get("status") in _GLOBUS_TERMINAL_STATUSES:
                 break
             if status.get("status") == "INACTIVE":
                 # Don't spin on a task that's stuck waiting for activation —
                 # surface with the nice_status (Creds Expired, etc.)
-                return broke("transfer.globus_task_inactive",
+                return self._stopped(broke("transfer.globus_task_inactive",
                     error=
                         f"Globus task {task_id} is INACTIVE: "
                         f"{status.get('nice_status') or 'unknown reason'}. "
                         f"This usually means a credential or activation "
                         f"expired. Run `globus session update` (or "
-                        f"`globus endpoint activate <UUID>`) and retry."
-                        + self._cancel(task_id),
+                        f"`globus endpoint activate <UUID>`) and retry.",
                     provider=self.name,
                     task_id= task_id,
                     hint=    "globus credential / activation expired",
-                )
+                ), task_id)
             if (time.perf_counter() - wait_started) > wait_cap:
                 return loop("transfer.globus_sync_wait_exceeded",
                     error=

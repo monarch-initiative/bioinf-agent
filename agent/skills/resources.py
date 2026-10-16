@@ -421,8 +421,8 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
             # already solved here" could not tell them apart.
             #
             # ASSURANCE clauses only. `WELL_FORMED.shipped_binaries` is unobserved on
-            # essentially every adopt record (there are no shipped_binaries to shape-check),
-            # so surfacing disclosure shortfalls here would put a constant on most rows —
+            # every record written before that field existed, so surfacing disclosure
+            # shortfalls here would put a constant on most older rows —
             # and a field that is always present carries no signal and trains the reader to
             # skip it. The full list stays on detail=True, which is the full-disclosure view.
             unproven = [c.clause for c in contract.unobserved

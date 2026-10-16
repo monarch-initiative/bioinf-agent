@@ -786,11 +786,11 @@ def _header(record: PipelineRecord) -> str:
         ("Created", _e(_created_line(record.created_at))),   # as the ENV and RUN reports print theirs
         ("Image", digests),
         ("Stages", f"{n_st} in execution order: " + " → ".join(stage_word(s) for s in _ordered(record))),
-        ("Samples", f"{rows_word} in <code>samples.csv</code> — the sealed run's own; replace them with yours"
-                    + ("" if record.samplesheet.rows_from == "proven" else
-                       '. <span class="warn">The how-to was not self-tested on them</span> (it spans '
-                       'more than one image, and the self-test runs in one), so these rows are the '
-                       'values it was declared with, not ones a run proved')),
+        ("Samples", f"{rows_word} in <code>samples.csv</code> — "
+                    + ("the sealed run's own" if record.samplesheet.rows_from == "proven" else
+                       '<span class="warn">the values the how-to was declared with; its self-test did '
+                       'not run on them</span>')
+                    + "; replace them with yours"),
     ]
     if record.scripts:
         rows.append(("Scripts", ", ".join(f"<code>{_e(SCRIPT_DIR)}/{_e(sc.name)}</code>" for sc in record.scripts)

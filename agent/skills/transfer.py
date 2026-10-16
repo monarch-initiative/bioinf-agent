@@ -69,14 +69,16 @@ Trust contract
                     WHOLE remote interaction for its transport — the
                     no-overwrite check, parent-dir prep, and the byte
                     movement:
-                      scp_head_node  — ssh `test -e` (no-overwrite) +
-                                        ssh `mkdir -p` (parent) + scp +
-                                        ssh `sha256sum` (verify)
-                      globus         — `globus ls` (no-overwrite) +
+                      scp_head_node  — ssh `seen` (no-overwrite) +
+                                        ssh `mkdir -p` (parent) + scp to
+                                        the partial name + ssh `sha256sum`
+                                        (verify) + ssh `mv` into place
+                      globus         — `globus stat` (no-overwrite) +
                                         auto-mkdir (no-op) + `globus
-                                        transfer` (Globus end-to-end
-                                        checksum). ZERO ssh calls — the
-                                        whole point of the Globus path
+                                        transfer` to the partial name
+                                        (Globus end-to-end checksum) +
+                                        `globus rename`. ZERO ssh calls —
+                                        the whole point of the Globus path
                                         being off the head node.
   a directory moves as one transfer: every file is checked (sha256 both
     ends, or Globus's own per-file checksum plus a count of what moved), its
@@ -1013,10 +1015,22 @@ def _do_transfer(*, direction: str,
         transport_name = "local_copy" if env_type == "local" else provider.name
 
         # 5) Remote-existence pre-check (no-overwrite contract). Routed
-        # through the provider so it's ssh `test -e` for scp but `globus
-        # ls` for Globus — no ssh on the Globus path. A hit is a REFUSAL
-        # (intended safety behavior), not a failure.
+        # through the provider so it's the login-node `seen` for scp but
+        # `globus stat` for Globus — no ssh on the Globus path. A hit is a
+        # REFUSAL (intended safety behavior), not a failure. An earlier
+        # upload still landing under its partial name counts as there.
         if direction == "upload":
+            inflight = _pending_receipt(project_name, to=f"{compute_env_name}:{normed_remote}")
+            if inflight is not None:
+                tid = inflight[1].get("globus_task_id")
+                mpath = _journal(result="refused", zone=zone, transport=transport_name,
+                                 error_msg=f"an earlier upload to it, Globus task {tid}, has not been seen to end")
+                return refused("transfer.upload_in_flight",
+                    error=(f"an earlier upload to {normed_remote!r} is Globus task {tid}, whose end "
+                           f"has not been seen; a second copy would race it"),
+                    task_id=tid, receipt=str(inflight[0]), manifest=str(mpath),
+                    remedy=(f"globus_task_status(task_id='{tid}'): it renames the bytes into place "
+                            f"once the task has succeeded, and clears the way if it failed"))
             if env_type == "local":
                 if Path(normed_remote).exists():
                     mpath = _journal(result="refused", zone=zone,
@@ -1089,10 +1103,11 @@ def _do_transfer(*, direction: str,
                 env=env, abs_remote_path=normed_remote,
                 local_path=lp, timeout=timeout,
                 label=f"download {project_name} {Path(normed_remote).name}")
-        if pr.get("code") == "transfer.globus_sync_wait_exceeded":
-            # We stopped waiting; Globus did not. Not a failure, and the receipt
-            # must not say one: it carries the task, and for an upload the rename
-            # that completes it once the task succeeds.
+        if pr.get("outcome") == "loop":
+            # Globus may still be running the task: we stopped waiting, or could not
+            # see how it ended. Not a failure, and the receipt must not say one: it
+            # carries the task, and for an upload the rename that completes it once
+            # the task succeeds.
             pending = ({"from": pr["partial_path"], "to": normed_remote}
                        if pr.get("partial_path") else None)
             mpath = _journal(result="waiting", zone=zone,
@@ -1100,7 +1115,9 @@ def _do_transfer(*, direction: str,
                 command=pr.get("command"), task_id=pr.get("task_id"),
                 pending_rename=pending)
             out = {k: v for k, v in pr.items() if k not in ("outcome", "code")}
-            return loop("transfer.globus_sync_wait_exceeded", **out, manifest=str(mpath))
+            if pr.get("code") == "transfer.globus_sync_wait_exceeded":
+                return loop("transfer.globus_sync_wait_exceeded", **out, manifest=str(mpath))
+            return loop("transfer.globus_task_unobserved", **out, manifest=str(mpath))
         if "error" in pr:
             said_no = pr.get("outcome") == "refused"
             mpath = _journal(result="refused" if said_no else "error", zone=zone,
@@ -1109,6 +1126,8 @@ def _do_transfer(*, direction: str,
                 task_id=pr.get("task_id"),
                 error_msg=pr["error"])
             out = dict(pr); out["manifest"] = str(mpath)
+            if pr.get("code") == "transfer.remote_exists":    # it appeared while this upload ran
+                return refused("transfer.remote_exists", **out)
             if said_no:
                 return refused("transfer.provider_refused", **out)
             return broke("transfer.provider_failed", **out)
@@ -1200,25 +1219,36 @@ def _do_transfer(*, direction: str,
 
 def resolve_globus_task(project_name: str, env: dict, task_id: str) -> dict:
     """A Globus task's real end state, and the step a sync upload left undone:
-    an upload past the sync-wait cap lands under its partial name, and its
-    receipt names the rename that completes it. When the task has SUCCEEDED,
-    that rename is made here and the receipt says the upload finished."""
+    an upload whose task was not seen to end lands under its partial name, and
+    its receipt names the rename that completes it. When the task has SUCCEEDED,
+    that rename is made here and the receipt says the upload finished; when it
+    ended otherwise, the receipt says it failed and no longer holds the
+    destination for it."""
     from agent.skills import transfer_providers
     status = transfer_providers.globus_task_status(env, task_id)
-    if status.get("code") != "transfer.task_status_ok":
-        return status
-    found = _pending_receipt(project_name, task_id)
-    if found is None:
+    found = _pending_receipt(project_name, task_id=task_id)
+    if found is None or status.get("code") not in ("transfer.task_status_ok", "transfer.task_failed",
+                                                     "transfer.task_incomplete"):
         return status
     path, rec = found
-    pending = rec["pending_rename"]
+    pending = rec.pop("pending_rename")
+    if status["code"] != "transfer.task_status_ok":
+        # the task ended without the upload: nothing is renamed, the way is clear
+        rec["outcome"] = "failed"
+        rec["reason"] = f"{status['error']}; what arrived is left at {pending['from']}"
+        rec["summary"] = _summarize(
+            outcome="failed", direction="upload", transport="globus",
+            fname=rec.get("file", ""), size_h=rec.get("size"),
+            compute_env=env.get("name", "?"), remote_abs_path=pending["to"],
+            task_id=task_id, reason=rec["reason"], files=rec.get("files"))
+        _rewrite_receipt(path, rec)
+        return {**status, "partial_path": pending["from"], "manifest": str(path)}
     fields = {k: v for k, v in status.items() if k not in ("outcome", "code", "success")}
     g = compute_access.get_globus_endpoints(env)
     moved = transfer_providers.GlobusProvider(g).rename(pending["from"], pending["to"])
     if "error" in moved:
         return broke("transfer.task_rename_failed", success=False, error=moved["error"],
                      partial_path=pending["from"], manifest=str(path), **fields)
-    rec.pop("pending_rename")
     rec["outcome"] = "uploaded"
     rec["summary"] = _summarize(
         outcome="uploaded", direction="upload", transport="globus",
@@ -1226,25 +1256,46 @@ def resolve_globus_task(project_name: str, env: dict, task_id: str) -> dict:
         compute_env=env.get("name", "?"), remote_abs_path=pending["to"],
         task_id=task_id, reason=None, files=rec.get("files"))
     rec["verified"] = _VERIFIED_PHRASE["globus_end_to_end"]
-    try:
-        path.write_text(json.dumps(rec, indent=2))
-    except OSError:
-        pass
+    _rewrite_receipt(path, rec)
     return proven("transfer.task_status_ok", success=True, renamed_to=pending["to"],
                   manifest=str(path), **fields)
 
 
-def _pending_receipt(project_name: str, task_id: str) -> Optional[tuple[Path, dict]]:
-    """The receipt of an upload still waiting on `task_id` to be renamed into place."""
+def _pending_receipt(project_name: str, *, task_id: Optional[str] = None,
+                     to: Optional[str] = None) -> Optional[tuple[Path, dict]]:
+    """The receipt of an upload whose Globus task has not been seen to end, and so
+    still waits to be renamed into place: by its task, or by where it goes
+    (`<env>:<path>`, the receipt's `to`)."""
     root = _record_root() / "transfer_history" / project_name
     for p in sorted(root.glob("*/*.json"), reverse=True):
         try:
             rec = json.loads(p.read_text())
         except (OSError, ValueError):
             continue
-        if rec.get("globus_task_id") == task_id and rec.get("pending_rename"):
+        if rec.get("pending_rename") and (rec.get("globus_task_id") == task_id if task_id
+                                          else rec.get("to") == to):
             return p, rec
     return None
+
+
+def _rewrite_receipt(path: Path, rec: dict) -> None:
+    try:
+        path.write_text(json.dumps(rec, indent=2))
+    except OSError:
+        pass
+
+
+def _into_place(part: Path, dst: Path) -> None:
+    """Rename a verified local copy to its final name, unless something arrived
+    there while it was copied: then the copy is discarded and nothing is replaced."""
+    if dst.exists() or dst.is_symlink():
+        if part.is_dir():
+            shutil.rmtree(part, ignore_errors=True)
+        else:
+            part.unlink(missing_ok=True)
+        raise TransferError(f"{dst} appeared while the copy ran; transfers never overwrite, "
+                            f"so the copy was discarded")
+    os.rename(part, dst)
 
 
 def _copy_local_tree(src: Path, dst: Path, *, source: Optional[dict]) -> dict:
@@ -1263,7 +1314,7 @@ def _copy_local_tree(src: Path, dst: Path, *, source: Optional[dict]) -> dict:
         return broke("transfer.local_tree_mismatch",
                      error=f"the copy of {src} differs from it: {mismatch}",
                      provider="local_copy", command=command)
-    os.rename(part, dst)
+    _into_place(part, dst)
     return proven("transfer.local_tree_copied", success=True,
                   provider="local_copy", command=command,
                   bytes=nbytes, checksums=copy,
@@ -1293,7 +1344,7 @@ def _do_local_mode(*, direction: str,
                 f"sha256 round-trip mismatch — local={local_sha} "
                 f"remote={remote_sha!r}; the copy was discarded."),
                 manifest=str(mpath))
-        os.rename(part, normed_remote)
+        _into_place(part, Path(normed_remote))
         bytes_done = lp.stat().st_size
         mpath = journal(result="success", zone=zone,
             transport="local_copy", command=cp_cmd_up,
@@ -1340,7 +1391,7 @@ def _do_local_mode(*, direction: str,
             f"sha256 mismatch on local-mode download: "
             f"source={remote_sha} landed={landed_sha}"),
             manifest=str(mpath))
-    os.rename(part, lp)
+    _into_place(part, lp)
     bytes_done = lp.stat().st_size
     mpath = journal(result="success", zone=zone,
         transport="local_copy", command=cp_cmd_dn,

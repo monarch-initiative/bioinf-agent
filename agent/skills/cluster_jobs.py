@@ -22,8 +22,8 @@ change between SLURM versions.
 Authorization
 -------------
 project must have a `compute_env_access` entry for `compute_env_name`.
-No per-directory permission needed — we're not touching the
-filesystem. SLURM's own ACL limits visibility to the user's own jobs.
+SLURM's own ACL limits visibility to the user's own jobs. A `run_dir`, whose
+records are read, must be a path the project may `download`.
 
 Job-id input
 ------------
@@ -239,8 +239,8 @@ def cluster_job_status(project_name: str,
     per job, plus one per array-task for array jobs).
 
     Authorization: project must have a `compute_env_access` entry for
-    `compute_env_name`. No per-directory permission needed. SLURM's
-    own ACL keeps visibility scoped to the user's own jobs.
+    `compute_env_name`; SLURM's own ACL keeps visibility scoped to the
+    user's own jobs. A `run_dir` must be a path the project may `download`.
 
     Returns:
       {
@@ -481,10 +481,14 @@ def _pipeline_verdict(tasks: list[dict], manager_rows: list[dict]) -> str:
     the manager consulted to tell a finished run from one still submitting, a manager
     that died (it can no longer submit what is left) from one that finished, and a
     queued manager from one at work. `unobserved`: the manager ended and no task of
-    it is on record in the run directory, so nothing says what the run did."""
+    it is on record in the run directory, so nothing says what the run did; or the
+    scheduler holds no row for the manager and no task is in flight, so nothing says
+    whether the run is over."""
     statuses = [t.get("status") for t in tasks]
     if any(s == TASK_FAILED for s in statuses):
         return "failed"
+    if not manager_rows:
+        return "running" if any(s not in TASK_DONE for s in statuses) else "unobserved"
     manager_over = bool(manager_rows) and all(r.get("verdict") != RUNNING for r in manager_rows)
     if manager_over and any(r.get("verdict") == DIED for r in manager_rows):
         return "failed"
@@ -492,8 +496,7 @@ def _pipeline_verdict(tasks: list[dict], manager_rows: list[dict]) -> str:
         return "succeeded"
     if manager_over:
         return "running" if tasks else "unobserved"
-    queued = not manager_rows or all(str(r.get("state", "")).startswith("PENDING")
-                                     for r in manager_rows)
+    queued = all(str(r.get("state", "")).startswith("PENDING") for r in manager_rows)
     return "not_started" if queued and not tasks else "running"
 
 
@@ -526,9 +529,11 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
         note = {
             "not_started": "the job has not started",
             "running": "the manager job is running; its log is not visible here yet",
-            "failed": "the manager job ended without writing it: it died before Nextflow started",
+            "failed": "the manager job ended without writing it: it died before Nextflow started, "
+                      "or run_dir is not the directory it was launched in",
         }.get(verdict, "the manager job ended and left no log here: check that run_dir is "
-                       "the directory it was launched in")
+                       "the directory it was launched in" if manager_rows else
+                       "the scheduler holds no record of the job either: check the job id and run_dir")
         return {"run_dir": run_dir, "verdict": verdict, "tasks": [], "task_summary": {},
                 "note": f"no manager log (<pipeline>-{job_id}.out) in {run_dir}: {note}"}
     stamp = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("STAMP=")), "")
@@ -559,6 +564,29 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
 
 # An absolute path made only of filesystem-safe chars. Anything else is
 # refused BEFORE it reaches the shell — no metacharacter can ride in.
+def jobs_in_dir_sh(d: str) -> str:
+    """Shell that prints `LIVE=<job id> <state>` for each job of this user the
+    scheduler still holds that runs in `d` or under it, by the path as given or as
+    resolved (a link); a scheduler that cannot answer prints SQUEUE_FAILED and up to
+    three SQUEUE_ERR lines, never nothing."""
+    q = shlex.quote
+    return (f"p=$(cd {q(d)} 2>/dev/null && pwd -P); "
+            f"held=$(squeue -h -u \"$USER\" -o '%i %T %Z' 2>&1) || {{ echo SQUEUE_FAILED; "
+            f"printf '%s\\n' \"$held\" | tail -n 3 | sed 's/^/SQUEUE_ERR /'; held=; }}; "
+            f"printf '%s\\n' \"$held\" | awk -v d={q(d)} -v p=\"$p\" "
+            f"'$3 == d || index($3, d \"/\") == 1 || (p != \"\" && ($3 == p || index($3, p \"/\") == 1)) "
+            f"{{print \"LIVE=\" $1 \" \" $2}}'")
+
+
+def jobs_in_dir(lines: list[str]) -> tuple[list[str], Optional[str]]:
+    """What `jobs_in_dir_sh` printed: (the live jobs as `<id> <state>`, None), or
+    ([], what squeue said) when the scheduler could not answer."""
+    if "SQUEUE_FAILED" in lines:
+        said = " | ".join(ln[len("SQUEUE_ERR "):] for ln in lines if ln.startswith("SQUEUE_ERR "))
+        return [], said or "no message"
+    return [ln[len("LIVE="):] for ln in lines if ln.startswith("LIVE=")], None
+
+
 _ABS_SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9_./+\-]{1,4096}$")
 
 

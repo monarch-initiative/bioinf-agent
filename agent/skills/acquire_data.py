@@ -45,8 +45,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
 
-from agent.skills import compute_access, stage_apptainer, transfer, submit_workflow, workflow_render
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills import cluster_jobs, compute_access, stage_apptainer, transfer, submit_workflow, workflow_render
+from agent.skills.outcomes import proven, refused, broke, loop
 
 
 
@@ -60,6 +60,53 @@ _DEFAULT_DL_SLURM = {"time": "1-00:00:00", "mem": "4g"}
 
 # ssh probe timeout for the seal-side cluster verification.
 _PROBE_TIMEOUT = 120
+
+
+def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Optional[str]) -> Optional[dict]:
+    """Put `src` in the acquisition directory for its job. A re-submit finds the same
+    file there and runs it again (the job resumes), once no job of the acquisition
+    is still queued or running there; a different file under that name is refused,
+    never overwritten. Returns the failure, or None."""
+    remote = f"{acq_dir}/{src.name}"
+    up = transfer.upload(project_name=transfer.AD_HOC_PROJECT_NAME, compute_env_name=compute_env,
+                         local_path=str(src), remote_abs_path=remote,
+                         access_path=str(Path(access_path)) if access_path else None, timeout=600)
+    if up.get("code") == "transfer.remote_exists":
+        from agent.skills.snapshot import _ssh_argv
+        script = f"{transfer._remote_sha256_cmd(remote)}; {cluster_jobs.jobs_in_dir_sh(acq_dir)}"
+        try:
+            res = subprocess.run(_ssh_argv(env, f"bash -lc {shlex.quote(script)}"),
+                                 capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
+            lines = (res.stdout or "").splitlines()
+        except subprocess.TimeoutExpired:
+            lines = ["SQUEUE_FAILED", "SQUEUE_ERR ssh timed out"]
+        live, said = cluster_jobs.jobs_in_dir(lines)
+        if said is not None:
+            return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
+                error=f"could not tell whether a job of this acquisition still runs in {acq_dir} "
+                      f"({said[:300]}); a second job would race it",
+                remedy="submit again once `squeue -u $USER` answers on the login node")
+        if live:
+            return refused("acquire.still_running", acq_dir=acq_dir, jobs=live,
+                error=f"a job of this acquisition is still queued or running in {acq_dir} ({live}); "
+                      f"a second one would race it for the same files",
+                remedy="cluster_job_status on it; submit again only once it has ended")
+        if transfer._parse_sha256sum_output(res.stdout or "") == transfer._compute_local_sha256(src):
+            return None
+        return refused("acquire.acq_dir_holds_another", acq_dir=acq_dir,
+            error=f"{remote} is there and is not this acquisition's {src.name}: {acq_dir} holds an "
+                  f"acquisition submitted with other arguments",
+            remedy="re-submit with the arguments it was submitted with, or give this acquisition a name "
+                   "(or a remote_dir) of its own")
+    if up.get("outcome") == "loop":
+        return loop("acquire.upload_still_running", acq_dir=acq_dir, task_id=up.get("task_id"),
+            error=f"{src.name} may still be arriving in {acq_dir}, so nothing was submitted: {up['error']}",
+            remedy=f"globus_task_status(task_id={up.get('task_id')!r}); once it has SUCCEEDED, "
+                   f"submit the acquisition again")
+    if "error" in up:
+        return broke("acquire.upload_failed", acq_dir=acq_dir,
+            error=f"upload of {src.name} to {acq_dir} failed: {up['error']}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +282,6 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
         f"# reproducibility anchor. This job's own logs are still being written: skipped.\n"
         f'echo "[acquire] hashing produced files for provenance..."\n'
         f"find . \\( -type f -o -type l \\) ! -name '*.source.sha256' ! -name '*.part' "
-        f"! -name '.acquired_*' "
         f"! -path ./launcher.sh ! -path {shlex.quote('./' + recipe_filename)} "
         f"! -path {shlex.quote(f'./acquire_{name}-*.out')} "
         f"! -path {shlex.quote(f'./acquire_{name}-*.err')} -print0 |\n"
@@ -357,20 +403,12 @@ def acquire_to_cluster(*, name: str, url: str, compute_env: str,
         local_launcher = Path(td) / _LAUNCHER_NAME
         local_launcher.write_text(script)
 
-        # Upload the launcher into the acquisition dir (common_data zone). Globus
-        # auto-creates the acq_dir leaf; scp mkdir -p's it — either way under the
-        # agent's own common_data zone (env-implicit grant), not user directories[].
-        up = transfer.upload(
-            project_name=transfer.AD_HOC_PROJECT_NAME,
-            compute_env_name=compute_env,
-            local_path=str(local_launcher),
-            remote_abs_path=f"{acq_dir}/{_LAUNCHER_NAME}",
-            access_path=str(Path(access_path)) if access_path else None,
-            timeout=600)
-        if "error" in up:
-            return broke("acquire.upload_failed",
-                error=f"upload of the download script to {acq_dir} failed: {up['error']}",
-                acq_dir=acq_dir)
+        # Into the acquisition dir (common_data zone). Globus auto-creates the
+        # acq_dir leaf; scp mkdir -p's it — either way under the agent's own
+        # common_data zone (env-implicit grant), not user directories[].
+        failed = _send(env, compute_env, local_launcher, acq_dir, access_path)
+        if failed:
+            return failed
 
     # ─── sbatch the download job (compute node does the pull) ──────────
     sb = submit_workflow.sbatch_via_ssh(env, acq_dir, timeout=300)
@@ -587,20 +625,12 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str = "", compute_env: s
                                      dir=str(transfer.staging_dir("acquire_render_staging"))) as td:
         (Path(td) / _LAUNCHER_NAME).write_text(launcher)
         (Path(td) / recipe_filename).write_text(recipe_text)
-        # Upload the tool's recipe verbatim, then our launcher, into acq_dir
+        # The tool's recipe verbatim, then our launcher, into acq_dir
         # (common_data zone — env-implicit grant, auto-created leaf).
         for fn in (recipe_filename, _LAUNCHER_NAME):
-            up = transfer.upload(
-                project_name=transfer.AD_HOC_PROJECT_NAME,
-                compute_env_name=compute_env,
-                local_path=str(Path(td) / fn),
-                remote_abs_path=f"{acq_dir}/{fn}",
-                access_path=str(Path(access_path)) if access_path else None,
-                timeout=600)
-            if "error" in up:
-                return broke("acquire.upload_failed",
-                    error=f"upload of {fn} to {acq_dir} failed: {up['error']}",
-                    acq_dir=acq_dir)
+            failed = _send(env, compute_env, Path(td) / fn, acq_dir, access_path)
+            if failed:
+                return failed
 
     # ─── sbatch the recipe-runner job ──────────────────────────────────
     sb = submit_workflow.sbatch_via_ssh(env, acq_dir, timeout=300)
@@ -867,7 +897,10 @@ def check_cluster_reference_db(rdb: dict, *,
                          f"{rdb.get('compute_env')!r}, but the job that fetched it has not "
                          f"reported finishing (no {acquired_marker(name)} beside it): it is "
                          f"still running, or it died midway and what is there is partial. "
-                         f"Check cluster_job_status; re-submit the acquisition to resume.",
+                         f"Check cluster_job_status; to resume, call "
+                         f"{'acquire_reference_via_recipe' if rdb.get('recipe') else 'download_reference_database'}"
+                         f"(name={name!r}, …) again with the arguments it was submitted with: it "
+                         f"finds its own job script there and runs it again.",
             "where":     where, "path": path,
         }]
     recorded = str(rdb.get("sha256") or "").strip().lower()

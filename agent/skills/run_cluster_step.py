@@ -83,7 +83,7 @@ from agent.skills import (
     transfer,
 )
 from agent.models.core_data import PipelineStep, default_step_tool
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.outcomes import proven, refused, broke, loop
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.validators.output_validator import infer_validator_type
 
@@ -354,6 +354,8 @@ def run_step_on_cluster(
         freeze_request_key=freeze_request_key,
         sif_subpath=sif_subpath or "",
         access_path=access_path)
+    if stage.get("outcome") == "loop":
+        return stage                      # the .sif is still arriving: its remedy says what to call
     if "error" in stage:
         return broke("run_cluster.stage_failed",
                 error=f"stage_apptainer_image failed: {stage['error']}",
@@ -436,6 +438,12 @@ def run_step_on_cluster(
                   f"one directory, which creates it",
             remedy="a fresh workflow_name for each attempt; inputs belong elsewhere in scratch",
             stage_result=stage)
+    if up.get("outcome") == "loop":
+        return loop("run_cluster.upload_still_running",
+            error=f"the rendered workflow may still be arriving in scratch: {up['error']}",
+            task_id=up.get("task_id"), staged=str(tree), stage_result=stage,
+            remedy=f"globus_task_status(task_id={up.get('task_id')!r}) says how it ended; then run "
+                   f"the step again under a fresh workflow_name")
     if "error" in up:
         return broke("run_cluster.upload_failed",
             error=f"upload of the rendered workflow to scratch failed: {up['error']}",

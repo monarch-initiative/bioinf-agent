@@ -46,13 +46,18 @@ The binding table — how a how-to placeholder reaches a process script
                                                  every row's copy of the per-sample artifact, collected
   artifact in an output slot {OUT}/x.bam     ->  x.bam           (placeholders inside bind as above)
   bare output slot           {OUT}           ->  .
+  An index the sealed run found beside a path input (x.bam.bai, ref.fa.fai) is staged
+  with it: `path(reads_index)` in the row's tuple, `path gtf_index` for a shared path.
+  A prior stage's glob artifact (`*_fastqc.html`) is staged as a variable, under the
+  files' own names; the command never names it.
   `bound_commands` is that table applied to a stage — the page's command column, so
   the page shows the line main.nf runs and never a paraphrase of it.
 
 Channels
 --------
 `rows` emits one `tuple(meta, <path columns>...)` per samples.csv row (bare `meta`
-when the sheet has no path column); `meta` holds `sample` plus every value column. A
+when the sheet has no path column); `meta` holds `sample` plus every value column a
+command binds (a column only a script reads through the samplesheet stays out). A
 stage consuming artifacts from prior stages receives their `tuple(meta, path)` output
 channels `.join()`ed on meta; one that also consumes a path column joins `rows` last
 (projected to the columns it uses); one consuming only columns takes `rows`; one
@@ -255,9 +260,6 @@ def _check_record(record: PipelineRecord) -> None:
                     f"param {p.name}: default {p.default!r} contains a single quote or a "
                     f"newline and cannot be written into main.nf; re-seal with a value "
                     f"free of both") from None
-    for c in record.samplesheet.columns:
-        _check_identifier(f"samples.csv column {c.name}", c.name,
-                          "rename the column in the samplesheet the sealed run read, and re-seal")
     for s in record.stages:
         _check_identifier(f"stage {s.name}: process name", s.name,
                           "pass stage_names= to derive_pipeline_record")
@@ -391,7 +393,10 @@ class _Context:
             if c.index_files:
                 self.path_cols.append(_RowFile(f"{c.name}_index", _index_list(f"r.{c.name}", c.index_files),
                                                c.placeholder))
-        self.value_cols = [c for c in cols if c.value_kind == "value" and c.name != "sample"]
+        # the values a command binds ride in meta; a column only a script reads through the
+        # samplesheet (placeholder == name) stays in samples.csv alone
+        self.value_cols = [c for c in cols if c.value_kind == "value" and c.name != "sample"
+                           and c.placeholder != c.name]
 
     def param(self, name: str) -> PipelineParam:
         return self.record.param(name)
@@ -425,7 +430,7 @@ class _Context:
         for slot in self.record.output_slots:
             # `{OUT}/name` is the name in the task's directory; a slot with no name after
             # it (`{OUT}/ `, `{OUT}//x`, bare `{OUT}`) is the directory itself
-            out = re.sub(r"\{" + re.escape(slot) + r"\}/(?=[^\s/])", "", out).replace("{" + slot + "}", ".")
+            out = re.sub(r"\{" + re.escape(slot) + r"\}/(?=[^\s'\"|;&<>()/])", "", out).replace("{" + slot + "}", ".")
         collected = {i.name: i.name.lower() for i in stage.inputs if i.origin == "collect"}
 
         def sub(m: re.Match) -> str:
@@ -646,16 +651,28 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     if stage.stage_in_copy:
         body.append("stageInMode 'copy'                       // this stage rewrites an artifact it consumed")
 
-    # inputs
+    # inputs. A consumed artifact is staged under its own name: a glob as a variable,
+    # because a pattern input renames what it stages (`*_fastqc.html` -> `1_fastqc.html`).
+    def staged(i) -> str:
+        art = i.artifact or i.name
+        return _slug(art) if any(c in art for c in "*?") else ctx.artifact_expr(stage, art)
+    named = [staged(i) for i in io["artifacts"]] + [c.name for c in io["path_cols"]] \
+        + [i.name.lower() for i in (*io["collects"], *io["sheets"])] \
+        + [n for p in io["shared_paths"] for n in (p.name.lower(), *([f"{p.name.lower()}_index"] if p.index_files else []))] \
+        + [f"{p.name.lower()}_files" for p in io["prefixes"]]
+    clash = sorted({n for n in named if named.count(n) > 1})
+    if clash:
+        raise ValueError(f"stage {stage.name}: two inputs would be staged as {clash}; rename the "
+                         f"placeholder in the how-to and re-seal")
     ins: list[str] = []
     if cohort:
         for i in io["collects"]:
             ins.append(f"path '{i.name.lower()}/*'" + " " * max(1, 28 - len(i.name) - 9)
                        + f"// every row's {ctx.words(i.artifact or i.name)}, from {i.from_stage}, in one directory")
-        ins += [f"path {ctx.artifact_expr(stage, i.artifact or i.name)}" for i in io["artifacts"]]
+        ins += [f"path {staged(i)}" for i in io["artifacts"]]
     else:
         parts = ["val(meta)"]
-        parts += [f"path({ctx.artifact_expr(stage, i.artifact or i.name)})" for i in io["artifacts"]]
+        parts += [f"path({staged(i)})" for i in io["artifacts"]]
         parts += [f"path({c.name})" for c in io["path_cols"]]
         ins.append("tuple " + ", ".join(parts))
     ins += [f"path {i.name.lower()}" + " " * max(1, 28 - len(i.name) - 5)

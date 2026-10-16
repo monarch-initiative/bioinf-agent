@@ -165,6 +165,74 @@ class TestAcquireToClusterHappyPath:
         assert e["available"] is False
 
 
+class TestResubmit:
+    """The I5 remedy for an acquisition that has not reported finishing is to submit
+    it again. Its job script is already in the directory, so a re-submit runs that
+    one again (the job resumes) — once no job of it is still queued or running there,
+    and only when the script there is this acquisition's own."""
+
+    def _resubmit(self, tmp_path, monkeypatch, *, squeue: str, there: str | None = None):
+        import os
+        import shlex
+        import subprocess
+        from agent.skills import submit_workflow, transfer
+        common = tmp_path / "common"
+        acq = common / "gnomad"
+        acq.mkdir(parents=True)
+        access = {"compute_envs": [{**_FAKE_ACCESS["compute_envs"][0],
+                                    "agent_common_data_target": {"path": str(common),
+                                                                 "permissions": ["upload", "download", "exec"]}}],
+                  "projects": []}
+        monkeypatch.setattr(compute_access, "load_access", lambda *_a, **_k: access)
+        sent = {}
+
+        def fake_upload(**kw):                   # the first submit's script is the one there
+            dest = Path(kw["remote_abs_path"])
+            if dest.exists():
+                return {"outcome": "refused", "code": "transfer.remote_exists", "error": "exists"}
+            dest.write_bytes(Path(kw["local_path"]).read_bytes() if there is None else there.encode())
+            return {"success": True}
+        monkeypatch.setattr(transfer, "upload", fake_upload)
+        monkeypatch.setattr(submit_workflow, "sbatch_via_ssh",
+                            lambda env, d, **kw: sent.setdefault("sbatch", []).append(d) or {"job_id": "77"})
+        monkeypatch.setattr(submit_workflow, "_write_submission_manifest", lambda **kw: str(tmp_path / "m.json"))
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        (bin_dir / "squeue").write_text("#!/bin/bash\n" + squeue.replace("{acq}", str(acq)))
+        (bin_dir / "squeue").chmod(0o755)
+        real = subprocess.run
+
+        def via_bash(argv, *a, **kw):
+            return real(["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=True,
+                        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "USER": "u"})
+        monkeypatch.setattr(acquire_data.subprocess, "run", via_bash)
+
+        def submit():
+            return acquire_data.acquire_to_cluster(name="gnomad", url="https://x.org/g.vcf.bgz",
+                                                   compute_env="hpc", _pipeline_state=object())
+        first = submit()
+        return first, submit(), sent
+
+    def test_a_resubmit_runs_its_own_script_again(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="echo '9 RUNNING /elsewhere'\n")
+        assert first["outcome"] == "proven" and again["outcome"] == "proven", again
+        assert len(sent["sbatch"]) == 2
+
+    def test_a_job_still_running_there_is_never_raced(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="echo '77 RUNNING {acq}'\n")
+        assert (again["outcome"], again["code"]) == ("refused", "acquire.still_running"), again
+        assert again["jobs"] == ["77 RUNNING"] and len(sent["sbatch"]) == 1
+
+    def test_a_scheduler_that_cannot_answer_submits_nothing(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch,
+                                            squeue="echo 'Socket timed out' >&2; exit 1\n")
+        assert (again["outcome"], again["code"]) == ("broke", "acquire.resubmit_unchecked"), again
+        assert "Socket timed out" in again["error"] and len(sent["sbatch"]) == 1
+
+    def test_another_acquisitions_script_is_refused_not_overwritten(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", there="#!/bin/bash\nother\n")
+        assert (again["outcome"], again["code"]) == ("refused", "acquire.acq_dir_holds_another"), again
+
+
 # ---------------------------------------------------------------------------
 # Locus-aware I5 + refresh
 # ---------------------------------------------------------------------------
@@ -221,6 +289,7 @@ class TestCheckClusterReferenceDb:
         v = acquire_data.check_cluster_reference_db(_cluster_rdb())
         assert v[0]["invariant"] == "I5.reference_database_incomplete"
         assert asked["marker"] == acquire_data.acquired_marker(_cluster_rdb()["name"])
+        assert "download_reference_database(name='gnomad'" in v[0]["message"], "the remedy is a real call"
 
     def test_ssh_failure_unverifiable(self, monkeypatch):
         monkeypatch.setattr(compute_access, "load_access",

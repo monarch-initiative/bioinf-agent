@@ -70,6 +70,10 @@ def test_the_verdict_is_over_the_tasks_never_the_manager():
     assert cj._pipeline_verdict([], [{"verdict": cj.RUNNING, "state": "PENDING"}]) == "not_started"
     # a manager that ended with no task on record did not "not start": nothing says what it did
     assert cj._pipeline_verdict([], manager_done) == "unobserved"
+    # no scheduler row for the manager: in-flight tasks say running; otherwise nothing says it is over
+    in_flight = ok + [{"status": "RUNNING"}]
+    assert cj._pipeline_verdict(in_flight, []) == "running"
+    assert cj._pipeline_verdict(ok, []) == "unobserved" and cj._pipeline_verdict([], []) == "unobserved"
 
 
 def test_a_run_with_no_manager_log_reads_the_managers_own_row(monkeypatch):
@@ -87,8 +91,10 @@ def test_a_run_with_no_manager_log_reads_the_managers_own_row(monkeypatch):
     ended = cj._read_pipeline_run(env, "/w/run1", "4242", [{"verdict": cj.SUCCEEDED,
                                                             "state": "COMPLETED"}], timeout=5)
     assert queued["verdict"] == "not_started" and "has not started" in queued["note"]
-    assert died["verdict"] == "failed"
+    unknown = cj._read_pipeline_run(env, "/w/run1", "4242", [], timeout=5)
+    assert died["verdict"] == "failed" and "run_dir is not the directory" in died["note"]
     assert ended["verdict"] == "unobserved" and "check that run_dir" in ended["note"]
+    assert unknown["verdict"] == "unobserved" and "no record of the job" in unknown["note"]
 
 
 def test_the_remote_script_is_built_from_validated_tokens_only():

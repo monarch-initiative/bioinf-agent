@@ -90,9 +90,12 @@ def upload(project_name: str,
     Wire protocol: dispatched by the env's `data_transfer.type` —
     `scp_head_node` (default) or `globus` (when configured). The call
     BLOCKS until the bytes are verified. A globus transfer past the
-    sync-wait cap returns `globus_sync_wait_exceeded` WITH its task_id —
-    the transfer keeps running server-side; resolve it with
-    `globus_task_status`, do not assume it failed.
+    sync-wait cap returns `globus_sync_wait_exceeded` WITH its task_id, and
+    one whose end could not be seen (a status query that failed, a cancel
+    that did not take) `globus_task_unobserved` — the transfer may still be
+    running server-side; resolve it with `globus_task_status`, do not
+    assume it failed. Until then, an upload to the same path is refused
+    (`upload_in_flight`).
 
     Manifest: every call (success OR failure) writes a JSON record under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_upload_<hash>.json`
@@ -262,14 +265,15 @@ def globus_task_status(project_name: str,
     Runs `globus task show <id> --format json`; no submission.
 
     Reach for this when `upload`/`download` returned
-    `globus_sync_wait_exceeded`: we stopped waiting, but Globus did not
-    stop transferring. This answers how the task actually ended. The
+    `globus_sync_wait_exceeded` or `globus_task_unobserved`: we stopped
+    watching, but Globus may not have stopped transferring. This answers how the task actually ended. The
     outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
     ACTIVE/INACTIVE -> loop (poll again). A directory task that SUCCEEDED
     but skipped files or left symlinks behind -> broke: not a whole copy.
     An upload lands under a hidden partial name until it is verified; when
     the task has SUCCEEDED, this call renames it into place (`renamed_to`)
-    and the upload's receipt says it finished.
+    and the upload's receipt says it finished; when it ended otherwise,
+    the receipt says it failed and an upload to that path may go again.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.
@@ -339,8 +343,8 @@ def cluster_job_status(project_name: str,
     replaces a poll loop. Prefer `wait_s=300` over calling this repeatedly.
 
     Authorization: the project's `compute_envs` must list
-    `compute_env_name`. No per-directory permission needed. SLURM's
-    own ACL keeps the visibility scoped to the user's own jobs.
+    `compute_env_name`; SLURM's own ACL keeps the visibility scoped to the
+    user's own jobs. A `run_dir` must be a path the project may `download`.
 
     `job_id` must be digits with an optional `_<task>` suffix for array
     tasks (e.g. `12345`, `12345_3`). Anything else is refused BEFORE

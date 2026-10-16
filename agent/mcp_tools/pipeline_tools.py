@@ -67,7 +67,7 @@ def _samplesheet_files(spec: Any) -> dict[str, str]:
 
 def _index_files(spec: Any) -> dict[str, list[str]]:
     """`{path: [index files beside it]}` for every absolute path the sealed trials
-    bound — read here so the derivation stays pure."""
+    bound whose directory is on this machine — read here so the derivation stays pure."""
     from agent.models import core_data
     from agent.skills.pipeline_record import index_candidates
     spec_d = spec.model_dump() if hasattr(spec, "model_dump") else dict(spec)
@@ -75,7 +75,7 @@ def _index_files(spec: Any) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for t in trials:
         for v in ((t.get("substitutions") or {}).values() if isinstance(t, dict) else []):
-            if isinstance(v, str) and v.startswith("/") and v not in out:
+            if isinstance(v, str) and v.startswith("/") and v not in out and Path(v).parent.is_dir():
                 out[v] = [sp for _, sp in index_candidates(v) if Path(sp).is_file()]
     return out
 

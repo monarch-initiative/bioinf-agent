@@ -19,10 +19,11 @@ event:
 So nine env-build invariants + three re-anchoring walks (binary re-hash, source
 re-clone, authored re-hash) collapse into THREE structural guarantees:
 
-  BUILT              — the image exists (image + image_digest resolve). Every RUN,
-                       each carrying its own inline anchor, returned 0; else no
-                       image. Absorbs I1 + the structural core of the other
-                       re-anchoring invariants (see the registry).
+  BUILT              — the image was built (image + image_digest recorded as the
+                       daemon reported them at freeze). Every RUN, each carrying
+                       its own inline anchor, returned 0; else no image. Absorbs
+                       I1 + the structural core of the other re-anchoring
+                       invariants (see the registry).
   VALIDATED_IN_IMAGE — every declared tool's evidence passes when re-run in the
                        SHIPPED image, AND each evidence genuinely exercises its tool
                        (the anti-echo-cheat shape rule — the one piece of I2 that
@@ -655,8 +656,8 @@ def coverage_disclosure(contract: BuildContract) -> dict:
             lines.append(
                 "SAYS less, but proves the same (disclosure): "
                 + ", ".join(c.clause for c in disclosure)
-                + ". Expected when the image has no agent-built binaries to describe — an "
-                  "adopted biocontainer, or an image built from packages alone.")
+                + ". The record carries nothing for these to examine; what the image "
+                  "proves is unchanged.")
         payload["coverage_advisory"] = " ".join(lines)
     return payload
 
@@ -1096,8 +1097,8 @@ _VII_COVERS = ("VALIDATED_IN_IMAGE.no_evidence",
 #: learning about it.
 LAYER1_GUARANTEES: tuple[tuple[str, str], ...] = (
     ("BUILT",
-     "the env image + image_digest resolve in the local Docker daemon, and the image is "
-     "the architecture the record claims (a digest naming NO architecture is a manifest "
+     "the env image + image_digest, recorded as the local Docker daemon reported them at "
+     "freeze, and the image is the architecture the record claims (a digest naming NO architecture is a manifest "
      "list — two machines pulling it ship different bytes — and is refused)"),
     ("VALIDATED_IN_IMAGE",
      "every tool's evidence command re-runs green INSIDE the shipped image AND "

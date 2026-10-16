@@ -17,7 +17,11 @@ are verified:
   - a failed download removes what it had written, so a retry is not refused and
     nothing reads a truncated file as the output;
   - a Globus task that cannot finish without someone acting is cancelled, so a
-    retry cannot race it.
+    retry cannot race it;
+  - a Globus task whose end was not seen (a status query that failed, a cancel
+    that did not take) is "still running", never "failed": an upload keeps its
+    rename and holds its destination against a second copy until
+    globus_task_status says how it ended, and a download keeps what it wrote.
 
 The scp tests run the real remote commands through bash on this machine.
 """
@@ -219,6 +223,80 @@ class TestGlobus:
         assert out["code"] == "transfer.globus_task_inactive", out
         assert ["globus", "task", "cancel", _TASK_ID] in calls
         assert "cancelled, so a retry cannot race it" in out["error"]
+
+    @pytest.mark.integration
+    def test_an_upload_whose_end_was_not_seen_holds_its_destination_until_resolved(
+            self, tmp_path, monkeypatch):
+        state = {"show": "error"}
+        calls: list = []
+
+        def fake_run(argv, *a, **kw):
+            calls.append(argv)
+            if argv[:2] == ["globus", "stat"]:
+                return MagicMock(returncode=0, stderr="", stdout=json.dumps({"code": "NotFound"}))
+            if argv[:2] == ["globus", "transfer"]:
+                return MagicMock(returncode=0, stderr="", stdout=json.dumps({"task_id": _TASK_ID}))
+            if state["show"] == "error":
+                return MagicMock(returncode=1, stderr="Token expired", stdout="")
+            return MagicMock(returncode=0, stderr="", stdout=json.dumps(
+                {"status": "FAILED", "fatal_error": {"code": "ENDPOINT_ERROR", "description": "disk full"}}))
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        src = tmp_path / "big.sif"
+        src.write_bytes(b"x" * 64)
+        access = str(_globus_access(tmp_path))
+        dest = "/w/scratch/demo_project/big.sif"
+
+        out = transfer.upload("demo_project", "hpc", str(src), dest, access_path=access)
+        assert (out["outcome"], out["code"]) == ("loop", "transfer.globus_task_unobserved"), out
+        assert out["partial_path"] == "/w/scratch/demo_project/.big.sif.partial"
+        rec = json.loads(Path(out["manifest"]).read_text())
+        assert rec["outcome"] == "still running" and rec["pending_rename"]["to"] == dest
+
+        again = transfer.upload("demo_project", "hpc", str(src), dest, access_path=access)
+        assert (again["outcome"], again["code"]) == ("refused", "transfer.upload_in_flight"), again
+        assert again["task_id"] == _TASK_ID and not any(c[:2] == ["globus", "transfer"] for c in calls[3:])
+
+        state["show"] = "failed"
+        env = {**_env_ssh(), "data_transfer": {"type": "globus", "globus": _GLOBUS}}
+        st = transfer.resolve_globus_task("demo_project", env, _TASK_ID)
+        assert st["code"] == "transfer.task_failed" and st["partial_path"].endswith(".big.sif.partial"), st
+        rec = json.loads(Path(out["manifest"]).read_text())
+        assert rec["outcome"] == "failed" and "pending_rename" not in rec
+        assert transfer.upload("demo_project", "hpc", str(src), dest,
+                               access_path=access)["code"] != "transfer.upload_in_flight"
+
+    @pytest.mark.integration
+    def test_a_task_whose_cancel_failed_is_still_running_not_failed(self, tmp_path, monkeypatch):
+        def fake_run(argv, *a, **kw):
+            if argv[:2] == ["globus", "transfer"]:
+                return MagicMock(returncode=0, stderr="", stdout=json.dumps({"task_id": _TASK_ID}))
+            if argv[:3] == ["globus", "task", "cancel"]:
+                return MagicMock(returncode=1, stderr="network unreachable", stdout="")
+            return MagicMock(returncode=0, stderr="", stdout=json.dumps(
+                {"status": "INACTIVE", "nice_status": "Creds Expired"}))
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        src = tmp_path / "x.txt"
+        src.write_text("hi")
+        out = transfer_providers.GlobusProvider(_GLOBUS).upload_one(
+            env=_env_ssh(), local_path=src, abs_remote_path="/w/u/x.txt",
+            local_sha256="0" * 64, timeout=60)
+        assert (out["outcome"], out["code"]) == ("loop", "transfer.globus_task_unobserved"), out
+        assert out["partial_path"] == "/w/u/.x.txt.partial" and "Creds Expired" in out["error"]
+
+    @pytest.mark.integration
+    def test_a_download_whose_end_was_not_seen_keeps_what_it_wrote(self, tmp_path, monkeypatch):
+        local = tmp_path / "out.bam"
+
+        def fake_run(argv, *a, **kw):
+            if argv[:2] == ["globus", "transfer"]:
+                local.write_bytes(b"BAM")             # Globus writing while it runs
+                return MagicMock(returncode=0, stderr="", stdout=json.dumps({"task_id": _TASK_ID}))
+            return MagicMock(returncode=1, stderr="Token expired", stdout="")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        out = transfer_providers.GlobusProvider(_GLOBUS).download_one(
+            env=_env_ssh(), abs_remote_path="/w/u/out.bam", local_path=local, timeout=60)
+        assert out["outcome"] == "loop", out
+        assert local.exists(), "deleting it under a live task is a race, not a cleanup"
 
     @pytest.mark.integration
     def test_a_directory_upload_mirrors_into_its_partial(self, tmp_path, monkeypatch):

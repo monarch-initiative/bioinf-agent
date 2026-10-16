@@ -212,7 +212,7 @@ def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_na
         local_path=str(local_sif_path), remote_abs_path=sif_remote_abs,
         access_path=str(Path(access_path)) if access_path else None,
         timeout=timeout)
-    if up.get("code") == "transfer.globus_sync_wait_exceeded":
+    if up.get("outcome") == "loop":
         return loop("stage.sif_upload_still_running", success=False,
             error=up["error"], task_id=up.get("task_id"), sif_path=sif_remote_abs,
             local_sif=str(local_sif_path),
