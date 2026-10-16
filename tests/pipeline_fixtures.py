@@ -8,6 +8,7 @@ row. Every path is absolute and nothing is read from disk.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 IMAGE = "bioinf_rnaseq_cli:latest"
@@ -247,5 +248,90 @@ def sealed_deseq2_spec(samples: Optional[list[str]] = None, *, design: str = "co
             *[_authored(c, "staged_input", None, "tsv") for c in counts],
         ],
         "envs": [{"request_key": REQUEST_KEY_DE, "image": f"bioinf_rnaseq_de@{DIGEST_DE}", "image_digest": DIGEST_DE}],
+    }
+    return WorkflowSpec.model_validate(spec)
+
+
+# ── a tool that writes a TREE: one project directory every command reads and writes ──
+
+KG_DIR = "/data/kg/monarch_kg_2026-03-06"
+TEMPLATES_TREE = [
+    "ln -s {KG_DIR} monarch_kg && extract -p {OUTPUT_DIR} -g {GRAPH_VERSION} && rm monarch_kg",
+    "trials -p {OUTPUT_DIR} -n {N_TRIALS}",
+    "phenologs -p {OUTPUT_DIR}",
+    "fdr -p {OUTPUT_DIR}",
+    "report -p {OUTPUT_DIR}",
+]
+#: what each command writes, relative to the project directory it names bare
+TREE_WRITES = [
+    ["species_data/Homo-sapiens_gene_to_disease.tsv", "species_data/species_information_table.tsv"],
+    ["random_trials/Homo_sapiens_disease_trials/Homo-sapiens_vs_Mus-musculus_0.tsv.gz",
+     "random_trials/Homo_sapiens_disease_trials/Homo-sapiens_vs_Mus-musculus_1.tsv.gz"],
+    ["phenologs_results/Homo_sapiens_disease_results/Homo-sapiens_vs_Mus-musculus_all_phenologs.tsv"],
+    ["phenologs_results/Homo_sapiens_disease_results/Homo-sapiens_fdr_table.tsv"],
+    ["summary.txt"],
+]
+
+
+def _tree_subs(outdir: str) -> dict:
+    return {"KG_DIR": KG_DIR, "GRAPH_VERSION": "2026-03-06", "N_TRIALS": "20", "OUTPUT_DIR": outdir}
+
+
+def sealed_tree_spec(samples: Optional[list[str]] = None):
+    """A validated `WorkflowSpec` for a tool whose commands all take ONE project
+    directory (`-p {OUTPUT_DIR}`, the output slot named bare) and write subdirectory
+    trees into it: extraction writes species_data/, the trials random_trials/, the real
+    phenologs phenologs_results/, the FDR step writes INTO phenologs_results/ again, and
+    a report reads it all. One trial per graph version."""
+    from agent.models.core_data import WorkflowSpec
+    samples = list(samples if samples is not None else ["kg_2026-03-06"])
+    steps: list[dict] = []
+    trials = []
+    for s in samples:
+        run = f"/runs/{s}"
+        subs = _tree_subs(run)
+        cmds = [_resolved(t, subs) for t in TEMPLATES_TREE]
+        written_so_far: list[str] = []
+        for i, (cmd, rel) in enumerate(zip(cmds, TREE_WRITES)):
+            outs = [f"{run}/{r}" for r in rel]
+            ins = [KG_DIR] if i == 0 else [str(Path(written_so_far[-1]).parent)]
+            steps.append(_step(cmd.split()[0], cmd, ins, outs, wall=10.0 + i, rss=500.0))
+            written_so_far += outs
+        scratch = f"/scratch/i4/{s}"
+        tsubs = _tree_subs(scratch)
+        trials.append({"name": s, "ok": True,
+                       "commands_run": [_resolved(t, tsubs) for t in TEMPLATES_TREE],
+                       "substitutions": tsubs, "output_slots": ["OUTPUT_DIR"],
+                       "produced_files": [f"{scratch}/{r}" for rel in TREE_WRITES for r in rel],
+                       "validation_results": []})
+    for n, st in enumerate(steps, 1):
+        st["step"] = n
+    usage = {
+        "description": "Phenologs from one Monarch KG version: extract, trials, phenologs, FDR, report",
+        "command_template": list(TEMPLATES_TREE),
+        "inputs": [
+            {"name": "KG_DIR", "format": "directory", "description": "the KG files, laid out as monarch_kg/"},
+            {"name": "GRAPH_VERSION", "format": "value", "description": "the KG release date"},
+            {"name": "N_TRIALS", "format": "value", "description": "randomized trials"},
+        ],
+        "outputs": [{"name": "OUTPUT_DIR", "files": ["species_data/*", "random_trials/*/*.tsv.gz",
+                                                     "phenologs_results/*/*_fdr_table.tsv", "summary.txt"]}],
+        "trials": [{"name": s, "substitutions": _tree_subs(f"/out/{s}")} for s in samples],
+    }
+    spec = {
+        "workflow_name": "phenologs_workflow",
+        "description": "phenologs over one KG version",
+        "created_at": "2026-10-14T00:00:00+00:00",
+        "env_request_key": REQUEST_KEY,
+        "env_content_digest": "sha256:content0000",
+        "env_image": f"monarch_phenologs@{DIGEST}",
+        "pipeline_status": "fully_validated",
+        "usage_verified": True,
+        "usage_verification": {"status": "verified", "reason": "", "locus": "native",
+                               "trial_count": len(trials), "passed": len(trials), "trials": trials},
+        "validated_in_shipped_image": True,
+        "usage": usage,
+        "pipeline_steps": steps,
+        "envs": [{"request_key": REQUEST_KEY, "image": f"monarch_phenologs@{DIGEST}", "image_digest": DIGEST}],
     }
     return WorkflowSpec.model_validate(spec)

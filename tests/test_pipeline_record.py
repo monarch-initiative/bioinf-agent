@@ -86,6 +86,69 @@ class TestStages:
         assert idx.inputs[0].from_stage == "HISAT2"
         assert [o.artifact for o in idx.outputs] == ["aligned.bam.bai"]
         assert idx.outputs[0].declared_pattern is None     # observed, declared by nobody — still an output
+        # results/ gets what the how-to declares, the BAM's index travelling with it
+        assert [(o.artifact, o.published) for s in rec.stages for o in s.outputs] == [
+            ("aligned.bam", True), ("aligned.bam.bai", True), ("{SAMPLE}.counts.tsv", True)]
+
+    @pytest.mark.parametrize("files", [["{OUTPUT_DIR}/{SAMPLE}.counts.tsv"], ["{SAMPLE}.counts.tsv"],
+                                       ["{OUT_DIR}/*.counts.tsv"]])
+    def test_a_declared_pattern_is_read_as_the_self_test_reads_it_and_only_it_is_published(self, files):
+        """Spelled through the output directory or not, with the sample's slot or a glob:
+        the counts are the result; the BAM and its index stay in the work directory."""
+        spec = sealed_rnaseq_spec().model_dump()
+        spec["usage"]["outputs"] = [{"name": "OUTPUT_DIR", "files": files}]
+        rec = pr.derive_pipeline_record(type(sealed_rnaseq_spec()).model_validate(spec), name="x")
+        assert [(o.artifact, o.published) for s in rec.stages for o in s.outputs] == [
+            ("aligned.bam", False), ("aligned.bam.bai", False), ("{SAMPLE}.counts.tsv", True)]
+
+    @pytest.mark.parametrize("files", [[], ["nothing_*.txt"]])
+    def test_a_how_to_that_declares_no_output_the_run_wrote_publishes_everything(self, files):
+        spec = sealed_rnaseq_spec().model_dump()
+        spec["usage"]["outputs"] = [{"name": "OUTPUT_DIR", "files": files}] if files else []
+        rec = pr.derive_pipeline_record(type(sealed_rnaseq_spec()).model_validate(spec), name="x")
+        assert all(o.published for s in rec.stages for o in s.outputs)
+        assert ("usage.outputs pattern 'nothing_*.txt' names no output a stage writes; every output is published"
+                in rec.notes) == bool(files)
+
+    @pytest.mark.parametrize("files, published", [
+        # a pattern names files INSIDE a tree, by path or by name: the tree that holds them
+        # (the FDR stage's copy of phenologs_results, not the phenologs stage's) is published
+        (["phenologs_results/*/*_fdr_table.tsv"], ["phenologs_results@FDR"]),
+        (["*_fdr_table.tsv", "summary.txt"], ["phenologs_results@FDR", "summary.txt"]),
+        (["*.tsv.gz"], ["random_trials"]),
+    ])
+    def test_a_tree_is_published_when_a_pattern_names_a_file_in_it(self, files, published):
+        from pipeline_fixtures import sealed_tree_spec
+        spec = sealed_tree_spec().model_dump()
+        spec["usage"]["outputs"] = [{"name": "OUTPUT_DIR", "files": files}]
+        rec = pr.derive_pipeline_record(type(sealed_tree_spec()).model_validate(spec), name="x")
+        last = {o.artifact: s.name for s in rec.stages for o in s.outputs}    # each tree's last writer
+        got = [o.artifact + ("@FDR" if s.name == last[o.artifact] and o.artifact == "phenologs_results" else "")
+               for s in rec.stages for o in s.outputs if o.published]
+        assert got == published, [(s.name, o.artifact, o.published) for s in rec.stages for o in s.outputs]
+
+    def test_an_output_no_sealed_step_observed_is_matched_by_its_name(self):
+        """No step backs the count command, so its output is read off `> {OUTPUT_DIR}/…`:
+        the declared `*.counts.tsv` is matched against the artifact's own name."""
+        spec = sealed_rnaseq_spec().model_dump()
+        spec["pipeline_steps"] = [st for st in spec["pipeline_steps"] if st["tool"] != "htseq-count"]
+        rec = pr.derive_pipeline_record(type(sealed_rnaseq_spec()).model_validate(spec), name="x")
+        count = rec.stage("HTSEQ_COUNT").outputs[0]
+        assert (count.observed, count.declared_pattern, count.published) == (None, "*.counts.tsv", True)
+
+    def test_an_index_that_replaces_its_files_extension_travels_with_it(self):
+        assert pr._sidecar_of("x.bai", {"x.bam": 0}) == "x.bam"
+        assert pr._sidecar_of("{SAMPLE}.bai", {"{SAMPLE}.bam": 0}) == "{SAMPLE}.bam"
+        assert pr._sidecar_of("ref.dict", {"ref.fasta": 0}) == "ref.fasta"
+        assert pr._sidecar_of("x.bai", {"y.bam": 0}) is None
+
+    def test_a_pattern_that_names_nothing_is_noted_beside_the_ones_that_do(self):
+        spec = sealed_rnaseq_spec().model_dump()
+        spec["usage"]["outputs"] = [{"name": "OUTPUT_DIR", "files": ["{OUTPUT_DIR}/aligned.bam", "nothing.txt"]}]
+        rec = pr.derive_pipeline_record(type(sealed_rnaseq_spec()).model_validate(spec), name="x")
+        assert [(o.artifact, o.published) for s in rec.stages for o in s.outputs] == [
+            ("aligned.bam", True), ("aligned.bam.bai", True), ("{SAMPLE}.counts.tsv", False)]
+        assert "usage.outputs pattern 'nothing.txt' names no output a stage writes; nothing is published for it" in rec.notes
 
     def test_the_count_stage_sees_params_columns_artifacts_and_sidecars(self):
         rec = _record()
@@ -294,3 +357,99 @@ class TestLocalRuntime:
         rt = pr.LocalRuntime(activate="/checkout/scripts/activate.sh", nextflow=None)
         assert _record(local_runtime=rt).local_runtime.nextflow is None
         assert _record().local_runtime is None
+
+
+class TestDirectoryArtifacts:
+    """A tool whose commands take one project directory and write trees into it: the
+    artifacts are the top-level directories, a bare output slot consumes everything written
+    before it, and a stage that writes into a directory it consumed stages a copy."""
+
+    @staticmethod
+    def _rec():
+        from pipeline_fixtures import sealed_tree_spec
+        return pr.derive_pipeline_record(sealed_tree_spec(), name="phenologs")
+
+    def test_a_tree_written_under_the_output_slot_is_one_directory_artifact(self):
+        rec = self._rec()
+        first = rec.stages[0]
+        assert [o.artifact for o in first.outputs] == ["species_data"]
+        assert first.outputs[0].directory is True
+        assert first.outputs[0].observed == "species_data"
+        assert first.outputs[0].declared_pattern == "species_data/*"
+        # the link the command made and removed is not an artifact: nothing was observed under it
+        assert all("monarch_kg" not in o.artifact for s in rec.stages for o in s.outputs)
+
+    def test_a_bare_output_slot_consumes_every_artifact_written_before_it(self):
+        rec = self._rec()
+        trials, phen, fdr = rec.stages[1], rec.stages[2], rec.stages[3]
+        assert trials.consumes_workdir and phen.consumes_workdir and fdr.consumes_workdir
+        assert [(i.name, i.from_stage) for i in trials.inputs if i.origin == "stage"] == [("species_data", "LN")]
+        assert [(i.name, i.from_stage) for i in phen.inputs if i.origin == "stage"] == \
+            [("species_data", "LN"), ("random_trials", "TRIALS")]
+        assert [o.artifact for o in trials.outputs] == ["random_trials"] and trials.outputs[0].directory
+        assert rec.stages[0].outputs[0].consumed_by == ["FDR", "PHENOLOGS", "REPORT", "TRIALS"]
+
+    def test_a_stage_that_writes_into_a_directory_it_consumed_stages_a_copy_and_hands_on_the_new_version(self):
+        rec = self._rec()
+        phen, fdr, report = rec.stages[2], rec.stages[3], rec.stages[4]
+        assert not phen.stage_in_copy and fdr.stage_in_copy and not report.stage_in_copy
+        assert [(i.name, i.from_stage) for i in fdr.inputs if i.name == "phenologs_results"] == \
+            [("phenologs_results", "PHENOLOGS")]
+        assert [o.artifact for o in phen.outputs] == ["phenologs_results"]
+        assert phen.outputs[0].consumed_by == ["FDR"]              # the version before the rewrite
+        assert [o.artifact for o in fdr.outputs] == ["phenologs_results"]
+        assert fdr.outputs[0].directory and fdr.outputs[0].consumed_by == ["REPORT"]
+        # the consumer after the rewrite reads the rewritten directory, never the stale one
+        assert [(i.name, i.from_stage) for i in report.inputs if i.name == "phenologs_results"] == \
+            [("phenologs_results", "FDR")]
+        assert [o.artifact for o in report.outputs] == ["summary.txt"] and not report.outputs[0].directory
+
+    def test_a_stage_that_rewrites_what_its_own_earlier_command_wrote_stages_no_copy(self):
+        from pipeline_fixtures import sealed_tree_spec
+        rec = pr.derive_pipeline_record(sealed_tree_spec(), name="phenologs",
+                                        stages=[[0], [1], [2, 3], [4]])
+        merged = rec.stages[2]
+        assert merged.commands == [rec.stages[2].commands[0], rec.stages[2].commands[1]]
+        assert not merged.stage_in_copy           # phenologs_results is rewritten INSIDE the stage
+        assert [o.artifact for o in merged.outputs] == ["phenologs_results"]
+        assert merged.outputs[0].consumed_by == [rec.stages[3].name]
+        assert [(i.name, i.from_stage) for i in rec.stages[3].inputs if i.name == "phenologs_results"] == \
+            [("phenologs_results", merged.name)]
+
+    def test_a_nested_path_under_the_slot_names_its_top_level_directory(self):
+        assert pr.artifact_tokens("cp {X} {OUTPUT_DIR}/kg/nodes.tsv && tool -o {OUTPUT_DIR}/out.tsv",
+                                  {"OUTPUT_DIR"}) == ["kg", "out.tsv"]
+
+    def test_the_record_round_trips_with_the_directory_flag(self, tmp_path):
+        rec = self._rec()
+        p = tmp_path / "pipeline.yaml"
+        pr.save_record(rec, p) if hasattr(pr, "save_record") else p.write_text(rec.model_dump_json())
+        text = p.read_text()
+        assert "directory" in text
+        loaded = pr.PipelineRecord.model_validate_json(text) if text.lstrip().startswith("{") else pr.load_record(p)
+        assert loaded.stages[0].outputs[0].directory is True
+
+
+def test_the_render_says_which_values_a_value_parameter_was_proven_with():
+    rec = pr.derive_pipeline_record(sealed_rnaseq_spec(), name="rnaseq_counts")
+    assert any(n.startswith("STRANDED: shared") and "the self-test ran it with ['reverse'] only" in n
+               for n in rec.notes), rec.notes
+    assert not any(n.startswith("SAMPLE:") and "ran it with" in n for n in rec.notes)
+    declared = pr.derive_pipeline_record(sealed_rnaseq_spec(proven=False), name="rnaseq_counts")
+    assert not any("ran it with" in n for n in declared.notes), "declared trials never ran"
+
+
+def test_an_empty_value_leaves_the_sealed_steps_matched():
+    """`-s {STRANDED}` with STRANDED="" runs as `-s -o …`: the value is literal text,
+    collapsed with the text around it, so the stage still finds its sealed steps."""
+    rec = pr.derive_pipeline_record(sealed_rnaseq_spec(stranded=""), name="rnaseq_counts")
+    assert all(s.sealed_steps for s in rec.stages), [(s.name, s.sealed_steps) for s in rec.stages]
+
+
+def test_an_optional_file_input_is_refused_at_render_not_rendered_unrunnable():
+    spec = sealed_rnaseq_spec().model_dump()
+    trials = spec["usage_verification"]["trials"]
+    trials[1]["substitutions"]["GTF"] = ""
+    with pytest.raises(pr.PipelineDerivationError) as e:
+        pr.derive_pipeline_record(type(sealed_rnaseq_spec()).model_validate(spec), name="rnaseq_counts")
+    assert e.value.code == "pipeline.optional_path" and "GTF" in e.value.error

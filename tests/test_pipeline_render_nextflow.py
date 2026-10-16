@@ -325,14 +325,34 @@ class TestMainNf:
         main = render_nextflow(_two_images(_record()))["main.nf"]
         assert f"// stage 3 of 3 · htseq-count · image {OTHER} · derived from sealed step(s) [4, 7, 10]" in main
 
-    def test_tag_and_every_stage_publishes_what_it_writes_into_the_rows_directory(self):
+    def test_tag_and_every_stage_publishes_its_declared_results_into_the_rows_directory(self):
+        """The BAM and the counts are declared; the index SAMTOOLS writes is the BAM's
+        sidecar and travels with it. Each stage publishes all it writes, unfiltered."""
         main = render_nextflow(_record())["main.nf"]
         for name in ("HISAT2", "SAMTOOLS", "HTSEQ_COUNT"):
             block = _process_block(main, name)
             assert "tag { meta.sample }" in block
-            assert 'publishDir { "${params.outdir}/${meta.sample}" }, mode: \'copy\', overwrite: true' in block
-        assert "pattern:" not in main                     # everything a stage writes is published
+            assert ('publishDir { "${params.outdir}/${meta.sample}" }, mode: params.publish_dir_mode, '
+                    'overwrite: true\n') in block
+        assert "saveAs" not in main and "def declared(" not in main
         assert "stageInMode" not in main                  # no stage rewrites what it consumed
+        assert "\nparams.publish_dir_mode = 'copy'\n" in main
+
+    def test_a_stage_that_writes_more_than_its_results_publishes_them_by_the_output_blocks_names(self):
+        rec = _record(stages=[[0, 1, 2]], stage_names=["ALL"])
+        rec.stages[0].outputs[1].published = False        # the index, say, declared by nobody
+        main = render_nextflow(rec)["main.nf"]
+        assert ('    publishDir { "${params.outdir}/${meta.sample}" }, mode: params.publish_dir_mode, overwrite: true,\n'
+                "        saveAs: { f -> declared(f, ['aligned.bam', \"${meta.sample}.counts.tsv\"]) ? f : null }\n"
+                ) in _process_block(main, "ALL")
+        assert main.count("\ndef declared(String name, List results) {\n") == 1
+
+    def test_a_stage_that_publishes_nothing_has_no_publish_directive(self):
+        rec = _record()
+        rec.stages[1].outputs[0].published = False
+        main = render_nextflow(rec)["main.nf"]
+        assert "publishDir" not in _process_block(main, "SAMTOOLS")
+        assert "def declared(" not in main                 # no stage filters what it publishes
 
     def test_inputs_in_the_fixed_order_meta_tuple_then_shared_paths_then_prefix_families(self):
         main = render_nextflow(_record())["main.nf"]
@@ -396,8 +416,8 @@ class TestMainNf:
         rec = _record(stages=[[0, 1], [2]], stage_names=["ALIGN", "COUNT"])
         main = render_nextflow(rec)["main.nf"]
         align = _process_block(main, "ALIGN")
-        assert 'publishDir { "${params.outdir}/${meta.sample}" }, mode: \'copy\', overwrite: true' in align
-        assert "pattern:" not in align
+        assert ('publishDir { "${params.outdir}/${meta.sample}" }, mode: params.publish_dir_mode, '
+                "overwrite: true\n") in align
         assert ("    output:\n"
                 "    tuple val(meta), path('aligned.bam'), emit: aligned_bam\n"
                 "    tuple val(meta), path('aligned.bam.bai'), emit: aligned_bam_bai\n") in align
@@ -475,8 +495,9 @@ class TestLaunchRecord:
 
     def test_the_launcher_says_what_the_dollar_at_forwards_right_above_the_line_that_uses_it(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
-        assert ('# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for\n'
-                "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>\n"
+        assert ('# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow: a value there\n'
+                "# wins over params.yaml for that one run only (sbatch launcher.sh --<param> <value>); to\n"
+                "# change what this directory runs, edit params.yaml.\n"
                 + RUN_HPC_NEXTFLOW + "\n") in sh
 
     def test_the_launcher_takes_the_run_stamp_itself_and_points_nextflows_log_into_the_run_dir(self):
@@ -501,6 +522,10 @@ class TestLaunchRecord:
 # ===========================================================================
 
 
+#: the measurement comment a sized stage's slurm block carries
+M = ("measured on 3 sealed steps on the workflow's test data: wall 68 s · peak RSS 1570 MB · max CPU 100% (authoritative) — a measurement, never the request")
+
+
 class TestConfig:
     def test_the_two_profiles(self):
         cfg = render_nextflow(_record(), env=ENV)["nextflow.config"]
@@ -512,6 +537,7 @@ class TestConfig:
                 "            executor = 'local'\n"
                 "            // the frozen image by its immutable id; docker knows it here as bioinf_rnaseq_cli:latest\n"
                 f"            container = '{DIGEST}'\n"
+                "            resourceLimits = [cpus: Runtime.runtime.availableProcessors()]   // no request beyond this machine's cpus\n"
                 "        }\n"
                 "    }\n"
                 "    slurm {\n"
@@ -626,27 +652,34 @@ class TestConfig:
         assert "beforeScript" not in cfg
 
     def test_unsized_stages_share_the_default_request_and_say_so(self):
+        """The default request is the cluster's: a laptop runs a task with what it has."""
         cfg = render_nextflow(_record())["nextflow.config"]
         assert ("process {\n"
                 "    // One failing sample stops nothing already running: in-flight tasks complete, nothing\n"
                 "    // new is submitted, and -resume re-runs the failed tasks and what follows them.\n"
                 "    errorStrategy = 'finish'\n"
-                "    // DEFAULT request — not sized for your data\n"
-                "    cpus = 1\n"
-                "    memory = '8 GB'\n"
-                "    time = '4h'\n"
                 "}") in cfg
+        assert ("            cache = 'lenient'\n"
+                "            // DEFAULT request — not sized for your data\n"
+                "            cpus = 1\n"
+                "            memory = '8 GB'\n"
+                "            time = '4h'\n") in _profile(cfg, "slurm")
+        assert "DEFAULT request" not in _profile(cfg, "local") and "memory" not in _profile(cfg, "local")
         assert "withName" not in cfg
 
     def test_a_caller_sized_stage_gets_a_with_name_block_quoting_the_measurement(self):
+        """resources= sizes the cluster: the same render still runs on a laptop, where a
+        request sized for a compute node could not be met."""
         cfg = render_nextflow(_record(resources=SIZED))["nextflow.config"]
-        assert ("    withName: 'HISAT2' {   // measured on 3 sealed steps on the workflow's test data: "
-                "wall 68 s · peak RSS 1570 MB · max CPU 100% (authoritative) — a measurement, never the request\n"
-                "        cpus = 8\n"
-                "        memory = '32 GB'\n"
-                "        time = '4h'\n"
-                "    }\n") in cfg
+        assert (f"            withName: 'HISAT2' {{   // {M}\n"
+                "                cpus = 8\n"
+                "                memory = '32 GB'\n"
+                "                time = '4h'\n"
+                "            }\n") in _profile(cfg, "slurm")
         assert "// DEFAULT request — not sized for your data" in cfg   # the other two stages
+        local = _profile(cfg, "local")     # its cpus, capped at the machine's; never memory or time
+        assert "            withName: 'HISAT2' {\n                cpus = 8\n            }\n" in local
+        assert "memory" not in local and "time =" not in local
 
     def test_when_every_stage_is_sized_there_is_no_default_block_and_units_convert(self):
         cfg = render_nextflow(_record(resources=ALL_SIZED))["nextflow.config"]
@@ -657,7 +690,10 @@ class TestConfig:
 
     def test_a_gpu_stage_asks_for_the_device_and_binds_the_driver_in(self):
         cfg = render_nextflow(_record(resources=GPU), env=ENV)["nextflow.config"]
-        assert ("            withName: 'HISAT2' {\n"
+        assert (f"            withName: 'HISAT2' {{   // {M}\n"
+                "                cpus = 8\n"
+                "                memory = '32 GB'\n"
+                "                time = '4h'\n"
                 "                queue = 'gpu'\n"
                 "                clusterOptions = '--gres=gpu:1 --qos=gpu_access --account=acct'\n"
                 "                containerOptions = '--nv'\n"
@@ -681,13 +717,24 @@ class TestConfig:
         local, slurm = _profile(cfg, "local"), _profile(cfg, "slurm")
         assert ("        process {\n"
                 "            executor = 'local'\n"
-                f"            withName: 'HISAT2' {{ container = '{DIGEST}' }}   // bioinf_rnaseq_cli:latest\n"
-                f"            withName: 'SAMTOOLS' {{ container = '{DIGEST}' }}   // bioinf_rnaseq_cli:latest\n"
-                f"            withName: 'HTSEQ_COUNT' {{ container = '{OTHER}' }}   // bioinf_counts:latest\n"
+                "            resourceLimits = [cpus: Runtime.runtime.availableProcessors()]   // no request beyond this machine's cpus\n"
+                "            withName: 'HISAT2' {\n"
+                f"                container = '{DIGEST}'   // bioinf_rnaseq_cli:latest\n"
+                "            }\n"
+                "            withName: 'SAMTOOLS' {\n"
+                f"                container = '{DIGEST}'   // bioinf_rnaseq_cli:latest\n"
+                "            }\n"
+                "            withName: 'HTSEQ_COUNT' {\n"
+                f"                container = '{OTHER}'   // bioinf_counts:latest\n"
+                "            }\n"
                 "        }\n") in local
         assert "\n            container =" not in local
         assert ("            executor = 'slurm'\n"
                 "            cache = 'lenient'\n"
+                "            // DEFAULT request — not sized for your data\n"
+                "            cpus = 1\n"
+                "            memory = '8 GB'\n"
+                "            time = '4h'\n"
                 "            withName: 'HISAT2' {\n"
                 + _set_me(DIGEST, 16) +
                 "            }\n"
@@ -721,8 +768,11 @@ class TestConfig:
     def test_a_gpu_stage_in_a_multi_image_chain_keeps_its_container_and_placement_in_one_block(self):
         slurm = _profile(render_nextflow(_two_images(_record(resources=GPU)), env=ENV)["nextflow.config"],
                          "slurm")
-        assert ("            withName: 'HISAT2' {\n"
+        assert (f"            withName: 'HISAT2' {{   // {M}\n"
                 + _set_me(DIGEST, 16) +
+                "                cpus = 8\n"
+                "                memory = '32 GB'\n"
+                "                time = '4h'\n"
                 "                queue = 'gpu'\n"
                 "                clusterOptions = '--gres=gpu:1 --qos=gpu_access --account=acct'\n"
                 "                containerOptions = '--nv'\n"
@@ -763,7 +813,7 @@ class TestParamsYaml:
         assert header.startswith("# Every value is what the sealed run was validated with.")
         assert "WHERE the pipeline runs" in header and "nextflow.config's business" in header
         keys = [ln.split(":", 1)[0] for ln in y.splitlines() if ln and not ln.startswith("#")]
-        assert keys == ["hisat2_index", "stranded", "gtf", "samplesheet", "outdir"]
+        assert keys == ["hisat2_index", "stranded", "gtf", "samplesheet", "outdir", "publish_dir_mode"]
         assert "sif" not in y.lower()
         assert DIGEST not in y and OTHER not in y and SIF not in y
         assert "bioinf_rnaseq_cli" not in y and OTHER_IMAGE not in y
@@ -785,15 +835,19 @@ class TestThreadSlot:
         files = render_nextflow(rec)
         assert _script_lines(files["main.nf"], "HISAT2") == [ALIGN_LINE.replace("-p 4", "-p ${task.cpus}")]
         assert bound_commands(rec, rec.stage("HISAT2")) == _script_lines(files["main.nf"], "HISAT2")
-        assert ("    withName: 'HISAT2' {   // measured on 3 sealed steps on the workflow's test data: "
-                "wall 68 s · peak RSS 1570 MB · max CPU 100% (authoritative) — a measurement, never the request\n"
-                "        cpus = 4   // the thread count the command runs with, through task.cpus; the sealed run used 4\n"
-                "    }\n") in files["nextflow.config"]
+        cfg = files["nextflow.config"]
+        assert (f"            withName: 'HISAT2' {{   // {M}\n"
+                "                cpus = 4   // the thread count the command runs with, through task.cpus; "
+                "the sealed run used 4\n"
+                "            }\n") in _profile(cfg, "slurm")
+        assert ("            withName: 'HISAT2' {\n"
+                "                cpus = 4   // the thread count the command runs with, through task.cpus\n"
+                "            }\n") in _profile(cfg, "local")
         assert "// DEFAULT request — not sized for your data" in files["nextflow.config"]   # mem and time still default
         assert "THREADS" not in "".join(files.values())
         assert "threads" not in files["params.yaml"] and "params.threads" not in files["main.nf"]
         keys = [ln.split(":", 1)[0] for ln in files["params.yaml"].splitlines() if ln and not ln.startswith("#")]
-        assert keys == ["hisat2_index", "stranded", "gtf", "samplesheet", "outdir"]
+        assert keys == ["hisat2_index", "stranded", "gtf", "samplesheet", "outdir", "publish_dir_mode"]
 
     def test_a_caller_sized_stage_keeps_the_binding_and_runs_with_its_own_count(self):
         files = render_nextflow(_threads(resources=SIZED))
@@ -990,6 +1044,17 @@ class TestRefusals:
             render_nextflow(rec)
         assert "record.name" in str(e.value)
 
+    @pytest.mark.parametrize("slot", ["PACKAGE", "IN", "META", "TASK"])
+    def test_a_placeholder_named_like_a_groovy_keyword_or_a_process_variable_is_refused(self, slot):
+        """`path package` does not compile, and an input named `meta` or `task` would shadow
+        the names every rendered process binds: the render refuses and names the rename."""
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(), name="rnaseq_counts")
+        rec.param("GTF").name = slot
+        with pytest.raises(ValueError) as e:
+            render_nextflow(rec)
+        assert repr(slot.lower()) in str(e.value) and "keyword" in str(e.value)
+        assert "rename the placeholder" in str(e.value)
+
     def test_an_env_module_name_with_shell_metacharacters_is_refused(self):
         env = {**ENV, "apptainer_module": "apptainer/1.5.0; rm -rf /"}
         with pytest.raises(ValueError) as e:
@@ -1130,6 +1195,45 @@ class TestRealNextflow:
         assert run.returncode == 0, run.stdout + run.stderr
         assert "process.container is empty" not in run.stdout + run.stderr
 
+    def test_a_render_that_publishes_part_of_a_stage_parses_under_both_profiles(self, tmp_path):
+        rec = _point_at_real_files(_record(stages=[[0, 1, 2]], stage_names=["ALL"], compute_env="cluster",
+                                           sif_paths={REQUEST_KEY: str(tmp_path / "img.sif")}), tmp_path / "data")
+        rec.stages[0].outputs[1].published = False
+        d = _write(render_nextflow(rec, env=ENV), tmp_path / "pipe")
+        assert "saveAs: { f -> declared(f, " in (d / "main.nf").read_text()
+        for profile in ("slurm", "local"):
+            run = _nextflow(d, "run", "main.nf", "-profile", profile, "-params-file", "params.yaml", "-preview")
+            assert run.returncode == 0, profile + "\n" + run.stdout + run.stderr
+
+    def test_a_stage_publishes_exactly_the_files_its_save_as_names(self, tmp_path):
+        """The helper main.nf defines, run by the real binary: a named file, a per-row
+        name, a glob and a directory are published; a same-shaped sibling, an undeclared
+        file and a scratch tree stay in work/ — whatever characters the sample's name
+        holds. Link mode hard-links instead of copying."""
+        from agent.skills.pipeline_render_nextflow import _DECLARED_DEF
+        d = _write({"main.nf": "\n".join([
+            _DECLARED_DEF, "",
+            "process A {",
+            "    publishDir { \"results/${meta.sample}\" }, mode: params.publish_dir_mode, overwrite: true,",
+            "        saveAs: { f -> declared(f, ['aligned.bam', \"${meta.sample}.counts.tsv\", '*_fastqc.html', 'kg']) ? f : null }",
+            "    input:", "    val(meta)",
+            "    output:", "    path('*')",
+            "    script:",
+            '    """',
+            "    touch aligned.bam aligned.bam.bai '${meta.sample}.counts.tsv' '${meta.sample}.raw.counts.tsv' r_fastqc.html",
+            "    mkdir kg tmp && touch kg/nodes.tsv tmp/junk",
+            '    """',
+            "}",
+            "workflow { A(channel.of([sample: 'S1'], [sample: 'S[1'], [sample: 'S{a'], [sample: 'S{1}'])) }", ""])},
+            tmp_path / "pipe")
+        run = _nextflow(d, "run", "main.nf", "--publish_dir_mode", "link")
+        assert run.returncode == 0, run.stdout + run.stderr
+        for sample in ("S1", "S[1", "S{a", "S{1}"):
+            got = sorted(str(p.relative_to(d / "results" / sample)) for p in (d / "results" / sample).rglob("*")
+                         if p.is_file())
+            assert got == sorted([f"{sample}.counts.tsv", "aligned.bam", "kg/nodes.tsv", "r_fastqc.html"]), sample
+        assert (d / "results" / "S1" / "aligned.bam").stat().st_nlink == 2
+
     def test_several_images_stop_the_run_while_any_stage_still_lacks_its_sif(self, tmp_path):
         """The guard exists so a cluster run with an unfilled container fails once, up
         front, instead of submitting the stages that ARE configured and failing the
@@ -1143,3 +1247,32 @@ class TestRealNextflow:
         run = _nextflow(d, "run", "main.nf", "-profile", "slurm", "-params-file", "params.yaml", "-preview")
         assert run.returncode != 0, run.stdout + run.stderr
         assert "process.container is empty" in run.stdout + run.stderr
+
+
+class TestDirectoryArtifacts:
+    """A tree-writing tool renders with directory artifacts: `path('<dir>')` in and out,
+    a copy staged where a stage rewrites a directory, and the bare slot bound to `.`."""
+
+    @staticmethod
+    def _main():
+        from pipeline_fixtures import sealed_tree_spec
+        rec = pr.derive_pipeline_record(sealed_tree_spec(), name="phenologs")
+        return render_nextflow(rec)["main.nf"]
+
+    def test_directories_are_staged_and_emitted_like_any_artifact(self):
+        main = self._main()
+        trials = _process_block(main, "TRIALS")
+        assert "tuple val(meta), path('species_data')" in trials
+        assert "tuple val(meta), path('random_trials'), emit: random_trials" in trials
+        assert "trials -p . -n ${params.n_trials}" in trials
+        assert "every artifact an earlier stage wrote is staged into its work dir" in main   # the stage comment
+
+    def test_the_rewriting_stage_copies_in_and_the_next_stage_takes_its_version(self):
+        main = self._main()
+        fdr = _process_block(main, "FDR")
+        assert "stageInMode 'copy'" in fdr
+        assert "path('phenologs_results')" in fdr
+        assert "tuple val(meta), path('phenologs_results'), emit: phenologs_results" in fdr
+        wf = _workflow_block(main)
+        assert "FDR(LN.out.species_data.join(TRIALS.out.random_trials).join(PHENOLOGS.out.phenologs_results))" in wf
+        assert "REPORT(LN.out.species_data.join(TRIALS.out.random_trials).join(FDR.out.phenologs_results))" in wf

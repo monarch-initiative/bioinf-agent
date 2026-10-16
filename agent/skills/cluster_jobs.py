@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+import time
 from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
@@ -161,9 +162,9 @@ def _validate_job_id(job_id: str) -> str:
 
 
 def _build_sacct_cmd(job_id: str) -> str:
-    """The remote shell command. Login shell so sacct is on PATH on
-    systems that add it via /etc/profile.d/slurm.sh. The field list is
-    fixed; pinned by a test."""
+    """The remote shell command for one validated job id, or several joined
+    by commas. Login shell so sacct is on PATH on systems that add it via
+    /etc/profile.d/slurm.sh. The field list is fixed; pinned by a test."""
     fields = ",".join(_SACCT_FIELDS)
     inner = f"sacct -j {shlex.quote(job_id)} -P --noheader -X -o {fields}"
     return f"bash -lc {shlex.quote(inner)}"
@@ -202,11 +203,18 @@ def _parse_sacct_output(text: str) -> list[dict]:
     return rows
 
 
+#: The longest one call waits (under the client's ~600 s stream watchdog), and how
+#: often it looks again while it does.
+_WAIT_CAP_S = 540
+_POLL_S = 30
+
+
 def cluster_job_status(project_name: str,
                        compute_env_name: str,
                        job_id: str,
                        *,
                        run_dir: str = "",
+                       wait_s: int = 0,
                        access_path: Optional[str] = None,
                        timeout: int = 60) -> dict:
     """Look up SLURM state for `job_id` on `compute_env_name`.
@@ -215,13 +223,20 @@ def cluster_job_status(project_name: str,
     MANAGER (Nextflow submitting one SLURM job per stage and sample, doing none of
     the work), and the answer gains `pipeline` — every task from the run's own
     `runs/<stamp>/trace.txt` with its status, exit code, runtime, peak memory and
-    SLURM job id, a count per status, and a verdict over the tasks. The manager's
-    own row is never reported as the work.
+    SLURM job id, plus every task submitted and not finished yet with the
+    scheduler's state for it (PENDING and why, RUNNING where and for how long),
+    a count per status, and a verdict over the tasks. The manager's own row is
+    never reported as the work.
 
-    Pure-read: runs ONE ssh invocation of
-    `bash -lc 'sacct -j <id> -P --noheader -X -o <fields>'`, parses
-    the pipe-delimited output, returns a list of row-dicts (one per
-    job, plus one per array-task for array jobs).
+    `wait_s` blocks up to that many seconds (capped at 540, under the stream
+    watchdog) until something changes: a job's state, or a task starting or
+    finishing; it returns at once when the job is over. So one call replaces a
+    poll loop; the answer then says `waited_s`.
+
+    Pure-read: each look runs `bash -lc 'sacct -j <id> -P --noheader -X -o
+    <fields>'` over ssh, and for a pipeline one more hop for its records and
+    one sacct call for its tasks in flight; returns a list of row-dicts (one
+    per job, plus one per array-task for array jobs).
 
     Authorization: project must have a `compute_env_access` entry for
     `compute_env_name`. No per-directory permission needed. SLURM's
@@ -232,8 +247,10 @@ def cluster_job_status(project_name: str,
         "compute_env": "<env_name>",
         "job_id":      "<requested_id>",
         "jobs":        [{job_id, state, elapsed, exit_code, nodelist,
-                          reason, start, end}, ...],
+                          reason, start, end, verdict, verdict_reason}, ...],
         "captured_at": "<iso utc>",
+        "pipeline":    {...},            # with run_dir
+        "waited_s":    <int>,            # with wait_s
       }
     Returns {"error": "...", "hint": "..."} on any failure.
     Returns `jobs=[]` when sacct doesn't recognize the id — caller
@@ -262,40 +279,24 @@ def cluster_job_status(project_name: str,
             return refused("cluster.not_ssh_env", error=
                 f"cluster_job_status only supports ssh compute envs; "
                 f"got type={env_type!r} on env {compute_env_name!r}")
+        if run_dir and not _ABS_SAFE_PATH_RE.match(run_dir):
+            return refused("cluster.unsafe_run_dir", error=
+                f"run_dir {run_dir!r} is not an absolute safe path (refused before ssh)")
 
-        remote_cmd = _build_sacct_cmd(norm_id)
-        argv = _ssh_argv(env, remote_cmd)
-        res = subprocess.run(argv, capture_output=True, text=True,
-                             timeout=timeout)
-        if res.returncode != 0:
-            hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
-            return broke("cluster.status_ssh_failed", error=
-                f"ssh invocation failed (rc={res.returncode}): "
-                f"{(res.stderr or '').strip()[:500]}",
-                **({"hint": hint} if hint else {}))
-
-        jobs = _parse_sacct_output(res.stdout)
-        # Each row STATES its verdict. This is the only window a PRODUCTION run
-        # has — submission is submit-and-document, so nobody polls on the
-        # caller's behalf and nobody classifies for them. Handing back a raw
-        # `TIMEOUT | 0:0` row invites the wrong reading — rc is zero, so the job
-        # must be fine. Additive (the raw columns are untouched), so consumers
-        # of the raw shape are unaffected.
-        for row in jobs:
-            verdict, why = classify_sacct_row(row)
-            row["verdict"] = verdict
-            row["verdict_reason"] = why
-        out = {
-            "compute_env": compute_env_name,
-            "job_id":      norm_id,
-            "jobs":        jobs,
-            "captured_at": datetime.now(timezone.utc).isoformat(),
-        }
-        if run_dir:
-            if not _ABS_SAFE_PATH_RE.match(run_dir):
-                return refused("cluster.unsafe_run_dir", error=
-                    f"run_dir {run_dir!r} is not an absolute safe path (refused before ssh)")
-            out["pipeline"] = _read_pipeline_run(env, run_dir, norm_id, jobs, timeout=timeout)
+        started = time.monotonic()
+        out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout)
+        look_s = time.monotonic() - started
+        mark = _progress(out)
+        deadline = started + min(max(int(wait_s or 0), 0), _WAIT_CAP_S)
+        # The next look starts only if one as long as the last still ends by the deadline.
+        while ("error" not in out and not _settled(out) and _progress(out) == mark
+               and time.monotonic() + _POLL_S + look_s <= deadline):
+            time.sleep(_POLL_S)
+            looked = time.monotonic()
+            out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout)
+            look_s = time.monotonic() - looked
+        if wait_s and "error" not in out:
+            out["waited_s"] = round(time.monotonic() - started)
         return out
 
     except (ValueError, compute_access.PermissionDenied,
@@ -305,20 +306,73 @@ def cluster_job_status(project_name: str,
         return broke("cluster.status_timeout", error=f"sacct timed out after {e.timeout}s")
 
 
+def _observe(env: dict, compute_env_name: str, job_id: str, run_dir: str, *,
+             timeout: int) -> dict:
+    """One look: the job's sacct rows, each with its verdict, and the pipeline
+    run when `run_dir` is given."""
+    res = subprocess.run(_ssh_argv(env, _build_sacct_cmd(job_id)),
+                         capture_output=True, text=True, timeout=timeout)
+    if res.returncode != 0:
+        hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
+        return broke("cluster.status_ssh_failed", error=
+            f"ssh invocation failed (rc={res.returncode}): "
+            f"{(res.stderr or '').strip()[:500]}",
+            **({"hint": hint} if hint else {}))
+
+    jobs = _parse_sacct_output(res.stdout)
+    # Each row STATES its verdict. This is the only window a PRODUCTION run
+    # has — submission is submit-and-document, so nobody polls on the
+    # caller's behalf and nobody classifies for them. Handing back a raw
+    # `TIMEOUT | 0:0` row invites the wrong reading — rc is zero, so the job
+    # must be fine. Additive (the raw columns are untouched), so consumers
+    # of the raw shape are unaffected.
+    for row in jobs:
+        verdict, why = classify_sacct_row(row)
+        row["verdict"] = verdict
+        row["verdict_reason"] = why
+    out = {
+        "compute_env": compute_env_name,
+        "job_id":      job_id,
+        "jobs":        jobs,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if run_dir:
+        out["pipeline"] = _read_pipeline_run(env, run_dir, job_id, jobs, timeout=timeout)
+    return out
+
+
+def _settled(status: dict) -> bool:
+    """Nothing more will change: every job row is over (a pipeline's manager has
+    written its records by the time its job ends)."""
+    jobs = status.get("jobs") or []
+    return bool(jobs) and all(r.get("verdict") != RUNNING for r in jobs)
+
+
+def _progress(status: dict) -> tuple:
+    """What a wait watches for a change in: each job's state and each task's."""
+    tasks = (status.get("pipeline") or {}).get("tasks") or []
+    return (tuple((r.get("job_id"), r.get("state")) for r in status.get("jobs") or []),
+            tuple((t.get("native_id"), t.get("status")) for t in tasks))
+
+
 # ---------------------------------------------------------------------------
 # A rendered pipeline's run, read from its own records
 # ---------------------------------------------------------------------------
 #
 # The manager job prints `run records: runs/<stamp>/` to its SLURM log
-# (`<pipeline>-<jobid>.out` in the launch directory) before any task starts, and
-# nextflow.config writes `runs/<stamp>/trace.txt` as tasks finish. One ssh hop
-# reads both. Columns are the renderer's TRACE_FIELDS; the parse goes by the header
-# so a reordered trace cannot mislabel a field, and by the task_id that opens every
-# record, so a field Nextflow writes over several lines (`script`, in a trace from an
-# older render) continues its record instead of becoming a blank task.
+# (`<pipeline>-<jobid>.out` in the launch directory) before any task starts,
+# nextflow.config writes `runs/<stamp>/trace.txt` as tasks finish, and Nextflow's
+# own log (`runs/<stamp>/nextflow.log`) names each task's SLURM job id the moment
+# it submits it. One ssh hop reads all three; one sacct call then asks after the
+# tasks submitted and not finished. Columns are the renderer's TRACE_FIELDS; the
+# parse goes by the header so a reordered trace cannot mislabel a field, and by the
+# task_id that opens every record, so a field Nextflow writes over several lines
+# (`script`, in a trace from an older render) continues its record instead of
+# becoming a blank task.
 
-#: Trace statuses a run can leave a task in. Nextflow's own vocabulary.
-TASK_DONE, TASK_FAILED = "COMPLETED", "FAILED"
+#: Trace statuses a run can leave a task in, in Nextflow's own vocabulary. A task a
+#: resumed run reused is CACHED: done, as much as one it ran.
+TASK_DONE, TASK_FAILED = frozenset({"COMPLETED", "CACHED"}), "FAILED"
 
 
 def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
@@ -328,8 +382,58 @@ def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
               f'echo "OUT=$out"; '
               f'stamp=$(grep -o -m1 "runs/[0-9_]*" "$out" | head -n 1); echo "STAMP=$stamp"; '
               f'if [ -n "$stamp" ] && [ -f {q(run_dir)}/"$stamp"/trace.txt ]; then '
-              f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo TRACE_END; fi; exit 0')
+              f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo TRACE_END; fi; '
+              f'if [ -n "$stamp" ] && [ -f {q(run_dir)}/"$stamp"/nextflow.log ]; then '
+              f'echo SUBMITTED_BEGIN; grep -o "submitted process .* > jobId: [0-9]*; workDir: [^ ]*" '
+              f'{q(run_dir)}/"$stamp"/nextflow.log; echo SUBMITTED_END; fi; exit 0')
     return f"bash -lc {q(script)}"
+
+
+#: A task Nextflow handed to SLURM, as its log says so.
+_SUBMITTED_RE = re.compile(
+    r"submitted process (?P<name>.+) > jobId: (?P<native_id>\d+); workDir: (?P<workdir>\S+)")
+
+
+def _in_flight(env: dict, submitted: list[str], finished: set, *,
+               timeout: int) -> tuple[list[dict], str]:
+    """The tasks submitted and not in the trace yet (it lists a task once it
+    finishes), and why the scheduler could not be asked about them, if it could
+    not. A task is PENDING (with why) or RUNNING (where, how long) as the scheduler
+    says; otherwise SUBMITTED, Nextflow's word for a task it has handed over and
+    not yet collected, with the scheduler's own state beside it when it has one
+    (a job it reports over, before Nextflow has checked the task's outputs)."""
+    live = {m["native_id"]: m.groupdict() for m in map(_SUBMITTED_RE.search, submitted)
+            if m and m["native_id"] not in finished}
+    if not live:
+        return [], ""
+    rows: dict = {}
+    unread = ""
+    try:
+        res = subprocess.run(_ssh_argv(env, _build_sacct_cmd(",".join(live))),
+                             capture_output=True, text=True, timeout=timeout)
+        if res.returncode == 0:
+            rows = {r["job_id"]: r for r in _parse_sacct_output(res.stdout)}
+        else:
+            unread = f"sacct for the tasks in flight failed (rc={res.returncode}): {(res.stderr or '').strip()[:200]}"
+    except subprocess.TimeoutExpired as e:
+        unread = f"sacct for the tasks in flight timed out after {e.timeout}s"
+    tasks = []
+    for jid, task in live.items():
+        row = rows.get(jid, {})
+        state = normalize_state(row.get("state"))
+        view = {"name": task["name"], "native_id": jid,
+                "status": state if state in ("PENDING", "RUNNING") else "SUBMITTED",
+                "workdir": task["workdir"]}
+        if state and state != view["status"]:
+            view["scheduler_state"] = state
+        if row.get("elapsed"):
+            view["elapsed"] = row["elapsed"]
+        if state == "RUNNING" and row.get("nodelist"):
+            view["node"] = row["nodelist"]
+        if state == "PENDING" and row.get("reason"):
+            view["reason"] = row["reason"]
+        tasks.append(view)
+    return tasks, unread
 
 
 _TRACE_RECORD_RE = re.compile(r"^\d+\t")      # a record opens with its task_id
@@ -361,23 +465,31 @@ def _task_view(row: dict) -> dict:
     directory rides along only for a task that did not complete — that is where
     `.command.log` and `.command.err` are."""
     view = {k: row.get(k, "") for k in ("name", "native_id", "status", "exit", "realtime", "peak_rss")}
-    if row.get("status") != TASK_DONE:
+    if row.get("status") not in TASK_DONE:
         view["workdir"] = row.get("workdir", "")
     return view
 
 
 def _pipeline_verdict(tasks: list[dict], manager_rows: list[dict]) -> str:
     """succeeded | failed | running | not_started — over the TASKS, with the manager
-    consulted only to tell a finished run from one still submitting."""
+    consulted to tell a finished run from one still submitting, and a manager that
+    died (it can no longer submit what is left) from one that finished."""
     statuses = [t.get("status") for t in tasks]
     if any(s == TASK_FAILED for s in statuses):
         return "failed"
-    manager_terminal = bool(manager_rows) and all(r.get("verdict") != RUNNING for r in manager_rows)
-    if tasks and all(s == TASK_DONE for s in statuses) and manager_terminal:
-        return "succeeded"
-    if not tasks and manager_terminal and manager_rows and all(r.get("verdict") == DIED for r in manager_rows):
+    manager_over = bool(manager_rows) and all(r.get("verdict") != RUNNING for r in manager_rows)
+    if manager_over and any(r.get("verdict") == DIED for r in manager_rows):
         return "failed"
-    return "running" if (tasks or not manager_terminal) else "not_started"
+    if tasks and all(s in TASK_DONE for s in statuses) and manager_over:
+        return "succeeded"
+    return "running" if (tasks or not manager_over) else "not_started"
+
+
+def _block(lines: list[str], tag: str) -> list[str]:
+    """The lines the remote script printed between `<tag>_BEGIN` and `<tag>_END`."""
+    if f"{tag}_BEGIN" in lines and f"{tag}_END" in lines:
+        return lines[lines.index(f"{tag}_BEGIN") + 1:lines.index(f"{tag}_END")]
+    return []
 
 
 def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[dict], *,
@@ -402,16 +514,16 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
                 "note": f"no manager log (<pipeline>-{job_id}.out) in {run_dir} yet: the job has not started"}
     stamp = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("STAMP=")), "")
     out_log = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("OUT=")), "")
-    trace_rows: list[dict] = []
-    if "TRACE_BEGIN" in lines and "TRACE_END" in lines:
-        a, b = lines.index("TRACE_BEGIN"), lines.index("TRACE_END")
-        trace_rows = _parse_trace("\n".join(lines[a + 1:b]))
-    tasks = [_task_view(r) for r in trace_rows]
+    trace_rows = _parse_trace("\n".join(_block(lines, "TRACE")))
+    in_flight, unread = _in_flight(env, _block(lines, "SUBMITTED"),
+                                   {r.get("native_id") for r in trace_rows}, timeout=timeout)
+    tasks = [_task_view(r) for r in trace_rows] + in_flight
     summary = dict(Counter(t.get("status", "") for t in tasks))
     return {"run_dir": run_dir, "manager_log": out_log, "stamp": stamp,
             "run_records": f"{run_dir}/{stamp}" if stamp else None,
             "task_summary": summary, "tasks": tasks,
-            "verdict": _pipeline_verdict(tasks, manager_rows)}
+            "verdict": _pipeline_verdict(tasks, manager_rows),
+            **({"scheduler_unread": unread} if unread else {})}
 
 
 # ---------------------------------------------------------------------------

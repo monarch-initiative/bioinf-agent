@@ -150,6 +150,23 @@ def test_a_generated_by_data_file_stays_a_path_input_pinned_by_its_record():
     assert "data file" in gtf.reason
 
 
+def test_a_data_file_staged_with_generated_by_today_stays_a_path_input(tmp_path, monkeypatch):
+    """The record the staging primitive writes NOW, not a hand-made one: a data fixture
+    staged with generated_by is never carried into bin/ as a script."""
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+    ps = PipelineState({})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("genby_gtf", "test")
+    gtf = tmp_path / "chr22.gtf"
+    gtf.write_text("chr22\thavana\tgene\t1\t100\t.\t+\t.\tgene_id \"g1\";\n")
+    assert srv.stage_authored_artifact(pipeline_id="genby_gtf", path=str(gtf), role="staged_input",
+                                       description="d", generated_by="cut … > chr22.gtf")["success"]
+    [art] = ps.get_draft("genby_gtf")["authored_artifacts"]
+    rec = pr.derive_pipeline_record(_spec_with(authored_artifacts=[{**art, "path": GTF}]), name="rnaseq_counts")
+    assert rec.param("GTF").default == GTF and rec.scripts == []
+
+
 def test_a_declared_reference_database_wins_over_an_authored_record_at_the_same_path():
     rec = pr.derive_pipeline_record(_spec_with(
         reference_databases=[{"name": "gencode", "version": "47", "local_path": GTF, "available": True}],

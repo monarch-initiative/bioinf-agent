@@ -39,6 +39,12 @@ Where the .sif lands
 --------------------
 The finished .sif lands in the env's `container_upload_target`:
   <env.container_upload_target>/<env_name>_<digest>.sif
+with the env's record (ENV report, attestation, both recipe forms) beside it in a
+directory of the same name, so the cluster copy says what it holds and how it was
+proven:
+  <env.container_upload_target>/<env_name>_<digest>/
+It is sent once, only when the record here names this image's digest, and a copy
+already there counts only when its checksums match.
 
 No fallback. If the env hasn't declared a `container_upload_target`
 with `upload` permission, the primitive refuses — per
@@ -64,19 +70,23 @@ cluster interaction is a read-only `test -f` probe and the .sif upload.
 """
 from __future__ import annotations
 
+import json
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from agent.skills import compute_access, transfer
-from agent.models.core_data import record_is_gated as _record_is_gated
+import yaml
+
+from agent.skills import compute_access, transfer, workspace
+from agent.models.core_data import frozen_image_ref, record_is_gated as _record_is_gated, sha256_file
 from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
-from agent.skills import workspace
 
 
 def _short_digest(content_digest: str) -> str:
@@ -88,34 +98,34 @@ def _short_digest(content_digest: str) -> str:
     return hexdigest[:12] if hexdigest else "unknown"
 
 
-# Where locally-built .sif files are staged before upload. In the workspace
-# (required to be under $HOME) so Globus Connect Personal can read them — its
-# Accessible-Folders scan refuses a system temp dir. Mirrors
-# acquire_data._dl_stage_dir.
-# A FUNCTION, not a module constant. The location depends on the resolved
-# workspace, and a constant computed at import freezes whatever the environment
-# said at import time — which for a test process is "before the fixture
-# redirected it", so every staged file would land in the developer's real
-# workspace.
-def _local_sif_stage_dir():
-    return workspace.scratch_dir("apptainer_local_sif")
 
 
-def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) -> bool:
-    """ONE light read-only ssh: does the .sif already exist on the cluster?
-    Used for idempotency (skip a re-stage) WITHOUT any build/pull on the head
-    node. Returns False on any ssh failure (caller then builds+ships)."""
+def sif_remote_path(env: dict, record: dict, freeze_request_key: str, sif_subpath: str = "") -> str:
+    """Where a frozen env's .sif lands on `env`: the container zone itself (no
+    extra prefix), as `<env_name>_<digest12>.sif` unless a subpath is given."""
+    ct_path = ((env.get("container_upload_target") or {}).get("path") or "").rstrip("/")
+    name = record.get("name") or freeze_request_key.split("|", 1)[0]
+    digest = record.get("content_digest") or record.get("image_digest", "")
+    return f"{ct_path}/{sif_subpath or f'{name}_{_short_digest(digest)}.sif'}"
+
+
+def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) -> Optional[bool]:
+    """ONE light read-only ssh: does the .sif already exist on the cluster? True or
+    False as the cluster answered; None when it could not be asked (falsy, so a
+    stage builds and ships, and the ship then names the ssh failure). Used for
+    idempotency (skip a re-stage) WITHOUT any build/pull on the head node."""
     body = f"test -f {shlex.quote(sif_remote_abs)} && echo EXISTS || echo MISSING"
     cmd = f"bash -lc {shlex.quote(body)}"
     try:
         res = subprocess.run(_ssh_argv(env, cmd), capture_output=True,
                              text=True, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):
-        return False
-    return "EXISTS" in (res.stdout or "")
+        return None
+    lines = (res.stdout or "").splitlines()
+    return True if "EXISTS" in lines else (False if "MISSING" in lines else None)
 
 
-def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
+def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_name: str,
                            compute_env_name: str, sif_remote_abs: str,
                            image_digest: str, freeze_request_key: str,
                            platform: str, access_path: Optional[str],
@@ -129,13 +139,18 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
     from agent.skills import local_sif
 
     mode = record.get("mode")
+    record_kw = dict(env=env, env_name=env_name,
+                     digest=record.get("content_digest") or image_digest,
+                     project_name=project_name, compute_env_name=compute_env_name,
+                     sif_remote_abs=sif_remote_abs, access_path=access_path, timeout=timeout)
     # 1. Idempotency — skip if the .sif is already staged on the cluster.
     if _remote_sif_exists(env, sif_remote_abs, timeout=min(timeout, 120)):
         return proven("stage.skipped", success=True,
             compute_env=compute_env_name, mode=mode,
             sif_path=sif_remote_abs, image_digest=image_digest,
             request_key=freeze_request_key, skipped=True,
-            staged_at=datetime.now(timezone.utc).isoformat())
+            staged_at=datetime.now(timezone.utc).isoformat(),
+            env_record=_stage_record(**record_kw))
 
     # 2. Resolve the LOCAL docker source (tarball or image tag). The archive's
     #    directory is the env's directory in the environments zone, read at call time.
@@ -149,7 +164,8 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
     elif tarball and Path(tarball).exists():
         pass                                             # freeze docker-save archive
     elif record.get("image"):
-        image_tag = record.get("image")                 # locally-built image tag
+        # the locally built image, by the handle its record pins: a tag may have moved
+        image_tag = frozen_image_ref(record["image"], record.get("image_digest") or "")
 
     if not (tarball and Path(str(tarball)).exists()) and not image_tag:
         return refused("stage.no_local_source",
@@ -178,7 +194,7 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
                           f"{(pull.stderr or '').strip()[:400]}")
 
     # 4. Build the .sif LOCALLY (apptainer-in-docker; no cluster involvement).
-    local_sif_path = _local_sif_stage_dir() / Path(sif_remote_abs).name
+    local_sif_path = transfer.staging_dir("apptainer_local_sif") / Path(sif_remote_abs).name
     built = local_sif.build_sif_locally(
         out_sif=str(local_sif_path),
         tarball=(str(tarball) if (tarball and not image_tag) else ""),
@@ -204,7 +220,83 @@ def _stage_via_local_build(*, record: dict, env: dict, project_name: str,
         sif_path=sif_remote_abs, image_digest=image_digest,
         request_key=freeze_request_key, local_sif=str(local_sif_path),
         builder_image=built.get("builder_image"), skipped=False,
-        staged_at=datetime.now(timezone.utc).isoformat())
+        staged_at=datetime.now(timezone.utc).isoformat(),
+        env_record=_stage_record(**record_kw))
+
+
+def _record_digests(files: list[Path]) -> set[str]:
+    """The image digests the record files name: the recipe's content_digest and the
+    attestation's subjects."""
+    named: set[str] = set()
+    for f in files:
+        try:
+            if f.name.endswith(".recipe.yaml"):
+                named.add(str((yaml.safe_load(f.read_text()) or {}).get("content_digest") or ""))
+            elif f.name.endswith(".attestation.json"):
+                named |= {f"sha256:{s.get('digest', {}).get('sha256', '')}"
+                          for s in json.loads(f.read_text()).get("subject") or []}
+        except (OSError, ValueError, AttributeError):
+            continue
+    return named
+
+
+def _remote_record(env: dict, remote: str, *, timeout: int) -> Optional[dict]:
+    """{file name: sha256} of the record directory at `remote`, or None when there is
+    none. One ssh hop, in bash whatever the login shell."""
+    probe = (f"if [ -d {shlex.quote(remote)} ]; then echo PRESENT; "
+             f"cd {shlex.quote(remote)} && sha256sum -- *; fi")
+    res = subprocess.run(_ssh_argv(env, f"bash -c {shlex.quote(probe)}"),
+                         capture_output=True, text=True, timeout=timeout)
+    lines = (res.stdout or "").splitlines()
+    if "PRESENT" not in lines:
+        return None
+    return {m[2]: m[1] for m in map(_SHA_LINE_RE.fullmatch, lines) if m}
+
+
+_SHA_LINE_RE = re.compile(r"([0-9a-f]{64})  (.+)")
+
+
+def _stage_record(*, env: dict, env_name: str, digest: str, project_name: str,
+                  compute_env_name: str, sif_remote_abs: str, access_path: Optional[str],
+                  timeout: int) -> dict:
+    """Put the env's record beside its .sif, in a directory of the .sif's name, as one
+    transfer — only when the record here names this image (a later freeze under the
+    same name rewrites it). A copy already there counts only when its checksums match
+    this record's. A record that could not be sent is reported, and never undoes the
+    .sif."""
+    remote = (sif_remote_abs.removesuffix(".sif") if sif_remote_abs.endswith(".sif")
+              else f"{sif_remote_abs}.record")
+    try:
+        files = workspace.env_record_files(env_name)
+        if not files:
+            return {"status": "none_here",
+                    "note": f"no ENV report, attestation or recipe for {env_name!r} in the environments zone"}
+        if digest not in _record_digests(files):
+            return {"status": "not_this_image", "path": remote,
+                    "reason": f"the record of {env_name!r} here describes another image than {digest} "
+                              f"(a later freeze under the same name); this image's record is not here to send"}
+        here = {f.name: sha256_file(f) for f in files}
+        there = _remote_record(env, remote, timeout=min(timeout, 120))
+        if there == here:
+            return {"status": "already_there", "path": remote}
+        if there is not None:
+            return {"status": "differs", "path": remote,
+                    "reason": "a record directory is there that does not match this one; it is left as it is"}
+        staged = Path(tempfile.mkdtemp(prefix="record_", dir=transfer.staging_dir("env_record_staging")))
+        tree = staged / Path(remote).name
+        tree.mkdir()
+        for f in files:
+            shutil.copy2(f, tree / f.name)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"status": "not_sent", "path": remote, "reason": f"{type(e).__name__}: {e}"}
+    up = transfer.upload(project_name=project_name, compute_env_name=compute_env_name,
+                         local_path=str(tree), remote_abs_path=remote,
+                         access_path=str(Path(access_path)) if access_path else None, timeout=timeout)
+    if "error" in up:
+        # The staged copy stays: a transfer that stopped waiting may still be reading it.
+        return {"status": "not_sent", "path": remote, "reason": up["error"], "staged": str(tree)}
+    shutil.rmtree(staged)
+    return {"status": "sent", "path": remote, "files": [f.name for f in files]}
 
 
 _SHA256_TOKEN_RE = re.compile(r"sha256:[0-9a-f]{64}")
@@ -323,9 +415,11 @@ def stage_apptainer_image(
 
     Returns on success:
       {success: True, compute_env, mode, sif_path, image_digest,
-       request_key, local_sif, builder_image, skipped: bool, staged_at}
+       request_key, local_sif, builder_image, skipped: bool, staged_at,
+       env_record: {status, path?, ...}}
     The `skipped: True` flag means the .sif already existed at
-    sif_path — a re-stage is a no-op, not an error.
+    sif_path — a re-stage is a no-op, not an error. `env_record.status` is
+    sent / already_there / differs / not_this_image / not_sent / none_here.
 
     Returns {"error": ..., ...} on any refusal/failure, with `hint` when
     the ssh hop itself failed (e.g. "open ssh hpc-agent in a side terminal").
@@ -399,17 +493,11 @@ def stage_apptainer_image(
 
         env_name_for_sif = (record.get("name")
                             or freeze_request_key.split("|", 1)[0])
-        content_digest = record.get("content_digest") or record.get(
-            "image_digest", "")
-        # The whole target IS the container zone — default subpath is
-        # just `<env_name>_<digest>.sif`, no extra `apptainer/` prefix.
-        subpath = (sif_subpath or
-                   f"{env_name_for_sif}_{_short_digest(content_digest)}.sif")
         # Refuse traversal in sif_subpath
-        if ".." in subpath.split("/") or subpath.startswith("/"):
+        if sif_subpath and (".." in sif_subpath.split("/") or sif_subpath.startswith("/")):
             return refused("stage.bad_subpath",
-                error=f"sif_subpath {subpath!r} must be relative + no `..`")
-        sif_remote_abs = f"{ct_path}/{subpath}"
+                error=f"sif_subpath {sif_subpath!r} must be relative + no `..`")
+        sif_remote_abs = sif_remote_path(env, record, freeze_request_key, sif_subpath)
 
         mode = record.get("mode")
         image_digest = record.get("image_digest") or ""
@@ -435,7 +523,7 @@ def stage_apptainer_image(
         # `apptainer pull` a multi-GB image there either
         # ([[feedback-no-head-node-image-builds]]).
         return _stage_via_local_build(
-            record=record, env=env, project_name=project_name,
+            record=record, env=env, env_name=env_name_for_sif, project_name=project_name,
             compute_env_name=compute_env_name, sif_remote_abs=sif_remote_abs,
             image_digest=image_digest, freeze_request_key=freeze_request_key,
             platform=platform, access_path=access_path, timeout=timeout)

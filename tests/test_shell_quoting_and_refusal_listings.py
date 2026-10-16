@@ -320,10 +320,10 @@ def test_sbatch_via_ssh_body_is_one_quoted_argument(monkeypatch):
         return P()
     monkeypatch.setattr(submit_workflow.subprocess, "run", fake_run)
     r = submit_workflow.sbatch_via_ssh({"host": "hpc.example.invalid", "user": "u"}, "/work/u/run",
-                                       sbatch_args=("--time=01:00:00",), script_args=("-resume",))
+                                       sbatch_args=("--dependency=afterok:41",))
     assert r["job_id"] == "4242"
     assert _remote_argv(r["sbatch_command"])[2] == \
-        "cd /work/u/run && sbatch --parsable --time=01:00:00 launcher.sh -resume"
+        "cd /work/u/run && sbatch --parsable --dependency=afterok:41 launcher.sh"
     assert seen == [r["sbatch_command"]]
 
 
@@ -345,3 +345,66 @@ def test_cluster_probe_body_is_one_quoted_argument(monkeypatch):
     assert body == (f"if [ -e {q} ]; then echo EXISTS=1; else echo EXISTS=0; fi; "
                     f"if [ -e {q} ]; then du -sb {q} 2>/dev/null | cut -f1 | sed \"s/^/SIZE=/\"; fi; "
                     f"if [ -f {q_side} ]; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi")
+
+
+def test_the_run_dir_probe_reads_what_the_cluster_holds_and_the_rewrite_is_exact(tmp_path, monkeypatch):
+    """The two remote helpers of a launch, run through bash on this machine: the probe
+    reads which carried files are missing, the run's own texts exactly (with or
+    without a last newline), and the run's jobs the scheduler still holds; the rewrite
+    lands each file whole, whatever its quotes and lines."""
+    import subprocess
+    from agent.skills import run_production as rp
+    run = tmp_path / "run1"
+    run.mkdir()
+    (run / "main.nf").write_text("x")
+    (run / "params.yaml").write_text("a: 1\nnote: it's \"$HOME\" `x`\n")
+    (run / "launcher.sh").write_text("#SBATCH --time=01:00:00")       # no last newline
+    real = subprocess.run
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "squeue").write_text(f"#!/bin/sh\necho '77 PENDING {run}'\necho '78 RUNNING /elsewhere'\n")
+    (bindir / "squeue").chmod(0o755)
+
+    def fake_ssh(argv, **kw):
+        return real(["bash", "-c", argv[-1]], capture_output=True, text=True,
+                    env={"PATH": f"{bindir}:/usr/bin:/bin", "USER": "u", "HOME": str(tmp_path)})
+    monkeypatch.setattr(rp.subprocess, "run", fake_ssh)
+    env = {"host": "hpc.example.invalid", "user": "u"}
+    state = rp._remote_run_dir_state(env, str(run), ["main.nf", "nextflow.config"], timeout=10)
+    assert state["exists"] and state["missing"] == ["nextflow.config"] and state["live"] == ["77 PENDING"]
+    assert state["texts"]["params.yaml"] == (run / "params.yaml").read_text()
+    assert state["texts"]["launcher.sh"] == "#SBATCH --time=01:00:00"
+
+    texts = {"params.yaml": "a: 2\nnote: it's \"$HOME\" `x` \\ %s\n", "launcher.sh": "#!/bin/bash\n# two\n"}
+    rp._write_remote(env, str(run), texts, timeout=10)
+    assert {rel: (run / rel).read_text() for rel in texts} == texts
+    assert not list(run.glob("*.tmp"))
+
+
+def test_a_value_reaches_nextflow_as_written():
+    """Nextflow's YAML reader takes `1e-5` as a float and would hand the command
+    `1.0E-5`, and `yes` as a boolean: both are quoted; an integer stays a number."""
+    from agent.skills.pipeline_render_nextflow import params_yaml_line
+    assert params_yaml_line("alpha", "1e-5") == "alpha: '1e-5'"
+    assert params_yaml_line("frac", "0.5") == "frac: '0.5'"
+    assert params_yaml_line("stranded", "yes") == "stranded: 'yes'"
+    assert params_yaml_line("n", "1000") == "n: 1000"
+    assert params_yaml_line("prd", "disease") == "prd: disease"
+
+
+def test_walltime_lands_on_the_time_line_or_is_refused_naming_the_launcher():
+    from agent.skills import run_production as rp
+    got = rp._with_walltime("#!/bin/bash\n#SBATCH --time=2-00:00:00   # the manager\nrun\n", "12:00:00", "/w/run1/launcher.sh")
+    assert got == "#!/bin/bash\n#SBATCH --time=12:00:00   # the manager\nrun\n"
+    try:
+        rp._with_walltime("#!/bin/bash\nrun\n", "12:00:00", "/w/run1/launcher.sh")
+        raise AssertionError("a launcher without a time line must be refused")
+    except rp._Refusal as e:
+        assert "/w/run1/launcher.sh" in str(e)
+
+
+def test_params_can_leave_an_option_empty():
+    from agent.skills import run_production as rp
+    text, effective = rp._with_params("# c\nxtaxon_ids: '9606'\nsamplesheet: samples.csv\n",
+                                      {"xtaxon_ids": ""}, "/w/params.yaml")
+    assert "\nxtaxon_ids: ''\n" in text and effective["xtaxon_ids"] == ""

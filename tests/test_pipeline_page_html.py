@@ -274,8 +274,8 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
                 inputs.append(pr.StageInput(name=f"artifact_{p:02d}.bam", origin="stage", from_stage=S[p],
                                             artifact=f"artifact_{p:02d}.bam"))
         consumers = [S[j] for j, ps in preds.items() if i in ps and j < n_stages]
-        outputs = [pr.StageOutput(artifact=f"artifact_{i:02d}.bam", observed=None, consumed_by=consumers,
-                                  declared_pattern="*.bam" if i % 3 == 0 else None)]
+        outputs = [pr.StageOutput(artifact=f"artifact_{i:02d}.bam", observed=None, directory=False, consumed_by=consumers,
+                                  declared_pattern="*.bam" if i % 3 == 0 else None, published=True)]
         for p in uses:
             params[p].used_by.append(name)
         stages.append(pr.PipelineStage(
@@ -458,6 +458,11 @@ class TestTheDirectory:
 
     def test_a_results_directory_is_listed_only_when_a_stage_publishes_into_it(self):
         assert [x.name for x in directory_tree(_no_outputs()) if x.group == "written"] == ["runs/<timestamp>/", "work/"]
+        kept = _record()
+        for st in kept.stages:
+            for o in st.outputs:
+                o.published = False                   # written, but every file stays in work/
+        assert [x.name for x in directory_tree(kept) if x.group == "written"] == ["runs/<timestamp>/", "work/"]
         assert [x.name for x in directory_tree(_cohort()) if x.group == "written"] == [
             "results/<sample>/", "results/", "runs/<timestamp>/", "work/"]
         assert _entries(_cohort())["results/"].what == (
@@ -502,8 +507,10 @@ class TestThePicture:
         shared = [p for p in rec.params if p.kind == "shared"]
         assert svg.count('data-node="param"') == len(shared) == 3
         assert svg.count('data-node="column"') + svg.count('data-node="param"') == len(rec.params)
-        outputs = [o for s in rec.stages for o in s.outputs]   # every artifact a stage writes is published
-        assert svg.count('data-node="output"') == len(outputs) == 3
+        published = [o for s in rec.stages for o in s.outputs if o.published]   # the index with its BAM
+        assert svg.count('data-node="output"') == len(published) == 3
+        rec.stages[1].outputs[0].published = False        # the index, kept in work/: not drawn
+        assert _svg(_page(rec)).count('data-node="output"') == 2
         for p in rec.params:
             assert f'data-name="{p.name}"' in svg
         assert 'data-node="file"' not in svg                                # the files boxes are the other picture's
@@ -556,9 +563,9 @@ class TestThePicture:
         assert by["s:HISAT2"].line2 == "hisat2 · per sample"
         assert by["s:HTSEQ_COUNT"].line2 == "htseq-count · per sample"
         assert by["s:HISAT2"].tooltip == ("stage 1 HISAT2 · hisat2 · runs once per sample · image aaaa1111aaaa · "
-                                          "unsized (default request) · measured authority authoritative")
+                                          "unsized (default cluster request) · measured authority authoritative")
         sized = _record(resources={"HISAT2": {"cpus": 8, "mem": "32G", "time": "4:00:00"}})
-        assert "request cpus 8 · mem 32G · time 4:00:00 · gpus 0" in picture_layout(sized).nodes[5].tooltip
+        assert "cluster request cpus 8 · mem 32G · time 4:00:00 · gpus 0" in picture_layout(sized).nodes[5].tooltip
         by = {n.id: n for n in picture_layout(_cohort()).nodes}
         assert by["s:STAGE_01"].line2 == "tool1 · cohort" and by["s:STAGE_00"].line2 == "tool0 · per sample"
         assert "runs once over the cohort" in by["s:STAGE_01"].tooltip
@@ -714,7 +721,7 @@ class TestThePicture:
         svg = _svg(_page(_threads()))
         assert "THREADS" not in svg
         assert re.findall(r'data-node="param" data-id="([^"]+)"', svg) == ["p:HISAT2_INDEX", "p:STRANDED", "p:GTF"]
-        assert "request cpus 4, the sealed thread count · mem and time default · gpus 0" in svg
+        assert "cluster request cpus 4, the sealed thread count · mem and time default · gpus 0" in svg
         assert 'class="node stage unsized"' not in _svg(_page(_threads())).split('data-id="s:HISAT2"')[0].rsplit("<g", 1)[1]
 
 
@@ -769,9 +776,10 @@ class TestRunLocally:
         assert "launcher.sh" not in cd                                  # the launcher is the cluster's
         assert make.startswith("Make <code>nextflow</code> available")
         assert run == ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
-                       "re-runs only the stages whose inputs or parameters changed. A value for this run only goes "
-                       "after the line — <code>--stranded &lt;value&gt;</code> — and wins over "
-                       "<code>params.yaml</code>. Nextflow's own log stays at <code>.nextflow.log</code> here; to "
+                       "re-runs only the stages whose inputs or parameters changed. A value after the line — "
+                       "<code>--stranded &lt;value&gt;</code> — wins over <code>params.yaml</code> for that one run "
+                       "only; to change what the directory runs, edit <code>params.yaml</code>. "
+                       "Nextflow's own log stays at <code>.nextflow.log</code> here; to "
                        "file it with the run records as the launcher does, start with <code>nextflow -log "
                        "runs/&lt;stamp&gt;/nextflow.log run … --run_stamp &lt;stamp&gt;</code>."
                        f"<pre>{RUN_LOCAL}</pre>")
@@ -977,7 +985,7 @@ class TestStages:
     def test_one_row_per_stage_in_execution_order_with_the_tool_and_the_command_main_nf_runs(self):
         rec, html = _record(), _page()
         sec = _section(html, "stages")
-        assert ("<tr><th>Stage</th><th>Tool</th><th>Command, as main.nf runs it</th><th>Request</th>"
+        assert ("<tr><th>Stage</th><th>Tool</th><th>Command, as main.nf runs it</th><th>Cluster request</th>"
                 "<th>Measured</th></tr>") in sec
         assert sec.count("<tr><td><code>") == len(rec.stages) == 3
         names = ("HISAT2", "SAMTOOLS", "HTSEQ_COUNT")
@@ -1020,7 +1028,7 @@ class TestStages:
     def test_with_several_images_the_image_column_returns_between_command_and_request(self):
         html = _page(_two_images())
         sec = _section(html, "stages")
-        assert ("<tr><th>Stage</th><th>Tool</th><th>Command, as main.nf runs it</th><th>Image</th><th>Request</th>"
+        assert ("<tr><th>Stage</th><th>Tool</th><th>Command, as main.nf runs it</th><th>Image</th><th>Cluster request</th>"
                 "<th>Measured</th></tr>") in sec
         assert "Every stage runs inside" not in sec
         assert (f'</pre></td><td><code>bioinf_rnaseq_cli:latest</code> <span class="muted" title="{DIGEST}">'

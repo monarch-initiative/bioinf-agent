@@ -70,7 +70,7 @@ def _cluster_hints(env_block: dict, spec: Any) -> dict:
     names, and — when the env has a container zone and the sealed env is in the cache —
     the .sif path `stage_apptainer_image` writes: `<container zone>/<env name>_<12 hex
     of the content digest>.sif`. Absent pieces stay absent; nothing is guessed."""
-    from agent.skills.stage_apptainer import _short_digest
+    from agent.skills.stage_apptainer import sif_remote_path
     mods = compute_access.get_container_modules(env_block)
     modules = [v for k in ("apptainer_module", "nextflow_module") for v in [mods.get(k)] if v]
     sif_paths: dict[str, str] = {}
@@ -80,10 +80,8 @@ def _cluster_hints(env_block: dict, spec: Any) -> dict:
     target = compute_access.get_container_upload_target(env_block)
     if cached and cached.get("name"):
         env_names[key] = str(cached["name"])
-        digest = cached.get("content_digest") or getattr(spec, "env_content_digest", "")
-        if target and target.get("path") and digest:
-            base = str(target["path"]).rstrip("/")
-            sif_paths[key] = f"{base}/{cached['name']}_{_short_digest(str(digest))}.sif"
+        if target and target.get("path") and (cached.get("content_digest") or cached.get("image_digest")):
+            sif_paths[key] = sif_remote_path(env_block, cached, key)
     return {"modules": modules, "sif_paths": sif_paths, "env_names": env_names}
 
 
@@ -109,7 +107,10 @@ def render_pipeline(sealed_workflow: str,
     cluster (apptainer + SLURM; the launcher loads the modules). ``nextflow.config`` decides
     where (``local`` names the image, ``slurm`` the ``.sif``); ``params.yaml`` holds only
     parameters. ``pipeline.html`` shows all of it with the command run per stage; every run
-    writes ``runs/<timestamp>/trace.txt`` and ``report.html``.
+    writes ``runs/<timestamp>/trace.txt`` and ``report.html``. ``results/<sample>/`` gets
+    what the how-to's ``usage.outputs`` declare, with their sidecars (everything, when
+    they declare nothing the run wrote); the rest stays in ``work/``.
+    ``publish_dir_mode: link`` in params.yaml hard-links instead of copying.
 
     **Derived from the seal, or chosen.** The samplesheet's example rows are the I4 trials
     (``sample`` is the row key). A placeholder whose value differs across trials is a
@@ -117,8 +118,11 @@ def render_pipeline(sealed_workflow: str,
     default (one trial: sample id and reads per-sample, the rest shared). Override with
     ``per_sample=`` / ``shared=``. ``stages=`` groups how-to commands by 1-based number
     (``[[1, 2], [3]]``); the default is one stage per command. ``stage_names=`` names them.
-    ``resources={STAGE: {cpus, mem, time, gpus}}`` sizes a stage; an unsized stage carries a
-    labelled default beside the sealed run's measurement. ``env=`` names a compute env in
+    ``resources={STAGE: {cpus, mem, time, gpus}}`` sizes a stage on the cluster (the
+    ``slurm`` profile); an unsized stage carries a labelled default beside the sealed run's
+    measurement there. The ``local`` profile asks for no cluster sizing — a stage with a
+    thread slot runs with the sealed run's count — so one render runs on a laptop and on
+    the cluster alike. ``env=`` names a compute env in
     projects_access.yaml: the launcher carries its SLURM policy and modules, and the
     ``slurm`` profile's container is the path ``stage_apptainer_image`` writes there.
 

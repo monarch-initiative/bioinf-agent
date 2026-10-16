@@ -39,8 +39,13 @@ The interface is four methods:
 
   remote_exists(env, abs_remote_path, timeout)        → {exists} | {error}
   ensure_parent_dir(env, abs_remote_path, timeout)    → None | {error}
-  upload_one(env, local_path, abs_remote_path, local_sha256, timeout)
+  upload_one(env, local_path, abs_remote_path, local_sha256, timeout, tree)
   download_one(env, abs_remote_path, local_path, timeout)
+
+A path may be a directory. An upload names it by passing `tree` (its
+{relative path: sha256}); a download finds out from the source. Either way
+a directory's success carries `checksums`, the {relative path: sha256} of
+what was moved, and symlinks are never followed.
 
 The transfer methods return a dict-in-dict-out shape: success path has
 {success: True, bytes, duration_s, transferred_at, provider,
@@ -62,6 +67,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+from agent.skills.backgroundable import detached
 from agent.skills.outcomes import proven, refused, broke, loop
 
 
@@ -99,7 +105,8 @@ class TransferProvider:
     def upload_one(self, *, env: dict, local_path: Path,
                    abs_remote_path: str, local_sha256: str,
                    timeout: int,
-                   label: Optional[str] = None) -> dict:
+                   label: Optional[str] = None,
+                   tree: Optional[dict] = None) -> dict:
         """Provider-side upload. Blocks until the bytes are moved AND
         verified; `verified_method` records how the provider knows."""
         raise NotImplementedError
@@ -155,12 +162,14 @@ class ScpHeadNodeProvider(TransferProvider):
     def upload_one(self, *, env: dict, local_path: Path,
                    abs_remote_path: str, local_sha256: str,
                    timeout: int,
-                   label: Optional[str] = None) -> dict:
+                   label: Optional[str] = None,
+                   tree: Optional[dict] = None) -> dict:
         # scp is synchronous by nature; label is ignored.
         # We accept them so callers don't have to special-case the
         # provider when threading the flag through.
         from agent.skills.transfer import (
-            _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output)
+            _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
+            _remote_tree_cmd, _parse_tree_listing, _tree_mismatch)
         from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
         # Build the scp dst (user@host:abs_remote_path), with shell-safety
@@ -172,8 +181,8 @@ class ScpHeadNodeProvider(TransferProvider):
 
         started = time.perf_counter()
 
-        # 1) scp the file.
-        argv = _scp_argv(env, str(local_path), scp_target)
+        # 1) scp the file, or the directory.
+        argv = _scp_argv(env, str(local_path), scp_target, tree=tree is not None)
         try:
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
@@ -193,8 +202,10 @@ class ScpHeadNodeProvider(TransferProvider):
                 out["hint"] = hint
             return broke("transfer.scp_upload_failed", **out)
 
-        # 2) Verify via remote sha256sum.
-        sha_cmd = _remote_sha256_cmd(abs_remote_path)
+        # 2) Verify via remote sha256sum: of the file, or of every file (in bash,
+        # whatever the login shell is).
+        sha_cmd = (_remote_sha256_cmd(abs_remote_path) if tree is None
+                   else f"bash -c {shlex.quote(_remote_tree_cmd(abs_remote_path))}")
         sh_argv = _ssh_argv(env, sha_cmd)
         try:
             sh_res = subprocess.run(sh_argv, capture_output=True, text=True,
@@ -208,6 +219,22 @@ class ScpHeadNodeProvider(TransferProvider):
                 f"remote sha256sum failed (rc={sh_res.returncode}): "
                 f"{(sh_res.stderr or '').strip()[:500]}",
                 provider=self.name)
+
+        if tree is not None:
+            mismatch = _tree_mismatch(tree, _parse_tree_listing(sh_res.stdout or "")[0])
+            if mismatch:
+                return broke("transfer.scp_upload_tree_mismatch", error=
+                    f"the directory at {abs_remote_path} differs from "
+                    f"{local_path}: {mismatch}", provider=self.name)
+            return proven("transfer.scp_uploaded_tree",
+                success=          True,
+                provider=         self.name,
+                command=          _display_cmd(argv),
+                duration_s=       round(time.perf_counter() - started, 3),
+                transferred_at=   _now_iso(),
+                checksums=        tree,
+                verified_method=  "sha256_round_trip",
+            )
 
         remote_sha = _parse_sha256sum_output(sh_res.stdout or "")
         if not remote_sha:
@@ -238,8 +265,9 @@ class ScpHeadNodeProvider(TransferProvider):
                      label: Optional[str] = None) -> dict:
         # label ignored — scp is sync-only.
         from agent.skills.transfer import (
-            _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
-            _compute_local_sha256)
+            TransferError, _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
+            _compute_local_sha256, _remote_tree_cmd, _parse_tree_listing,
+            _scan_tree, _tree_mismatch)
         from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
 
         host = env["host"]
@@ -250,9 +278,12 @@ class ScpHeadNodeProvider(TransferProvider):
         started = time.perf_counter()
 
         # 1) Pre-anchor: compute the remote sha BEFORE transfer so we have
-        # the expected hash to compare against once the file lands locally.
-        sha_cmd = _remote_sha256_cmd(abs_remote_path)
-        sh_argv = _ssh_argv(env, sha_cmd)
+        # the expected hash to compare against once the file lands locally;
+        # for a directory, every file's. In bash, whatever the login shell is.
+        probe = (f"if [ -d {shlex.quote(abs_remote_path)} ]; then echo TREE; "
+                 f"{_remote_tree_cmd(abs_remote_path)}; "
+                 f"else {_remote_sha256_cmd(abs_remote_path)}; fi")
+        sh_argv = _ssh_argv(env, f"bash -c {shlex.quote(probe)}")
         try:
             sh_res = subprocess.run(sh_argv, capture_output=True, text=True,
                                     timeout=timeout)
@@ -271,15 +302,25 @@ class ScpHeadNodeProvider(TransferProvider):
             if hint:
                 out["hint"] = hint
             return broke("transfer.scp_download_verify_failed", **out)
-        remote_sha = _parse_sha256sum_output(sh_res.stdout or "")
-        if not remote_sha:
-            return broke("transfer.scp_download_verify_unparseable", error=
-                f"remote sha256sum stdout unparseable: "
-                f"{(sh_res.stdout or '').strip()[:500]!r}",
-                provider=self.name)
+        tree = "TREE" in (sh_res.stdout or "").splitlines()
+        if tree:
+            source, not_files = _parse_tree_listing(sh_res.stdout or "")
+            if not_files:
+                return refused("transfer.scp_download_tree_not_files", error=
+                    f"{abs_remote_path} holds {len(not_files)} entr(ies) that "
+                    f"are not files (first: {not_files[0]}); a directory "
+                    f"transfers as regular files and directories only",
+                    provider=self.name)
+        else:
+            remote_sha = _parse_sha256sum_output(sh_res.stdout or "")
+            if not remote_sha:
+                return broke("transfer.scp_download_verify_unparseable", error=
+                    f"remote sha256sum stdout unparseable: "
+                    f"{(sh_res.stdout or '').strip()[:500]!r}",
+                    provider=self.name)
 
-        # 2) scp the file back.
-        argv = _scp_argv(env, scp_src, str(local_path))
+        # 2) scp the file (or the directory) back.
+        argv = _scp_argv(env, scp_src, str(local_path), tree=tree)
         try:
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
@@ -300,6 +341,29 @@ class ScpHeadNodeProvider(TransferProvider):
             return broke("transfer.scp_download_failed", **out)
 
         # 3) Compute local sha + compare.
+        if tree:
+            try:
+                landed, nbytes = _scan_tree(local_path)
+            except (OSError, TransferError) as e:
+                return broke("transfer.scp_download_tree_unreadable", error=
+                    f"the directory scp wrote at {local_path} can't be read "
+                    f"back: {e}", provider=self.name)
+            mismatch = _tree_mismatch(source, landed)
+            if mismatch:
+                return broke("transfer.scp_download_tree_mismatch", error=
+                    f"the directory at {local_path} differs from "
+                    f"{abs_remote_path}: {mismatch}; what arrived is left there",
+                    provider=self.name)
+            return proven("transfer.scp_downloaded_tree",
+                success=          True,
+                provider=         self.name,
+                command=          _display_cmd(argv),
+                bytes=            nbytes,
+                duration_s=       round(time.perf_counter() - started, 3),
+                transferred_at=   _now_iso(),
+                checksums=        landed,
+                verified_method=  "sha256_round_trip",
+            )
         local_sha = _compute_local_sha256(local_path)
         if local_sha != remote_sha:
             # The fetched bytes don't match what was on the remote. Remove
@@ -379,6 +443,22 @@ class ScpHeadNodeProvider(TransferProvider):
 
 _GLOBUS_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED"}
 
+
+def _tree_shortfall(task: dict, files: Optional[int] = None) -> Optional[str]:
+    """Why a SUCCEEDED task did not copy a whole directory, or None: Globus
+    skipped files, or left symlinks behind (a Globus directory transfer does
+    not follow them), or moved a different number of files than the
+    directory holds (when that number is known)."""
+    if task.get("files_skipped"):
+        return f"Globus skipped {task['files_skipped']} file(s)"
+    if task.get("symlinks"):
+        return (f"the source holds {task['symlinks']} symlink(s), which a "
+                f"directory transfer does not follow")
+    if files is not None and task.get("files_transferred") != files:
+        return (f"Globus moved {task.get('files_transferred')} file(s) and "
+                f"the directory holds {files}")
+    return None
+
 # Globus surfaces this nice_status whenever ANY endpoint in the
 # transfer (local or remote) refuses an operation: GCP path not in
 # Accessible Folders, GCS data_access consent missing, remote POSIX
@@ -426,13 +506,14 @@ class GlobusProvider(TransferProvider):
     def upload_one(self, *, env: dict, local_path: Path,
                    abs_remote_path: str, local_sha256: str,
                    timeout: int,
-                   label: Optional[str] = None) -> dict:
+                   label: Optional[str] = None,
+                   tree: Optional[dict] = None) -> dict:
         return self._run_transfer(
             src_ep=self._local_ep, src_path=str(local_path),
             dst_ep=self._remote_ep, dst_path=abs_remote_path,
             direction="upload",
             local_path=local_path, local_sha256=local_sha256,
-            timeout=timeout, label=label)
+            timeout=timeout, label=label, tree=tree)
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
@@ -518,7 +599,8 @@ class GlobusProvider(TransferProvider):
                       dst_ep: str, dst_path: str, direction: str,
                       local_path: Path, local_sha256: str,
                       timeout: int,
-                      label: Optional[str]) -> dict:
+                      label: Optional[str],
+                      tree: Optional[dict] = None) -> dict:
         started = time.perf_counter()
 
         # 1) Submit.
@@ -533,8 +615,9 @@ class GlobusProvider(TransferProvider):
         command = sub.get("command")
 
         # 2) Poll to terminal.
-        # Sync — block until terminal or watchdog ceiling.
-        wait_cap = min(timeout, self._SYNC_WAIT_S_DEFAULT)
+        # Sync — block until terminal or watchdog ceiling (a detached job has no
+        # watchdog over it, so it waits out its whole timeout).
+        wait_cap = timeout if detached() else min(timeout, self._SYNC_WAIT_S_DEFAULT)
         wait_started = time.perf_counter()
         last_status = None
         while True:
@@ -576,7 +659,10 @@ class GlobusProvider(TransferProvider):
                         f"'{task_id}') until SUCCEEDED/FAILED (or "
                         f"`globus task wait {task_id}` by hand). Do NOT assume "
                         f"the transfer failed, and do NOT re-run it blind — a "
-                        f"second transfer of the same bytes races the first.",
+                        f"second transfer of the same bytes races the first. "
+                        f"A transfer that may run this long is one to start with "
+                        f"background=True: it then waits it out and checks what "
+                        f"arrived, file by file for a directory.",
                     provider=self.name,
                     task_id= task_id,
                     hint=    f"still running server-side — poll "
@@ -606,20 +692,37 @@ class GlobusProvider(TransferProvider):
         # in-flight checksum verification — that's our trust anchor here.
         # For downloads, also record the local sha256 of what landed (the
         # agent's content anchor; Globus already verified bytes match end-
-        # to-end).
+        # to-end): of the file, or of every file of a directory.
         out_sha = ""
+        checksums = tree
         if direction == "download":
+            from agent.skills.transfer import (
+                TransferError, _compute_local_sha256, _scan_tree)
             try:
-                from agent.skills.transfer import _compute_local_sha256
-                out_sha = _compute_local_sha256(local_path)
-            except (OSError, FileNotFoundError) as e:
+                if local_path.is_dir():
+                    checksums = _scan_tree(local_path)[0]
+                else:
+                    out_sha = _compute_local_sha256(local_path)
+            except (OSError, TransferError) as e:
                 return broke("transfer.globus_local_unreadable",
                     error=
-                        f"Globus task {task_id} SUCCEEDED but local "
-                        f"file is unreadable for sha256: {e}",
+                        f"Globus task {task_id} SUCCEEDED but what landed "
+                        f"at {local_path} is unreadable for sha256: {e}",
                     provider=self.name,
                     task_id= task_id,
                 )
+        # A directory: Globus checksummed each file it moved; it must have
+        # moved every one.
+        shortfall = (None if checksums is None
+                     else _tree_shortfall(last_status, len(checksums)))
+        if shortfall:
+            return broke("transfer.globus_tree_incomplete",
+                error=
+                    f"Globus task {task_id} SUCCEEDED, but {shortfall}; "
+                    f"what arrived is at {dst_path}",
+                provider=self.name,
+                task_id= task_id,
+            )
 
         duration = time.perf_counter() - started
         result: dict = {
@@ -635,7 +738,9 @@ class GlobusProvider(TransferProvider):
             "files_transferred": last_status.get("files_transferred", 0),
             "globus_status":    "SUCCEEDED",
         }
-        if direction == "upload":
+        if checksums is not None:
+            result["checksums"] = checksums
+        elif direction == "upload":
             result["local_sha256_pre_transfer"] = local_sha256
         else:
             result["local_sha256"] = out_sha
@@ -1052,10 +1157,14 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     in real usage.
 
     Returns the decoded `globus task show --format json` fields: `status`,
-    `nice_status`, `bytes_transferred`, `files_transferred`, `fatal_error`.
+    `nice_status`, `bytes_transferred`, `files_transferred`, `files_skipped`,
+    `symlinks`, `fatal_error`.
 
     The outcome tag reflects the TASK's state, not merely the query's:
       SUCCEEDED        → proven  (success=True)
+      SUCCEEDED, but files skipped or symlinks left behind
+                       → broke   (success=False) — not a whole copy of a
+                         directory
       FAILED           → broke   (success=False) — a task that failed must never
                          read as green; the caller branches on this to decide
                          whether the bytes are actually there
@@ -1091,6 +1200,7 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
         "bytes_transferred":  obj.get("bytes_transferred", 0),
         "files_transferred":  obj.get("files_transferred", 0),
         "files_skipped":      obj.get("files_skipped", 0),
+        "symlinks":           obj.get("symlinks", 0),
         "fatal_error":        obj.get("fatal_error"),
         "type":               obj.get("type"),
         "captured_at":        _now_iso(),
@@ -1098,6 +1208,10 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     # The QUERY succeeding says nothing about the TASK succeeding. Reporting
     # success=True on a FAILED task is a false green in the one place a caller
     # asks "are my bytes there?" — so branch on the observed status.
+    shortfall = _tree_shortfall(obj)
+    if status == "SUCCEEDED" and shortfall:
+        return broke("transfer.task_incomplete", success=False,
+                     error=f"the task SUCCEEDED, but {shortfall}", **out)
     if status == "SUCCEEDED":
         return proven("transfer.task_status_ok", success=True, **out)
     if status == "FAILED":

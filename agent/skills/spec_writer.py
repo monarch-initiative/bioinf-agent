@@ -24,8 +24,8 @@ from typing import Any, Optional
 import yaml
 
 from agent.models import core_data as _core_data
-from agent.models.core_data import (OUTPUT_SLOT_RULE, fill_slots, is_output_slot,
-                                    step_is_validated, usage_commands, usage_slots)
+from agent.models.core_data import (OUTPUT_SLOT_RULE, fill_slots, is_output_slot, output_matches,
+                                    output_pattern, step_is_validated, usage_commands, usage_slots)
 from agent.skills import invariants as _invariants
 from agent.skills.outcomes import refused
 # The READER for a step's validation dict. Imported (not re-implemented) so the invariant
@@ -561,7 +561,7 @@ def _run_one_trial(
     requiring the validator to confirm the bytes are a real BAM, VCF, JSON,
     etc. kills the cheap-fake path.
     """
-    import fnmatch, shutil, tempfile
+    import shutil, tempfile
 
     trial_name = plan["name"]
     subs       = dict(plan.get("substitutions") or {})
@@ -580,7 +580,8 @@ def _run_one_trial(
     for slot in output_slots:
         subs[slot] = str(scratch)
 
-    missing = [s for s in placeholders if s not in subs or not subs[s]]
+    # An empty value is a value ("no restriction"); only a slot the trial leaves unbound is missing.
+    missing = [s for s in placeholders if subs.get(s) is None]
     if missing:
         shutil.rmtree(scratch, ignore_errors=True)
         return {
@@ -648,22 +649,14 @@ def _run_one_trial(
     # file the command `-o {OUTPUT_DIR}/{SAMPLE}.sorted.bam` wrote), so it is filled with
     # this trial's bindings first; a pattern that spells the output directory itself is
     # read relative to the scratch dir the scan walks.
-    def _filled(pat: str) -> str:
-        p = fill_slots(pat, subs)
-        prefix = str(scratch).rstrip("/") + "/"
-        return p[len(prefix):] if p.startswith(prefix) else p
-
     missing_outputs = []
     matched_files: dict[str, list[tuple[str, str]]] = {}   # pattern → [(produced_rel, declared_type)]
     for o in outputs_spec:
         patterns = o.get("files") or []
         declared_type = (o.get("type") or "").lower()
         for pat in patterns:
-            want = _filled(pat)
-            matches = [
-                f for f in produced
-                if fnmatch.fnmatch(f, want) or fnmatch.fnmatch(Path(f).name, want)
-            ]
+            want = output_pattern(pat, subs)
+            matches = [f for f in produced if output_matches(f, want)]
             if not matches:
                 missing_outputs.append({"slot": o.get("name"), "pattern": pat,
                                         **({"pattern_filled": want} if want != pat else {})})

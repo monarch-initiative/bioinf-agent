@@ -164,3 +164,36 @@ def test_the_store_owns_the_key_so_a_caller_cannot_get_it_wrong(tmp_path, store)
     val = ps.get_draft(pid)["pipeline_steps"][0]["validation"]
     assert list(val) == [validation_key(str(f))]
     assert Path(list(val)[0]).is_absolute()
+
+
+# ---------------------------------------------------------------------------
+# A step with a tree of outputs files them all in one write.
+# ---------------------------------------------------------------------------
+
+def test_add_validations_files_every_record_in_one_write(tmp_path, store, monkeypatch):
+    """A sweep that leaves a file per disease has thousands of outputs; filing them one
+    draft write at a time re-dumps the whole draft per file. The batch form files them
+    all under their own keys in ONE mutation, and keeps a failing record failing."""
+    ps = store
+    pid = ps.start("p", "d")["pipeline_id"]
+    outs = []
+    for i in range(40):
+        p = tmp_path / "cands" / f"MONDO-{i:04d}_gene_candidates.tsv"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"x")
+        outs.append(str(p))
+    ps.add_step(pid, _step(outs))
+
+    writes = []
+    real = ps._write_draft_file
+    monkeypatch.setattr(ps, "_write_draft_file", lambda pid_, draft: (writes.append(1), real(pid_, draft)))
+    results = {o: {"passed": True} for o in outs}
+    results[outs[7]] = {"passed": False, "error": "ragged"}
+    assert ps.add_validations(pid, 1, results) is True
+    assert len(writes) == 1
+
+    step = ps.get_draft(pid)["pipeline_steps"][0]
+    assert len(step["validation"]) == 40
+    assert step["validation"][validation_key(outs[7])] == {"passed": False, "error": "ragged"}
+    assert "I3.step_outputs_validated" in _i3(step) or any(v.startswith("I3") for v in _i3(step))
+    assert ps.add_validations(pid, 9, results) is False            # no such step: nothing filed

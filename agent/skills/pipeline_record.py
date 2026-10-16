@@ -3,8 +3,10 @@ pipeline_record — the typed PIPELINE record, derived from a sealed WorkflowSpe
 
 A pipeline is a RENDER of a sealed workflow, and it invents nothing: the stages are
 the sealed how-to's commands, the images are the sealed steps' observed digests, the
-samplesheet columns are the how-to's per-sample inputs, and every artifact a stage
-writes into the row's directory is published, as the sealed run left it. This module
+samplesheet columns are the how-to's per-sample inputs, and what the how-to declares
+as its result (`usage.outputs`), with its sidecars, is published into the row's
+directory, as the sealed run left it — every artifact, when it declares none the run
+wrote. This module
 derives that record — the ONE thing the Nextflow renderer and the explain page read —
 and refuses, naming the remedy, when the seal cannot support the render.
 
@@ -24,6 +26,7 @@ Vocabulary
              flag takes. It binds to the stage's CPU request (`task.cpus`), never to
              params.yaml, and the sealed run's count IS that request unless the
              caller sizes the stage — so the command and the request cannot disagree
+             (a local run caps it at the machine's cpus)
   samplesheet slot  a how-to input declared `format: samplesheet`: the pipeline's own
              samples.csv, handed to the stage as a file. The seal's trial file shows
              which columns the stage reads; columns the per-sample inputs do not
@@ -41,7 +44,6 @@ Vocabulary
 """
 from __future__ import annotations
 
-import fnmatch
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,7 +53,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 from agent.models import core_data
-from agent.models.core_data import SLOT_RE, is_output_slot, slots_in as placeholders
+from agent.models.core_data import SLOT_RE, is_output_slot, output_matches, output_pattern, slots_in as placeholders
 from agent.skills.spec_writer import _SIDECAR_SUFFIXES
 
 #: Characters that can appear in a filename token named inside an output slot.
@@ -128,8 +130,10 @@ class StageOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact: str                              # templated basename, or a glob when rows disagree
     observed: Optional[str]                    # basename observed in the sealed run (row 0), None if never observed
+    directory: bool                            # the artifact is a directory the stage writes a tree into
     consumed_by: list[str]
     declared_pattern: Optional[str]            # the usage.outputs glob that matched, if any
+    published: bool                            # into results/: declared, a declared file's sidecar, or all when nothing is
 
 
 class StageResources(BaseModel):
@@ -289,12 +293,14 @@ def _collapse(piece: str) -> str:
 
 def artifact_tokens(template: str, out_slots: set[str]) -> list[str]:
     """The `<name>` fragments the template names inside an output slot,
-    `{OUTPUT_DIR}/<name>`, first-occurrence order."""
+    `{OUTPUT_DIR}/<name>`, first-occurrence order. A deeper path names its top-level
+    entry: `{OUTPUT_DIR}/kg/nodes.tsv` names the directory artifact `kg`."""
     toks: list[str] = []
     for slot in sorted(out_slots):
         for m in re.finditer(r"\{" + slot + r"\}/(" + _TOKEN_CHARS + ")", template):
-            if m.group(1) not in toks:
-                toks.append(m.group(1))
+            tok = m.group(1).split("/", 1)[0]
+            if tok and tok not in toks:
+                toks.append(tok)
     return toks
 
 
@@ -305,20 +311,30 @@ def _names_bare_slot(template: str, out_slots: set[str]) -> bool:
 def _template_regex(template: str, subs: Mapping[str, str], out_slots: set[str]) -> re.Pattern:
     """A pattern that matches the literal command the how-to produces for one row:
     input placeholders bound to the row's values, output slots left as wildcards
-    (the seal's steps and the I4 self-test wrote to different output dirs)."""
+    (the seal's steps and the I4 self-test wrote to different output dirs). Each
+    output slot's value is captured once (`groupdict()` is the directories the
+    matched command wrote into); a later occurrence of the same slot must repeat it."""
     parts: list[str] = []
     pos = 0
+    groups: dict[str, str] = {}
+    text = ""            # literal text and input values, collapsed together (an empty value leaves one space)
     for m in SLOT_RE.finditer(template):
-        parts.append(re.escape(_collapse(template[pos:m.start()])))
+        text += template[pos:m.start()]
         name = m.group(1)
         if name in out_slots:
-            parts.append(r"\S+")
+            parts.append(re.escape(_collapse(text)))
+            text = ""
+            if name in groups:
+                parts.append(f"(?P={groups[name]})")
+            else:
+                groups[name] = f"out{len(groups)}"
+                parts.append(rf"(?P<{groups[name]}>\S+)")
         else:
             if name not in subs:
                 raise KeyError(name)
-            parts.append(re.escape(_ws(subs[name])))
+            text += _ws(subs[name])
         pos = m.end()
-    parts.append(re.escape(_collapse(template[pos:])))
+    parts.append(re.escape(_collapse(text + template[pos:])))
     return re.compile("".join(parts))
 
 
@@ -367,13 +383,55 @@ def _common_suffix_glob(names: list[str]) -> str:
     return "*" + suffix if suffix else "*"
 
 
+#: An index that replaces its file's extension rather than adding to it (GATK, Picard).
+_REPLACING_SIDECARS = {".bai": (".bam",), ".crai": (".cram",), ".dict": (".fa", ".fasta", ".fna")}
+
+
 def _sidecar_of(name: str, produced: Mapping[str, int]) -> Optional[str]:
-    """`x.bam.bai` is a sidecar of `x.bam` when `x.bam` is a known artifact."""
+    """`x.bam.bai` — or `x.bai` — is a sidecar of `x.bam` when `x.bam` is a known artifact."""
     low = name.lower()
     for suf in _SIDECAR_SUFFIXES:
         if low.endswith(suf) and name[: -len(suf)] in produced:
             return name[: -len(suf)]
+    for suf, exts in _REPLACING_SIDECARS.items():
+        if low.endswith(suf):
+            return next((name[: -len(suf)] + e for e in exts if name[: -len(suf)] + e in produced), None)
     return None
+
+
+def _observed_files(step: Mapping, out_dirs: list[str], name: str) -> list[str]:
+    """The files a sealed step was observed writing as artifact `name` (the file itself,
+    or every file of the tree), each by its path under the directory it wrote into."""
+    rels = []
+    for o in (step.get("detected_outputs") or []):
+        p = str(o)
+        if _artifact_key(p, out_dirs)[0] == name:
+            root = next((d.rstrip("/") + "/" for d in out_dirs if p.startswith(d.rstrip("/") + "/")), "")
+            rels.append(p[len(root):] if root else Path(p).name)
+    return rels
+
+
+def _artifact_key(path: str, out_dirs: list[str]) -> tuple[str, bool]:
+    """The artifact an observed output belongs to: its basename when it lies directly in
+    a directory the step wrote into, else the top-level directory it lies under there (a
+    tool that writes a tree is observed writing the tree). Returns (name, is_directory);
+    a path under none of the directories is its basename, a file."""
+    for d in out_dirs:
+        root = d.rstrip("/") + "/"
+        if path.startswith(root):
+            head, sep, _ = path[len(root):].partition("/")
+            if head:
+                return head, bool(sep)
+    return Path(path).name, False
+
+
+def _observed_keys(step: Mapping, out_dirs: list[str]) -> dict[str, bool]:
+    """Every artifact a sealed step was observed writing, `{name: is_directory}`."""
+    keys: dict[str, bool] = {}
+    for o in (step.get("detected_outputs") or []):
+        name, is_dir = _artifact_key(str(o), out_dirs)
+        keys[name] = keys.get(name, False) or is_dir
+    return keys
 
 
 # ── derivation ──────────────────────────────────────────────────────────────
@@ -621,7 +679,14 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             notes.append(f"{ph}: collected ({params[-1].reason})")
             continue
         kind, why = classify(ph)
-        value_kind = "path" if core_data.is_path_like(v0) else "value"
+        given = [v for v in values if v != ""]
+        value_kind = "path" if any(core_data.is_path_like(v) for v in given) else "value"
+        if value_kind == "path" and len(given) < len(values):
+            raise PipelineDerivationError(
+                "pipeline.optional_path",
+                f"{ph} is a path in one trial and empty in another: an optional file input, which "
+                f"the render cannot stage",
+                "bind a file in every trial, or make the option a value (a flag the command reads)")
         source = "usage_input" if ph in declared_inputs else "literal"
         if value_kind == "value":
             source = "literal"
@@ -642,11 +707,13 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             default=v0 if kind == "shared" else None,     # a per-sample value is a samplesheet cell
             source=source, format=di.get("format"), description=di.get("description"),
             used_by=[], reason=why))
-        notes.append(f"{ph}: {kind} ({why})")
+        proven = (f"; the self-test ran it with {sorted(set(values))} only"
+                  if row_source == "proven" and value_kind == "value" and ph not in _SAMPLE_NAMES else "")
+        notes.append(f"{ph}: {kind} ({why}){proven}")
     # a shared path that is an authored artifact of the workflow is either a SCRIPT —
     # its full text in the record, carried verbatim into bin/, the param defaulting to
-    # that relative path — or an authored DATA file (staged with generated_by, or too
-    # large to carry): that stays a path input, anchored by the record's sha256. A
+    # that relative path — or an authored DATA file (or a script too large to carry):
+    # that stays a path input, anchored by the record's sha256. A
     # script-suffixed path the seal only excerpted is the one shape refused: the render
     # cannot carry a script it does not have.
     scripts: list[PipelineScript] = []
@@ -667,7 +734,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                     "pipeline.script_not_carried",
                     f"{p.name} names the authored script {p.default}, but the sealed record does not carry "
                     f"its full text (size {art.get('size_bytes')} bytes)",
-                    "stage scripts under 64 KiB in content mode so the seal carries them verbatim")
+                    "stage scripts under 64 KiB (content mode, or generated_by for a script "
+                    "already on disk) so the seal carries them verbatim")
             bn = Path(p.default).name
             p.source = f"authored_artifact:{bn}"
             p.reason += "; an authored data file, kept as a path input and pinned by its sha256"
@@ -691,6 +759,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
 
     # ── match sealed steps to (template, row) ──────────────────────────────
     matched: dict[int, list[tuple[int, dict]]] = {i: [] for i in range(len(templates))}
+    wrote_into: dict[int, list[str]] = {}      # step number -> the output directories its command named
     claimed: set[int] = set()
     for ti, tmpl in enumerate(templates):
         for ri, r in enumerate(rows):
@@ -699,8 +768,10 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 n = int(s.get("step", 0))
                 if n in claimed:
                     continue
-                if pat.fullmatch(_ws(s.get("command", ""))):
+                hit = pat.fullmatch(_ws(s.get("command", "")))
+                if hit:
                     matched[ti].append((ri, s))
+                    wrote_into[n] = [v for v in hit.groupdict().values() if v]
                     claimed.add(n)
                     break
     unmatched = [s for s in ok_steps if int(s.get("step", 0)) not in claimed]
@@ -753,44 +824,55 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             "run each how-to command with run_step_in_container (not run_pipeline_step), "
             "then re-seal: the pipeline executes inside the images the seal pins")
 
-    produced_by: dict[str, int] = {}           # artifact token -> template index
-    observed: dict[tuple[int, str], list[Optional[str]]] = {}   # (template, token) -> per-row observed basename
+    produced_by: dict[str, int] = {}           # artifact -> its latest producer so far (the forward scan)
+    history: dict[str, list[int]] = {}         # artifact -> every template that wrote it, in order
+    observed: dict[tuple[int, str], list[Optional[str]]] = {}   # (template, artifact) -> per-row observed name
+    directories: set[str] = set()              # artifacts observed as directories (a tree written under them)
     template_tokens: list[list[str]] = []
     template_bare: list[bool] = []
     consumers: dict[str, list[int]] = {}
     rewrites: dict[int, list[str]] = {i: [] for i in range(len(templates))}
     template_outputs: list[list[str]] = []   # named tokens + observed-but-unnamed artifacts
+
+    def _produce(tok: str, ti: int) -> None:
+        if tok in produced_by and produced_by[tok] < ti:
+            rewrites[ti].append(tok)          # consumed and re-written: stage_in_copy
+            consumers.setdefault(tok, []).append(ti)
+        produced_by[tok] = ti
+        if not history.get(tok) or history[tok][-1] != ti:
+            history.setdefault(tok, []).append(ti)
+
     for ti, tmpl in enumerate(templates):
         toks = artifact_tokens(tmpl, out_slots)
         template_tokens.append(toks)
         template_bare.append(_names_bare_slot(tmpl, out_slots))
         template_outputs.append(list(toks))
         steps_here = matched[ti]
+        # what each row's step was observed writing, as artifacts: a file directly in the
+        # output directory by its basename, a tree by its top-level directory
+        keys_here = {ri: _observed_keys(s, wrote_into.get(int(s.get("step", 0)), [])) for ri, s in steps_here}
         for tok in toks:
-            # observed basenames for this token across rows
+            # observed names for this token across rows
             per_row: list[Optional[str]] = []
             for ri, s in steps_here:
                 subs = rows[ri].get("substitutions") or {}
                 literal = tok
                 for ph in placeholders(tok):
                     literal = literal.replace("{" + ph + "}", str(subs.get(ph, "{" + ph + "}")))
-                outs = [Path(str(o)).name for o in (s.get("detected_outputs") or [])]
-                per_row.append(literal if literal in outs else None)
+                per_row.append(literal if literal in keys_here[ri] else None)
+                if keys_here[ri].get(literal):
+                    directories.add(tok)
             wrote_it = bool(per_row) and all(o is not None for o in per_row)
             if wrote_it:
-                if tok in produced_by and produced_by[tok] < ti:
-                    rewrites[ti].append(tok)          # consumed and re-written: stage_in_copy
-                    consumers.setdefault(tok, []).append(ti)
-                    produced_by[tok] = ti
-                else:
-                    produced_by.setdefault(tok, ti)
+                _produce(tok, ti)
                 observed[(ti, tok)] = per_row
             elif tok in produced_by and produced_by[tok] < ti:
                 consumers.setdefault(tok, []).append(ti)
             elif not steps_here:
                 # no sealed step to observe: a redirect / -o target is the producer, else a consumer
                 if re.search(r"(>\s*|-o\s+|--out\S*[= ]\s*)\{[A-Z0-9_]+\}/" + re.escape(tok), tmpl):
-                    produced_by.setdefault(tok, ti)
+                    if tok not in produced_by:
+                        _produce(tok, ti)
                     observed[(ti, tok)] = []
                     notes.append(f"{tok}: producer inferred from the command text of how-to "
                                  f"command {ti + 1} (no sealed step to confirm it)")
@@ -838,23 +920,25 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             per_row_extra: dict[str, list[Optional[str]]] = {}
             for ri, s in steps_here:
                 subs = rows[ri].get("substitutions") or {}
-                for o in (s.get("detected_outputs") or []):
-                    b = Path(str(o)).name
-                    if b in named_literals.get(ri, set()):
+                for obs_name, is_dir in keys_here[ri].items():
+                    if obs_name in named_literals.get(ri, set()):
                         continue
-                    key = _templatize(b, subs, value_per_sample)
+                    key = _templatize(obs_name, subs, value_per_sample)
                     per_row_extra.setdefault(key, [None] * len(steps_here))
-                    per_row_extra[key][[r for r, _ in steps_here].index(ri)] = b
+                    per_row_extra[key][[r for r, _ in steps_here].index(ri)] = obs_name
+                    if is_dir:
+                        directories.add(key)
             for key, per_row in per_row_extra.items():
                 if not all(per_row):
                     continue                       # not every row wrote it: not an artifact
-                if key in produced_by and produced_by[key] < ti:
-                    rewrites[ti].append(key)
-                    consumers.setdefault(key, []).append(ti)
-                produced_by[key] = ti
+                _produce(key, ti)
                 observed[(ti, key)] = per_row
                 if key not in template_outputs[ti]:
                     template_outputs[ti].append(key)
+
+    def _producer_before(tok: str, i: int) -> Optional[int]:
+        """The template that last wrote `tok` before command i, else None."""
+        return max((p for p in history.get(tok, []) if p < i), default=None)
 
     # ── stages ─────────────────────────────────────────────────────────────
     groups = stages if stages else [[i] for i in range(len(templates))]
@@ -956,11 +1040,18 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             env_name=(env_names or {}).get(str(env.get("request_key"))),
             sif_sha256=sif, sif_path=(sif_paths or {}).get(str(env.get("request_key"))),
             inputs=[], outputs=[], consumes_workdir=any(template_bare[i] for i in g),
-            stage_in_copy=any(rewrites[i] for i in g), resources=res))
+            # a copy only when the version rewritten came from ANOTHER stage: a stage that
+            # rewrites what its own earlier command wrote consumed nothing to protect
+            stage_in_copy=any(_producer_before(tok, i) not in g for i in g for tok in rewrites[i]),
+            resources=res))
 
     # ── wire inputs / outputs at stage level ───────────────────────────────
-    declared_globs = [(str(o.get("name")), str(f)) for o in declared_outputs for f in (o.get("files") or [])]
-    stage_by_name = {s.name: s for s in stage_recs}
+    # each declared pattern, and its reading with the slots kept (for an artifact no step observed)
+    declared_forms = [(str(f), output_pattern(str(f), {})) for o in declared_outputs for f in (o.get("files") or [])]
+
+    # inputs: an artifact comes from the stage that last wrote it before the consuming
+    # command — the latest version, when a stage in between rewrote it
+    edges: list[tuple[str, int, int]] = []         # (artifact, consuming template, producing template)
     for st in stage_recs:
         seen_in: set[str] = set()
         for i in st.templates:
@@ -975,58 +1066,80 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 st.inputs.append(StageInput(
                     name=ph, origin=origin, from_stage=None,
                     artifact=collected_set.get(ph) if p.kind == "collected" else None))
-            for tok in template_tokens[i]:
-                src = produced_by.get(tok)
-                if src is None or stage_of_template.get(src) == st.index:
+            wanted = list(template_tokens[i])
+            if template_bare[i]:
+                # the command names the output directory itself: in the self-test it ran in
+                # the one directory every earlier command wrote into, so everything written
+                # before it is staged in
+                wanted += [tok for tok in history if tok not in wanted]
+            for tok in wanted:
+                src = _producer_before(tok, i)
+                if src is None or stage_of_template[src] == st.index:
                     continue
-                if src > i:
+                edges.append((tok, i, src))
+                if tok in seen_in:
                     continue
-                parent = _sidecar_of(tok, produced_by)
-                from_stage = stage_recs[stage_of_template[src]].name
-                key = tok
-                if key in seen_in:
-                    continue
-                seen_in.add(key)
-                st.inputs.append(StageInput(name=tok, origin="stage", from_stage=from_stage, artifact=tok))
+                seen_in.add(tok)
+                st.inputs.append(StageInput(name=tok, origin="stage",
+                                            from_stage=stage_recs[stage_of_template[src]].name, artifact=tok))
                 # a consumer of X also receives X's sidecars produced before it
-                for other, osrc in produced_by.items():
-                    if other != tok and _sidecar_of(other, {tok: src}) == tok and osrc < i \
-                            and stage_of_template[osrc] != st.index and other not in seen_in:
-                        seen_in.add(other)
-                        st.inputs.append(StageInput(name=other, origin="stage",
-                                                    from_stage=stage_recs[stage_of_template[osrc]].name,
-                                                    artifact=other))
-                _ = parent
-        # outputs this stage produces (last producer wins across its templates)
+                for other in history:
+                    if other == tok or other in seen_in or _sidecar_of(other, {tok: src}) != tok:
+                        continue
+                    osrc = _producer_before(other, i)
+                    if osrc is None or stage_of_template[osrc] == st.index:
+                        continue
+                    seen_in.add(other)
+                    edges.append((other, i, osrc))
+                    st.inputs.append(StageInput(name=other, origin="stage",
+                                                from_stage=stage_recs[stage_of_template[osrc]].name,
+                                                artifact=other))
+
+    # outputs: every artifact a stage's commands wrote, declared once, as its last command
+    # in the stage left it
+    pending: list[tuple[PipelineStage, dict]] = []
+    for st in stage_recs:
+        out_toks: list[str] = []
         for i in st.templates:
             for tok in template_outputs[i]:
-                if produced_by.get(tok) != i:
-                    continue
-                per_row = observed.get((i, tok), [])
-                subs0 = rows[0].get("substitutions") or {}
-                obs0 = per_row[0] if per_row else None
-                templated = [_templatize(o, rows[ri].get("substitutions") or {}, value_per_sample)
-                             for ri, o in enumerate(per_row) if o]
-                if templated and len(set(templated)) == 1:
-                    art = templated[0]
-                elif templated:
-                    art = _common_suffix_glob(templated)
-                    notes.append(f"{st.name}: `{tok}` is named differently per row; declared as {art!r}")
-                else:
-                    art = tok
-                _ = subs0
-                pattern = None
-                for _slot, glob in declared_globs:
-                    cand = obs0 or art
-                    if fnmatch.fnmatch(cand, glob) or fnmatch.fnmatch(art, glob):
-                        pattern = glob
-                        break
-                consumed = sorted({stage_recs[stage_of_template[c]].name for c in consumers.get(tok, [])
-                                   if stage_of_template[c] != st.index})
-                st.outputs.append(StageOutput(
-                    artifact=art, observed=obs0,
-                    consumed_by=consumed, declared_pattern=pattern))
-    _ = stage_by_name
+                if i in history.get(tok, []) and tok not in out_toks:
+                    out_toks.append(tok)
+        for tok in out_toks:
+            last_i = max(i for i in st.templates if i in history[tok])
+            per_row = observed.get((last_i, tok), [])
+            obs0 = per_row[0] if per_row else None
+            templated = [_templatize(o, rows[ri].get("substitutions") or {}, value_per_sample)
+                         for ri, o in enumerate(per_row) if o]
+            if templated and len(set(templated)) == 1:
+                art = templated[0]
+            elif templated:
+                art = _common_suffix_glob(templated)
+                notes.append(f"{st.name}: `{tok}` is named differently per row; declared as {art!r}")
+            else:
+                art = tok
+            is_dir = tok in directories
+            # declared when a pattern, read as the self-test reads it, names one of the files
+            # the first row's step wrote as this artifact — or, unobserved, the artifact itself
+            ri0, step0 = (matched.get(last_i) or [(0, None)])[0]
+            files = (_observed_files(step0, wrote_into.get(int(step0.get("step", 0)), []), obs0)
+                     if step0 is not None and obs0 else [])
+            subs0 = rows[ri0].get("substitutions") or {}
+            pattern = next((glob for glob, kept in declared_forms
+                            if (any(output_matches(f, output_pattern(glob, subs0)) for f in files) if files
+                                else output_matches(art, kept) or kept.startswith(art + "/"))), None)
+            consumed = sorted({stage_recs[stage_of_template[c]].name for a, c, p in edges
+                               if a == tok and p in st.templates and stage_of_template[c] != st.index})
+            pending.append((st, dict(artifact=art, observed=obs0, directory=is_dir,
+                                     consumed_by=consumed, declared_pattern=pattern)))
+    # results/ gets the declared outputs and their sidecars (`x.bam.bai`, `x.bai` with
+    # `x.bam`); a how-to that declares no output the run wrote names no result, so all
+    declared = dict.fromkeys(kw["artifact"] for _st, kw in pending if kw["declared_pattern"])
+    for st, kw in pending:
+        st.outputs.append(StageOutput(**kw, published=not declared or kw["declared_pattern"] is not None
+                                      or _sidecar_of(kw["artifact"], declared) is not None))
+    for glob in sorted({g for g, _ in declared_forms} - {kw["declared_pattern"] for _st, kw in pending}):
+        notes.append(f"usage.outputs pattern {glob!r} names no output a stage writes; "
+                     + ("nothing is published for it" if declared else "every output is published"))
 
     # ── samplesheet: always — `sample` (the row key) first, one row per trial ──
     # The key's placeholder is the how-to's own sample identifier when it has one, so
@@ -1068,7 +1181,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     defaults = [
         PipelineDefault(key="stage_cut", value="explicit groups" if stages else "one stage per how-to command",
                         source="caller" if stages else "default"),
-        PipelineDefault(key="publish", value="every artifact a stage writes, into the row's directory", source="default"),
+        PipelineDefault(key="publish", value="what usage.outputs declares and its sidecars (every artifact when it "
+                        "declares none), into the row's directory, by copy (publish_dir_mode)", source="default"),
         PipelineDefault(key="resume", value="on: the launch line carries -resume; drop it for a fresh run", source="default"),
         PipelineDefault(key="errors", value="finish: a failure submits nothing new and in-flight tasks complete; "
                         "`-resume` re-runs what failed; no retries", source="default"),

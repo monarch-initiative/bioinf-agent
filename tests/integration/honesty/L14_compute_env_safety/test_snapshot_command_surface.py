@@ -975,3 +975,60 @@ def test_a_path_under_no_grant_names_the_project_and_every_env_it_spans(tmp_path
         snapshot.snapshot_project("myproj", path="/elsewhere/run1", access_path=str(access_path))
     msg = str(ei.value)
     assert "'myproj'" in msg and "'laptop'" in msg and "'hpc'" in msg and "pipelines" in msg
+
+
+# ---------------------------------------------------------------------------
+# Summary mode: file count and bytes per child, added up where the files are
+# ---------------------------------------------------------------------------
+
+def test_summary_adds_up_each_child_and_the_whole(_local_access):
+    """Sizing a pull-down of a tree of any size: one row per child of `path` (`.` for
+    the files directly in it), largest first, and the totals."""
+    access_path, proj_dir = _local_access
+    res = snapshot.snapshot_project("myproj", path=str(proj_dir), summary=True,
+                                    access_path=str(access_path))
+    assert res["mode"] == "summary" and "entries" not in res
+    assert [(c["name"], c["files"], c["bytes"]) for c in res["children"]] == [(".", 3, 302), ("samples", 1, 50)]
+    assert (res["files"], res["bytes"]) == (4, 352)
+    globbed = snapshot.snapshot_project("myproj", path=str(proj_dir), summary=True, name_glob="*.fq.gz",
+                                        access_path=str(access_path))
+    assert [(c["name"], c["files"]) for c in globbed["children"]] == [(".", 2), ("samples", 1)]
+
+
+def test_summary_remote_cmd_adds_up_on_the_cluster_and_parses_back():
+    """The remote half runs on GNU find, under `timeout` and pipefail so a cut-short or
+    partly unreadable walk exits non-zero; the adding-up half is awk over find's
+    `size<TAB>path` lines, run here on lines shaped like find's — one of them the
+    second line of a name with a newline in it, which is not counted again."""
+    argv = shlex.split(snapshot._ssh_remote_cmd_summary("/scratch/me/proj", "*.tsv"))
+    assert argv[:2] == ["bash", "-c"]
+    walk = argv[2]
+    assert walk.startswith("set -o pipefail; timeout ")
+    assert " find /scratch/me/proj -type f -name '*.tsv' -printf '%s\\t%P\\n' | awk -F '\\t' " in walk
+    awk = walk.split(" | ", 1)[1]
+    find_lines = "5\tx/y/a\n1\tx/b\n2\ttop\n3\tz/c\n7\tw/first\nsecond line of a name\n"
+    out = subprocess.run(["bash", "-c", f"printf %s {shlex.quote(find_lines)} | {awk}"],
+                         capture_output=True, text=True)
+    got = sorted((r["name"], r["files"], r["bytes"]) for r in snapshot._parse_summary("banner line\n" + out.stdout))
+    assert got == [(".", 1, 2), ("w", 1, 7), ("x", 2, 6), ("z", 1, 3)]
+
+
+def test_a_summary_that_could_not_read_everything_says_so(_local_access):
+    access_path, proj_dir = _local_access
+    (proj_dir / "samples").chmod(0)
+    try:
+        res = snapshot.snapshot_project("myproj", path=str(proj_dir), summary=True,
+                                        access_path=str(access_path))
+    finally:
+        (proj_dir / "samples").chmod(0o755)
+    assert res["complete"] is False and "could not be read" in res["errors"][0]["error"]
+    assert [(c["name"], c["files"]) for c in res["children"]] == [(".", 3)], "the readable part still adds up"
+    one = snapshot.snapshot_project("myproj", path=str(proj_dir / "a.fq.gz"), summary=True,
+                                    access_path=str(access_path))
+    assert [(c["name"], c["files"], c["bytes"]) for c in one["children"]] == [(".", 1, 100)] and one["complete"]
+
+
+def test_summary_needs_a_path(_local_access):
+    access_path, _ = _local_access
+    res = snapshot.snapshot_project("myproj", summary=True, access_path=str(access_path))
+    assert (res["outcome"], res["code"]) == ("refused", "snapshot.summary_needs_path")

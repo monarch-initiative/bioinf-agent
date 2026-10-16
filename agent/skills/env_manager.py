@@ -55,6 +55,16 @@ _STDERR_KEEP_CHARS = 8000
 #: the reaper somewhere private instead of scrubbing the machine's real registry.
 SERVICE_PID_DIR = Path("/tmp/bioinf_services")
 
+#: Files an operating system or a file browser writes into a directory someone has open
+#: (Finder's `.DS_Store`, AppleDouble `._<name>`). They are never a tool's output, and one
+#: recorded as an output is an artifact the rendered pipeline then waits for.
+_OS_METADATA_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini", ".directory"})
+
+
+def is_os_metadata(name: str) -> bool:
+    """Is `name` (a basename) a file the OS or a file browser wrote, not a step?"""
+    return name in _OS_METADATA_NAMES or name.startswith("._")
+
 
 def _spill_full_stream(spill_dir: Path, kind: str, text: str) -> str:
     """Write an over-long stream to disk and return its path, or "" on failure.
@@ -2116,7 +2126,7 @@ class EnvManager:
                 scope_filter = None
         result = []
         for p in directory.rglob("*"):
-            if not p.is_file():
+            if not p.is_file() or is_os_metadata(p.name):
                 continue
             rel = str(p.relative_to(directory))
             if rel not in before or p.stat().st_mtime > before[rel]:

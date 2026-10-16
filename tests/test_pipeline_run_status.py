@@ -97,4 +97,188 @@ def test_status_refuses_an_unsafe_run_dir_before_ssh(tmp_path):
     finally:
         subprocess.run = orig
     assert r["code"] == "cluster.unsafe_run_dir"
-    assert len(called) == 1            # the sacct query ran; the run-dir read never did
+    assert called == []                # refused before any ssh, the sacct query included
+
+
+# ---------------------------------------------------------------------------
+# Tasks in flight, and a wait that returns on a change
+# ---------------------------------------------------------------------------
+
+def _access(tmp_path):
+    import yaml
+    ap = tmp_path / "a.yaml"
+    ap.write_text(yaml.safe_dump({
+        "compute_envs": [{"name": "hpc", "type": "ssh", "host": "h", "user": "u"}],
+        "projects": [{"name": "demo", "compute_envs": ["hpc"], "directories": []}]}))
+    return str(ap)
+
+
+def _sacct(*rows):
+    """sacct -P rows: JobID|State|Elapsed|ExitCode|NodeList|Reason|Start|End."""
+    return "\n".join("|".join(r) for r in rows) + "\n"
+
+
+_HEADER = "task_id\tnative_id\tname\tstatus\texit\tsubmit\tstart\tcomplete\trealtime\t%cpu\tpeak_rss\tcontainer\tworkdir"
+_DONE = "1\t501\tBUILD (a)\tCOMPLETED\t0\t-\t-\t-\t1m\t100%\t1 GB\t/c.sif\t/w/run1/work/aa/01"
+_LOG = ["Oct-15 03:05:41.953 [Task submitter] DEBUG nextflow.executor.GridTaskHandler - [SLURM] "
+        f"submitted process {name} > jobId: {jid}; workDir: /w/run1/work/{wd}"
+        for name, jid, wd in (("BUILD (a)", 501, "aa/01"), ("TRIALS (a)", 502, "bb/02"), ("TRIALS (b)", 503, "cc/03"))]
+
+
+class _Cluster:
+    """Answers the three remote commands: the manager's sacct row, the run records
+    (manager log, trace, Nextflow's submitted lines) and the in-flight tasks' sacct rows."""
+    def __init__(self, trace_rows, inflight_rows, *, inflight_rc=0, manager="RUNNING"):
+        self.trace_rows, self.inflight_rows = list(trace_rows), inflight_rows
+        self.inflight_rc, self.manager = inflight_rc, manager
+        self.calls = []
+
+    def __call__(self, argv, **kw):
+        cmd = argv[-1]
+        self.calls.append(cmd)
+        class R: returncode = 0; stderr = ""
+        if "TRACE_BEGIN" in cmd:
+            submitted = [line.split("] ", 1)[1].split(" - [SLURM] ", 1)[-1] for line in _LOG]
+            R.stdout = "\n".join(["OUT=/w/run1/phenologs-4242.out", "STAMP=runs/20261015_030500",
+                                  "TRACE_BEGIN", _HEADER, *self.trace_rows, "TRACE_END",
+                                  "SUBMITTED_BEGIN", *submitted, "SUBMITTED_END"]) + "\n"
+        elif "sacct -j 4242 " in cmd:
+            R.stdout = _sacct(("4242", self.manager, "01:00:00", "0:0", "c1", "None", "-", "-"))
+        else:
+            R.returncode = self.inflight_rc
+            R.stdout = _sacct(*self.inflight_rows) if self.inflight_rc == 0 else ""
+        return R()
+
+
+def test_a_task_submitted_and_not_finished_is_reported_with_the_schedulers_state(tmp_path, monkeypatch):
+    """trace.txt lists a task once it FINISHES: a run whose tasks compute for hours used
+    to read `tasks: []` throughout. Nextflow's log names each task's SLURM job the
+    moment it submits it, and sacct says what that job is doing."""
+    import subprocess
+    cluster = _Cluster([_DONE], [("502", "RUNNING", "02:10:00", "0:0", "c0412", "None", "-", "-"),
+                                 ("503", "PENDING", "00:00:00", "0:0", "None assigned", "Resources", "-", "-")])
+    monkeypatch.setattr(subprocess, "run", cluster)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", access_path=_access(tmp_path))
+    tasks = {t["native_id"]: t for t in r["pipeline"]["tasks"]}
+    assert tasks["501"]["status"] == "COMPLETED"
+    assert tasks["502"] == {"name": "TRIALS (a)", "native_id": "502", "status": "RUNNING",
+                            "elapsed": "02:10:00", "node": "c0412", "workdir": "/w/run1/work/bb/02"}
+    assert tasks["503"]["status"] == "PENDING" and tasks["503"]["reason"] == "Resources"
+    assert r["pipeline"]["task_summary"] == {"COMPLETED": 1, "RUNNING": 1, "PENDING": 1}
+    assert r["pipeline"]["verdict"] == "running"
+    assert "sacct -j 502,503 " in cluster.calls[-1], "one sacct call for the tasks in flight only"
+
+
+def test_a_task_the_scheduler_cannot_be_asked_about_says_submitted(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [], inflight_rc=1))
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", access_path=_access(tmp_path))
+    assert [t["status"] for t in r["pipeline"]["tasks"]] == ["COMPLETED", "SUBMITTED", "SUBMITTED"]
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+    def monotonic(self):
+        return self.now
+    def sleep(self, s):
+        self.now += s
+
+
+def test_a_wait_returns_when_a_task_changes(tmp_path, monkeypatch):
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-"),
+                                 ("503", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+    monkeypatch.setattr(subprocess, "run", cluster)
+    looks = {"n": 0}
+    orig_observe = cj._observe
+
+    def observe(*a, **kw):
+        looks["n"] += 1
+        if looks["n"] == 3:             # the third look: task 502 has started
+            cluster.inflight_rows[0] = ("502", "RUNNING", "00:00:05", "0:0", "c7", "None", "-", "-")
+        return orig_observe(*a, **kw)
+    monkeypatch.setattr(cj, "_observe", observe)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=300,
+                              access_path=_access(tmp_path))
+    assert looks["n"] == 3 and r["waited_s"] == 60
+    assert {t["native_id"]: t["status"] for t in r["pipeline"]["tasks"]}["502"] == "RUNNING"
+
+
+def test_a_wait_never_runs_past_its_cap_and_a_settled_run_returns_at_once(tmp_path, monkeypatch):
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-"),
+                                                              ("503", "PENDING", "0", "0:0", "", "Priority", "-", "-")]))
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=10_000,
+                              access_path=_access(tmp_path))
+    assert r["waited_s"] == 540, "capped under the stream watchdog"
+
+    done = [_DONE.replace("\t501\t", f"\t{j}\t").replace("BUILD (a)", n) for j, n in
+            (("501", "BUILD (a)"), ("502", "TRIALS (a)"), ("503", "TRIALS (b)"))]
+    monkeypatch.setattr(subprocess, "run", _Cluster(done, [], manager="COMPLETED"))
+    start = clock.now
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=300,
+                              access_path=_access(tmp_path))
+    assert r["pipeline"]["verdict"] == "succeeded" and clock.now == start and r["waited_s"] == 0
+
+
+def test_a_resumed_task_is_done_and_a_dead_manager_never_reads_as_success():
+    cached = [{"status": "CACHED"}, {"status": "COMPLETED"}]
+    assert cj._pipeline_verdict(cached, [{"verdict": cj.SUCCEEDED}]) == "succeeded"
+    assert cj._pipeline_verdict(cached, [{"verdict": cj.DIED}]) == "failed", \
+        "a manager killed mid-run cannot submit what is left"
+    assert "workdir" not in cj._task_view({"status": "CACHED", "workdir": "/w/x"})
+
+
+def test_a_wait_returns_at_once_when_the_manager_is_over(tmp_path, monkeypatch):
+    """A cancelled manager, or a resumed run whose tasks all came from the cache, has
+    nothing left to change: the wait does not sit out its time on it."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [], manager="CANCELLED"))
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=300,
+                              access_path=_access(tmp_path))
+    assert r["waited_s"] == 0 and r["pipeline"]["verdict"] == "failed"
+
+
+def test_a_slow_look_never_carries_a_wait_past_its_cap(tmp_path, monkeypatch):
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-"),
+                                                              ("503", "PENDING", "0", "0:0", "", "Priority", "-", "-")]))
+    orig = cj._observe
+
+    def slow(*a, **kw):
+        clock.now += 55                 # every look takes 55 s of ssh
+        return orig(*a, **kw)
+    monkeypatch.setattr(cj, "_observe", slow)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=10_000,
+                              access_path=_access(tmp_path))
+    assert r["waited_s"] <= 540
+
+
+def test_the_schedulers_word_is_kept_apart_from_nextflows(tmp_path, monkeypatch):
+    """sacct can call a job over before Nextflow has checked the task's outputs; the
+    task is still Nextflow's SUBMITTED, with the scheduler's state beside it."""
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [("502", "COMPLETED", "01:00:00", "0:0", "c1", "None", "-", "-"),
+                                                              ("503", "FAILED", "00:01:00", "1:0", "c2", "None", "-", "-")]))
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", access_path=_access(tmp_path))
+    flight = {t["native_id"]: t for t in r["pipeline"]["tasks"] if t["native_id"] != "501"}
+    assert {j: (t["status"], t["scheduler_state"]) for j, t in flight.items()} == {
+        "502": ("SUBMITTED", "COMPLETED"), "503": ("SUBMITTED", "FAILED")}
+    assert r["pipeline"]["verdict"] == "running", "Nextflow has not called these tasks yet"
+
+    monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [], inflight_rc=1))
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", access_path=_access(tmp_path))
+    assert "sacct for the tasks in flight failed" in r["pipeline"]["scheduler_unread"]

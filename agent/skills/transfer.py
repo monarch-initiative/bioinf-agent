@@ -64,7 +64,7 @@ to the YAML — it lives only in memory for the duration of the call.
 Trust contract
 --------------
 
-  local-mode envs:  shutil.copy + sha256 both ends
+  local-mode envs:  shutil.copy (copytree for a directory) + sha256 both ends
   ssh-mode envs:    via the configured TransferProvider, which owns the
                     WHOLE remote interaction for its transport — the
                     no-overwrite check, parent-dir prep, and the byte
@@ -78,6 +78,9 @@ Trust contract
                                         checksum). ZERO ssh calls — the
                                         whole point of the Globus path
                                         being off the head node.
+  a directory moves as one transfer: every file is checked (sha256 both
+    ends, or Globus's own per-file checksum plus a count of what moved), its
+    checksums land beside the receipt, and symlinks are never followed
   paths validated BEFORE any subprocess (no metacharacter smuggling)
   remote overwrite refused (the `upload` token = "write NEW files only")
   local overwrite refused on download (no silent clobber)
@@ -100,6 +103,7 @@ import hashlib
 from agent.skills import workspace
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -109,6 +113,7 @@ from pathlib import Path
 from typing import Optional
 
 from agent.skills import compute_access
+from agent.skills.backgroundable import detached
 from agent.skills.outcomes import proven, refused, broke
 
 
@@ -121,6 +126,10 @@ from agent.skills.outcomes import proven, refused, broke
 # rather than pushed from here; refusing keeps us a good citizen on the shared
 # head node.
 _MAX_TRANSFER_BYTES: int = 5 * 1024 * 1024 * 1024  # 5 GiB
+
+# A detached transfer (`background=True`) has no stream watchdog over it, so it
+# waits as long as a Globus task lives by default (its 24 h deadline).
+_DETACHED_TIMEOUT_S: int = 24 * 3600
 
 # Absolute-path cap. Defense-in-depth against header-injection where the
 # path is later embedded in audit-record strings or shell argv.
@@ -207,8 +216,9 @@ def _validate_remote_abs_path(remote_abs_path: str) -> str:
 
 
 def _validate_local_path_for_upload(local_path: str) -> Path:
-    """Source file for an upload: must exist, regular file (no symlinks
-    to defend against redirect attacks), under the size cap."""
+    """Source for an upload: must exist, be a regular file or a directory of
+    them (no symlinks anywhere, to defend against redirect attacks), and be
+    under the size cap."""
     if not isinstance(local_path, str) or not local_path:
         raise TransferError(
             f"local_path must be a non-empty string, got {local_path!r}")
@@ -223,12 +233,11 @@ def _validate_local_path_for_upload(local_path: str) -> Path:
             f"symlinks to prevent redirect attacks. Pass the real path.")
     if not p.exists():
         raise TransferError(f"local_path {local_path!r} does not exist")
-    if not p.is_file():
+    if not (p.is_file() or p.is_dir()):
         raise TransferError(
-            f"local_path {local_path!r} is not a regular file "
-            f"(directories / devices are not supported)")
+            f"local_path {local_path!r} is neither a regular file nor a directory")
     try:
-        sz = p.stat().st_size
+        sz = _local_bytes(p)
     except OSError as e:
         raise TransferError(
             f"local_path {local_path!r} stat failed: {e}") from e
@@ -282,6 +291,86 @@ def _compute_local_sha256(path: Path) -> str:
     return sha256_file(path)
 
 
+def _unreadable(e: OSError):
+    raise TransferError(f"{e.filename} can't be read: {e.strerror}")
+
+
+def _tree_files(root: Path) -> list[Path]:
+    """Every file under the directory `root`. A directory transfers as its
+    regular files: a symlink anywhere in it is refused, because following one
+    could reach outside the zone the transfer was authorized for, and so is
+    any other special file or a directory that can't be read."""
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_unreadable):
+        for name in dirnames + filenames:
+            p = Path(dirpath, name)
+            if p.is_symlink() or not (p.is_dir() or p.is_file()):
+                raise TransferError(
+                    f"{p} is a symlink or a special file; a directory transfers "
+                    f"as regular files and directories only")
+            if p.is_file():
+                files.append(p)
+    return sorted(files)
+
+
+def _local_bytes(p: Path) -> int:
+    """The size of a file, or the total size of a directory's files."""
+    if p.is_dir():
+        return sum(f.stat().st_size for f in _tree_files(p))
+    return p.stat().st_size
+
+
+def _scan_tree(root: Path) -> tuple[dict[str, str], int]:
+    """A directory's {path relative to `root`: sha256} and its files' total
+    size, from one walk."""
+    sums, total = {}, 0
+    for f in _tree_files(root):
+        try:
+            sums[f.relative_to(root).as_posix()] = _compute_local_sha256(f)
+            total += f.stat().st_size
+        except OSError as e:
+            raise TransferError(f"{f} can't be read: {e.strerror or e}") from e
+    return sums, total
+
+
+def _tree_mismatch(source: dict[str, str], copy: dict[str, str]) -> Optional[str]:
+    """How a directory's copy differs from its source listing, in one line;
+    None when every file arrived with the source's sha256."""
+    if source == copy:
+        return None
+    gaps = (("missing", sorted(set(source) - set(copy))),
+            ("not in the source", sorted(set(copy) - set(source))),
+            ("with a different sha256",
+             sorted(k for k in set(source) & set(copy) if source[k] != copy[k])))
+    return "; ".join(f"{len(names)} file(s) {what} (first: {names[0]})"
+                     for what, names in gaps if names)
+
+
+def _remote_tree_cmd(remote_path: str) -> str:
+    """The remote shell string that lists a directory as `_scan_tree`
+    does: `<sha256>  ./<relative path>` per file, plus `NOT_A_FILE ./<path>`
+    for an entry that is neither a file nor a directory (a symlink)."""
+    return (f"cd {shlex.quote(remote_path)} && "
+            f"find . ! -type d ! -type f -exec printf 'NOT_A_FILE %s\\n' {{}} + && "
+            f"find . -type f -print0 | xargs -0 -r sha256sum")
+
+
+_TREE_LINE_RE = re.compile(r"(?:([0-9a-f]{64})  |NOT_A_FILE )\./(.+)")
+
+
+def _parse_tree_listing(stdout: str) -> tuple[dict[str, str], list[str]]:
+    """`_remote_tree_cmd`'s output as ({relative path: sha256}, the entries
+    that are not files). Lines of any other shape (a login banner) are skipped."""
+    sums: dict[str, str] = {}
+    not_files: list[str] = []
+    for m in filter(None, map(_TREE_LINE_RE.fullmatch, stdout.splitlines())):
+        if m[1]:
+            sums[m[2]] = m[1]
+        else:
+            not_files.append(m[2])
+    return sums, not_files
+
+
 def _remote_sha256_cmd(remote_path: str) -> str:
     """The remote shell string for `sha256sum <path>`. Path is the only
     interpolated piece and is shlex.quote'd."""
@@ -307,11 +396,11 @@ def _parse_sha256sum_output(stdout: str) -> Optional[str]:
 # Subprocess shapes (pinned by tests)
 # ---------------------------------------------------------------------------
 
-def _scp_argv(env: dict, src: str, dst: str) -> list[str]:
+def _scp_argv(env: dict, src: str, dst: str, *, tree: bool = False) -> list[str]:
     """scp argv for an ssh-mode env. BatchMode=yes (fail fast, no
-    password prompt) and -p (preserve mtime, useful for debugging).
-    Piggybacks on the user's ControlMaster the same way ssh does."""
-    return ["scp", "-o", "BatchMode=yes", "-p", src, dst]
+    password prompt), -p (preserve mtime, useful for debugging) and, for a
+    directory, -r. Piggybacks on the user's ControlMaster the same way ssh does."""
+    return ["scp", "-o", "BatchMode=yes", "-p", *(["-r"] if tree else []), src, dst]
 
 
 def _local_mkdir_parent(remote_abs_path: Path) -> None:
@@ -471,6 +560,22 @@ def _classify_zone_and_authorize(*, project: dict, env: dict,
 # Manifest writer
 # ---------------------------------------------------------------------------
 
+def staging_dir(name: str) -> Path:
+    """Where a file or directory bound for an upload is put together: a folder
+    of the workspace's scratch zone. Globus Connect Personal reads only its
+    Accessible Folders (default $HOME) and refuses a system temp dir such as
+    /var/folders or /tmp; the workspace is required to sit under $HOME, so a
+    source here works on every wire. A function, not a constant: the workspace
+    is resolved when it is called, so a test that redirects it is never written
+    past."""
+    return workspace.scratch_dir(name)
+
+
+def _checksums_path(manifest_path: Path) -> Path:
+    """Where a directory transfer's checksums go: beside its receipt."""
+    return manifest_path.with_suffix(".sha256")
+
+
 def _record_root() -> Path:
     """Where transfer receipts and submission manifests are written: the scratch
     zone (``transfer_history/`` and ``job_submissions/`` under it). Every receipt
@@ -571,13 +676,16 @@ def _write_transfer_manifest(*,
                               task_id: Optional[str],
                               verified_method: Optional[str],
                               error_msg: Optional[str],
+                              checksums: Optional[dict] = None,
                               ) -> Path:
     """Write a human-readable JSON record of one transfer under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_<direction>_<hash>.json`.
 
     The record leads with a plain-English `outcome` + `summary`, carries
     the ACTUAL command that ran (`command`), and OMITS any field that
-    doesn't apply to this transfer (no wall of nulls). Returns the path.
+    doesn't apply to this transfer (no wall of nulls). A directory's
+    checksums go beside it as `<same name>.sha256`, the list `sha256sum -c`
+    reads from inside the directory. Returns the path.
     Manifest creation never raises into the primitive — a write failure
     is swallowed so it can't mask a real transfer result.
     """
@@ -601,7 +709,8 @@ def _write_transfer_manifest(*,
     summary = _summarize(
         outcome=outcome, direction=direction, transport=transport,
         fname=fname, size_h=size_h, compute_env=compute_env_name,
-        remote_abs_path=remote_abs_path, task_id=task_id, reason=clean_err)
+        remote_abs_path=remote_abs_path, task_id=task_id, reason=clean_err,
+        files=None if checksums is None else len(checksums))
 
     # Build the record in a logical reading order, omitting empty fields.
     record: dict = {
@@ -615,6 +724,8 @@ def _write_transfer_manifest(*,
     if transport:
         record["transport"] = transport
     record["file"] = fname
+    if checksums is not None:
+        record["files"] = len(checksums)
     if size_h:
         record["size"] = size_h
     record["from"] = src_disp
@@ -639,6 +750,11 @@ def _write_transfer_manifest(*,
     sh = _short_hash(direction, str(local_path), remote_abs_path,
                      now.isoformat())
     manifest_path = base / f"{stamp}_{direction}_{sh}.json"
+    if checksums is not None:
+        sums_path = _checksums_path(manifest_path)
+        sums_path.write_text("".join(f"{sha}  {rel}\n"
+                                     for rel, sha in sorted(checksums.items())))
+        record["checksums"] = str(sums_path)
     manifest_path.write_text(json.dumps(record, indent=2))
     return manifest_path
 
@@ -646,9 +762,11 @@ def _write_transfer_manifest(*,
 def _summarize(*, outcome: str, direction: str, transport: Optional[str],
                fname: str, size_h: Optional[str], compute_env: str,
                remote_abs_path: str, task_id: Optional[str],
-               reason: Optional[str]) -> str:
+               reason: Optional[str], files: Optional[int] = None) -> str:
     """One plain-English sentence describing what happened."""
-    size_part = f" ({size_h})" if size_h else ""
+    size_part = ", ".join(([] if files is None else [f"{files} files"])
+                          + ([size_h] if size_h else []))
+    size_part = f" ({size_part})" if size_part else ""
     via = {"globus": "via Globus",
            "scp_head_node": "via scp",
            "local_copy": "via local copy"}.get(transport or "", "")
@@ -782,6 +900,8 @@ def _do_transfer(*, direction: str,
     direction, provider method)."""
     started = time.perf_counter()
     manifest_dir_hint = None
+    if detached():
+        timeout = max(timeout, _DETACHED_TIMEOUT_S)
 
     def _journal(*, result: str, error_msg: Optional[str] = None,
                  transport: Optional[str] = None,
@@ -790,7 +910,8 @@ def _do_transfer(*, direction: str,
                  zone: str = "?",
                  bytes_transferred: Optional[int] = None,
                  sha256: Optional[str] = None,
-                 verified_method: Optional[str] = None) -> Path:
+                 verified_method: Optional[str] = None,
+                 checksums: Optional[dict] = None) -> Path:
         """Write the manifest and return its path. Best-effort — a write
         failure is swallowed so a successful transfer isn't masked."""
         try:
@@ -811,6 +932,7 @@ def _do_transfer(*, direction: str,
                 task_id=task_id,
                 verified_method=verified_method,
                 error_msg=error_msg,
+                checksums=checksums,
             )
         except Exception:
             # Manifest write must not mask the real result.
@@ -843,10 +965,15 @@ def _do_transfer(*, direction: str,
         zone = zone_info["zone"]
 
         # 4) Direction-specific local-side checks.
+        tree = None    # a directory upload's {relative path: sha256}
         if direction == "upload":
             lp = _validate_local_path_for_upload(local_path)
-            size_bytes = lp.stat().st_size
-            local_sha = _compute_local_sha256(lp)
+            if lp.is_dir():
+                tree, size_bytes = _scan_tree(lp)
+                local_sha = None
+            else:
+                size_bytes = lp.stat().st_size
+                local_sha = _compute_local_sha256(lp)
         else:
             lp = _validate_local_path_for_download(local_path)
             size_bytes = 0  # known post-transfer for downloads
@@ -915,42 +1042,51 @@ def _do_transfer(*, direction: str,
         # download: local parent existence is already validated by
         # _validate_local_path_for_download
 
-        # 7) Dispatch transfer.
+        # 7) Dispatch transfer: a local-mode env copies here (a directory as a
+        # tree); an ssh-mode env goes through the already-created provider.
         if env_type == "local":
-            return _do_local_mode(
-                direction=direction,
-                project_name=project_name,
-                compute_env_name=compute_env_name,
-                lp=lp, normed_remote=normed_remote,
-                local_sha=local_sha, zone=zone, journal=_journal,
-                started=started)
-
-        # ssh-mode: through the already-created provider.
-        if direction == "upload":
+            src, dst = ((lp, Path(normed_remote)) if direction == "upload"
+                        else (Path(normed_remote), lp))
+            if not src.is_dir():
+                return _do_local_mode(
+                    direction=direction,
+                    project_name=project_name,
+                    compute_env_name=compute_env_name,
+                    lp=lp, normed_remote=normed_remote,
+                    local_sha=local_sha, zone=zone, journal=_journal,
+                    started=started)
+            pr = _copy_local_tree(src, dst, source=tree)
+        elif direction == "upload":
             pr = provider.upload_one(
                 env=env, local_path=lp, abs_remote_path=normed_remote,
                 local_sha256=local_sha, timeout=timeout,
-                label=f"upload {project_name} {Path(normed_remote).name}")
+                label=f"upload {project_name} {Path(normed_remote).name}",
+                tree=tree)
         else:
             pr = provider.download_one(
                 env=env, abs_remote_path=normed_remote,
                 local_path=lp, timeout=timeout,
                 label=f"download {project_name} {Path(normed_remote).name}")
         if "error" in pr:
-            mpath = _journal(result="error", zone=zone,
+            said_no = pr.get("outcome") == "refused"
+            mpath = _journal(result="refused" if said_no else "error", zone=zone,
                 transport=pr.get("provider") or transport_name,
                 command=pr.get("command"),
                 task_id=pr.get("task_id"),
                 error_msg=pr["error"])
             out = dict(pr); out["manifest"] = str(mpath)
+            if said_no:
+                return refused("transfer.provider_refused", **out)
             return broke("transfer.provider_failed", **out)
 
         # Sync success.
+        checksums = pr.get("checksums")   # a directory's {relative path: sha256}
         bytes_done = pr.get("bytes", size_bytes if direction == "upload"
                             else (lp.stat().st_size if lp.exists() else 0))
         # For downloads, the provider's "local_sha256" is the post-fetch
         # hash on the laptop; for uploads it's the pre-transfer local hash.
-        if direction == "download":
+        # A directory has its checksums instead.
+        if direction == "download" and checksums is None:
             local_sha = pr.get("local_sha256") or _compute_local_sha256(lp)
         # The single sha we record: scp/local verify via round-trip (both
         # ends equal); Globus has none (it does its own end-to-end check).
@@ -962,7 +1098,12 @@ def _do_transfer(*, direction: str,
             task_id=pr.get("task_id"),
             bytes_transferred=bytes_done,
             sha256=sha_record,
-            verified_method=pr.get("verified_method"))
+            verified_method=pr.get("verified_method"),
+            checksums=checksums)
+        sums_path = _checksums_path(mpath)
+        tree_fields = ({} if checksums is None else
+                       {"files": len(checksums),
+                        **({"checksums": str(sums_path)} if sums_path.is_file() else {})})
         return proven("transfer.transferred",
             success=True,
             project=project_name,
@@ -979,6 +1120,7 @@ def _do_transfer(*, direction: str,
             remote_sha256=pr.get("remote_sha256"),
             verified_method=pr.get("verified_method"),
             manifest=str(mpath),
+            **tree_fields,
         )
 
     except TransferError as e:
@@ -1020,6 +1162,24 @@ def _do_transfer(*, direction: str,
         msg = f"subprocess timed out after {e.timeout}s"
         mpath = _journal(result="error", zone="?", error_msg=msg)
         return broke("transfer.timeout", error=msg, manifest=str(mpath))
+
+
+def _copy_local_tree(src: Path, dst: Path, *, source: Optional[dict]) -> dict:
+    """A local-mode env's directory transfer, shaped like a provider's: copy
+    the tree, then read both sides back and compare every file's sha256."""
+    source = source if source is not None else _scan_tree(src)[0]
+    command = f"cp -R {shlex.quote(str(src))} {shlex.quote(str(dst))}"
+    shutil.copytree(src, dst)
+    copy, nbytes = _scan_tree(dst)
+    mismatch = _tree_mismatch(source, copy)
+    if mismatch:
+        return broke("transfer.local_tree_mismatch",
+                     error=f"the copy at {dst} differs from {src}: {mismatch}",
+                     provider="local_copy", command=command)
+    return proven("transfer.local_tree_copied", success=True,
+                  provider="local_copy", command=command,
+                  bytes=nbytes, checksums=copy,
+                  verified_method="sha256_round_trip")
 
 
 def _do_local_mode(*, direction: str,

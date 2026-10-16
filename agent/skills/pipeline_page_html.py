@@ -299,7 +299,7 @@ def picture_layout(record: PipelineRecord) -> _Layout:
         if p.kind != "shared":
             continue                      # a samplesheet column (drawn above) or a thread slot (the stage's own cpus)
         tip = (f"{_key(p)} · {_VALUE_KIND.get(p.value_kind, p.value_kind)}"
-               + (f" · example {p.default}" if p.default is not None else "")
+               + (f" · example {p.default or chr(39) * 2}" if p.default is not None else "")
                + (f" — {p.description}" if p.description else ""))
         params.append(_Node(id=f"p:{p.name}", kind="param", name=p.name, line1=_key(p),
                             line2=p.value_kind, tooltip=tip))
@@ -351,11 +351,11 @@ def picture_layout(record: PipelineRecord) -> _Layout:
                   extra={"data-index": str(st.index), "data-rank": str(rank[st.name])})
         r = st.resources
         if r.requested_by == "default":
-            req = "unsized (default request)"
+            req = "unsized (default cluster request)"
         elif r.requested_by == "seal":
-            req = f"request cpus {r.cpus}, the sealed thread count · mem and time default · gpus {r.gpus}"
+            req = f"cluster request cpus {r.cpus}, the sealed thread count · mem and time default · gpus {r.gpus}"
         else:
-            req = f"request cpus {r.cpus} · mem {r.mem} · time {r.time} · gpus {r.gpus}"
+            req = f"cluster request cpus {r.cpus} · mem {r.mem} · time {r.time} · gpus {r.gpus}"
         runs = "once per sample" if st.scope == "per_sample" else "once over the cohort"
         n.tooltip = (f"stage {st.index + 1} {st.name} · {st.tool} · runs {runs} · "
                      f"image {_short_digest(st.image_digest) or 'unrecorded'} · {req} · "
@@ -389,6 +389,8 @@ def picture_layout(record: PipelineRecord) -> _Layout:
     outs: list[_Node] = []
     for st in record.stages:
         for o in st.outputs:
+            if not o.published:
+                continue
             d = _results_dir(st)
             shown = _display(record, o.artifact)
             outs.append(_Node(id=f"o:{st.name}/{o.artifact}", kind="output", name=o.artifact,
@@ -633,8 +635,8 @@ def directory_tree(record: PipelineRecord) -> list[DirEntry]:
     marked as the cluster's), then what a run adds — each directory with one line saying
     what it is and where it is set; a results directory only when a stage publishes
     into it."""
-    per_sample = any(o for s in record.stages if s.scope == "per_sample" for o in s.outputs)
-    cohort = any(o for s in record.stages if s.scope == "cohort" for o in s.outputs)
+    per_sample = any(o.published for s in record.stages if s.scope == "per_sample" for o in s.outputs)
+    cohort = any(o.published for s in record.stages if s.scope == "cohort" for o in s.outputs)
     rows = [DirEntry("files", _COPY_FILES[0], "", "", ()),
             DirEntry("files", _COPY_FILES[1], "", "", ()),
             DirEntry("files", _COPY_FILES[2], "", "", ()),
@@ -886,8 +888,9 @@ def _run_local_section(record: PipelineRecord) -> str:
          [f"cd /path/to/{record.name}"]),
         (make, make_lines),
         ("Run. Nextflow starts every stage inside the frozen image through docker; <code>-resume</code> "
-         "re-runs only the stages whose inputs or parameters changed. A value for this run only goes after the "
-         f"line — <code>{_e(_override_example(record))}</code> — and wins over <code>params.yaml</code>. "
+         "re-runs only the stages whose inputs or parameters changed. A value after the line — "
+         f"<code>{_e(_override_example(record))}</code> — wins over <code>params.yaml</code> for that one run "
+         "only; to change what the directory runs, edit <code>params.yaml</code>. "
          "Nextflow's own log stays at <code>.nextflow.log</code> here; to file it with the run records as the "
          "launcher does, start with <code>nextflow -log runs/&lt;stamp&gt;/nextflow.log run … --run_stamp "
          "&lt;stamp&gt;</code>.",
@@ -990,7 +993,7 @@ def _stages_section(record: PipelineRecord) -> str:
     single = len(imgs) == 1
     cohort = any(s.scope == "cohort" for s in stages)
     headers = (["Stage", "Tool"] + (["Runs"] if cohort else []) + ["Command, as main.nf runs it"]
-               + ([] if single else ["Image"]) + ["Request", "Measured"])
+               + ([] if single else ["Image"]) + ["Cluster request", "Measured"])
     rows: list[list[str]] = []
     for st in stages:
         row = [f"<code>{_e(st.name)}</code>", _e(st.tool)]
@@ -1006,6 +1009,8 @@ def _stages_section(record: PipelineRecord) -> str:
     body = ("<style>" + _STAGES_STYLE + (_RUNS_NOWRAP if cohort else "") + "</style>"
             + (f'<p class="note">Every stage runs inside {_image_cell(imgs[0])}.</p>' if single else ""))
     body += _table(headers, rows)
+    body += ('<p class="note">The request is the cluster\'s (the <code>slurm</code> profile). A local run '
+             'asks each stage for its cpus only, at most this machine\'s, with no memory or time limit.</p>')
     untrusted = [st.name for st in stages if st.resources.measured_authority in _UNTRUSTED_AUTHORITY]
     if untrusted:
         body += (f'<p class="warn-note">{_e(", ".join(untrusted))}: measured under emulation, or of unrecorded '

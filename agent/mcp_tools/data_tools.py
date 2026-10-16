@@ -254,8 +254,10 @@ def download_reference_database(
 @mcp.tool()
 def acquire_reference_via_recipe(
     name: str,
-    recipe_path: str,
     compute_env: str,
+    recipe_path: str = "",
+    freeze_request_key: str = "",
+    command: str = "",
     versions: list = [],
     bundle_version: str = "",
     description: str = "",
@@ -288,14 +290,20 @@ def acquire_reference_via_recipe(
     `<common_data>/<name>/` by default (`remote_dir` overrides, must stay under
     common_data). Records ONE cluster-locus reference_databases entry for the
     whole bundle dir.
+
+    A tool whose data step ships INSIDE its own image (a setup script in the
+    container, not a script in its repo) takes `freeze_request_key` + `command`
+    instead of `recipe_path`: the recipe is then `command` run in that frozen
+    env's staged .sif (stage_apptainer_image first), in the bundle directory.
+    Every produced file is hashed, at any depth.
     """
-    if not (name or "").strip() or not (recipe_path or "").strip() \
-            or not (compute_env or "").strip():
+    if not (name or "").strip() or not (compute_env or "").strip():
         return refused("data.recipe_missing_args", success=False,
-                       error="name, recipe_path, and compute_env are all required")
+                       error="name and compute_env are required")
     from agent.skills import acquire_data
     return acquire_data.acquire_via_recipe(
         name=name, recipe_local_path=recipe_path, compute_env=compute_env,
+        freeze_request_key=freeze_request_key, command=command,
         versions=list(versions or []), remote_dir=remote_dir,
         slurm=(slurm or None), mask_tools=tuple(mask_tools or ()),
         bundle_version=bundle_version, description=description,

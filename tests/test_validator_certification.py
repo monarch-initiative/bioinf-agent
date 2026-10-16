@@ -235,6 +235,21 @@ def test_tabular_streams_past_long_comment_header(tmp_path):
     assert r.get("columns") == 4 and r.get("rows_sampled") == 12, r
 
 
+def test_tabular_keeps_a_trailing_empty_column(tmp_path):
+    """A row whose LAST column is empty ends in the separator. Only the line ending comes
+    off before columns are counted, so such a row is as wide as the rest — a pandas
+    table with a blank final cell is a valid file, not a ragged one."""
+    v = _validator()
+    p = tmp_path / "gene_to_phenotype.tsv"
+    p.write_text("gene\tname\tortholog_id\n"
+                 "G1\tpard6b\tPTHR1\n"
+                 "G2\tfoxa1\t\n"            # no ortholog: an empty last column
+                 "G3\tsox2\tPTHR3\n")
+    r = v.validate(str(p), "tsv")
+    assert r.get("outcome") == "proven" and r.get("passed") is True, r
+    assert r.get("columns") == 3 and r.get("rows_sampled") == 4, r      # the header line counts as a row
+
+
 def test_tabular_comment_only_still_fails(tmp_path):
     """A file that is ALL comment/meta and no data rows must NOT pass — the fix
     widens the data search, it must not turn a genuinely empty-of-data file green."""

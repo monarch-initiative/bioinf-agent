@@ -5,12 +5,14 @@ Constrained operation contract
 ------------------------------
 The agent's ONLY shell invocation through this module is `find` with a
 fixed `-printf` template — plus, in deep mode, an optional `-name <glob>`
-and a `| head -n <cap>`. The path and glob are the only string variables;
-both are `shlex.quote`'d before remote (SSH) invocation, the cap is a
-validated int, and local invocation uses NO subprocess at all.
+and a `| head -n <cap>`, and in summary mode `-name <glob>` and a fixed
+`awk` program that adds the sizes up, under `timeout`. The path and glob
+are the only string variables; both are `shlex.quote`'d before remote
+(SSH) invocation, the cap is a validated int, and local invocation uses NO
+subprocess at all.
 
-Two modes (the `file_name_only` contract)
------------------------------------------
+Three modes (the `file_name_only` contract)
+-------------------------------------------
 OVERVIEW (no `path` argument): every authorized dir at ONE level — the
 root + its immediate children, subdirs by name only. This is the cheap
 orientation call and its shape is unchanged.
@@ -28,6 +30,11 @@ filesystem or returning an unbounded blob, which the cap + glob handle
 honestly.
 The grant itself is still the boundary: a `path` outside every granted
 directory raises PermissionDenied before any subprocess.
+
+SUMMARY (`path=` and `summary=True`): the file count and total bytes per
+child of `path`, added up where the files are, so a tree of any size
+answers in one row per child; a walk that could not read everything, or
+ran out of time, says so beside totals that leave the rest out.
 
 Permission gate
 ---------------
@@ -146,6 +153,68 @@ def _ssh_remote_cmd_deep(path: str, name_glob: Optional[str],
     glob_part = f"-name {shlex.quote(name_glob)} " if name_glob else ""
     return (f"find {q} '(' -type f -o -type d ')' {glob_part}"
             f"-printf {shlex.quote(_FIND_PRINTF)} | head -n {int(max_entries) + 1}")
+
+
+def _remote_error(env_name: str, env: dict, path: str, rc: int, stderr: str, error: str) -> dict:
+    """One env's failure, as the listing and the summary report it."""
+    err: dict = {"compute_env": env_name, "path": path, "error": error, "stderr": (stderr or "")[-500:]}
+    if (hint := _ssh_failure_hint(stderr or "", env.get("host", ""))) is not None:
+        err["hint"] = hint
+    return err
+
+
+#: How long a summary walks before it stops and says so, under the stream watchdog.
+_SUMMARY_WALK_S = 480
+
+
+def _ssh_remote_cmd_summary(path: str, name_glob: Optional[str]) -> str:
+    """The summary-mode remote command: each file's size and path under `path`,
+    added up on the remote side per child of `path` (`.` for the files directly
+    in it), so the answer is one line per child however many files there are.
+    `find` stops at `_SUMMARY_WALK_S` and pipefail carries its status out, so a
+    walk that was cut short or could not read everything never reads as whole.
+    A line that does not open with a size (a name with a newline in it) is not
+    counted twice. path and glob are shlex.quote'd."""
+    glob_part = f"-name {shlex.quote(name_glob)} " if name_glob else ""
+    size_and_path = shlex.quote(r"%s\t%P\n")
+    tab = shlex.quote(r"\t")
+    add_up = shlex.quote(r'$1 ~ /^[0-9]+$/ && NF > 1 {i = index($2, "/"); k = i ? substr($2, 1, i - 1) : "."; '
+                         r'n[k]++; b[k] += $1} END {for (k in n) printf "%s\t%d\t%.0f\n", k, n[k], b[k]}')
+    walk = (f"set -o pipefail; timeout {_SUMMARY_WALK_S} find {shlex.quote(path)} -type f {glob_part}"
+            f"-printf {size_and_path} | awk -F {tab} {add_up}")
+    return f"bash -c {shlex.quote(walk)}"
+
+
+def _local_summary(path: str, name_glob: Optional[str]) -> tuple[list[dict], list[str]]:
+    """`_ssh_remote_cmd_summary`'s answer for a path on this machine — regular files
+    only, as `find -type f` counts them — and what could not be read."""
+    root = Path(path)
+    if root.is_file():
+        return [{"name": ".", "files": 1, "bytes": root.stat().st_size}], []
+    if not root.exists():
+        return [], [f"{path}: no such file or directory"]
+    unread: list[str] = []
+    totals: dict[str, list[int]] = {}
+    for dirpath, _dirs, filenames in os.walk(root, onerror=lambda e: unread.append(f"{e.filename}: {e.strerror}")):
+        for name in filenames:
+            f = Path(dirpath, name)
+            if (name_glob and not fnmatch.fnmatch(name, name_glob)) or f.is_symlink() or not f.is_file():
+                continue
+            parts = f.relative_to(root).parts
+            t = totals.setdefault(parts[0] if len(parts) > 1 else ".", [0, 0])
+            t[0] += 1
+            t[1] += f.stat().st_size
+    return [{"name": k, "files": n, "bytes": b} for k, (n, b) in totals.items()], unread
+
+
+def _parse_summary(stdout: str) -> list[dict]:
+    """`name<TAB>files<TAB>bytes` lines; any other line (a login banner) is skipped."""
+    out = []
+    for line in stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+            out.append({"name": parts[0], "files": int(parts[1]), "bytes": int(parts[2])})
+    return out
 
 
 def _local_walk_deep(path: str, name_glob: Optional[str],
@@ -319,7 +388,7 @@ def _snapshot_paths_for_env(project: dict, env_name: str,
 
 def _deep_listing(project: dict, access: dict, path: str,
                   name_glob: Optional[str], max_entries: int,
-                  timeout: int) -> dict:
+                  timeout: int, summary: bool = False) -> dict:
     """The recursive, capped listing under ONE granted path. Authorization
     first, subprocess after, truncation stated — see the module docstring's
     deep-mode contract."""
@@ -376,6 +445,9 @@ def _deep_listing(project: dict, access: dict, path: str,
             f"an env zone (scratch under <scratch>/{proj_name}/, common_data, containers, "
             f"pipelines)" + (f" — {last_denial}" if last_denial and len(envs) == 1 else ""))
 
+    if summary:
+        return _summary(proj_name, plans, path, name_glob, timeout)
+
     all_entries: list[dict] = []
     per_env_counts: dict[str, int] = {}
     errors: list[dict] = []
@@ -389,13 +461,8 @@ def _deep_listing(project: dict, access: dict, path: str,
                 _ssh_argv(env, _ssh_remote_cmd_deep(path, name_glob, max_entries)),
                 capture_output=True, text=True, timeout=timeout)
             if res.returncode != 0:
-                err: dict = {"compute_env": env_name, "path": path,
-                             "error": f"find failed (rc={res.returncode})",
-                             "stderr": (res.stderr or "")[-500:]}
-                if (hint := _ssh_failure_hint(res.stderr or "",
-                                              env.get("host", ""))) is not None:
-                    err["hint"] = hint
-                errors.append(err)
+                errors.append(_remote_error(env_name, env, path, res.returncode, res.stderr,
+                                            f"find failed (rc={res.returncode})"))
                 continue
             parsed = _parse_find_output(res.stdout)
             env_trunc = len(parsed) > max_entries
@@ -433,10 +500,53 @@ def _deep_listing(project: dict, access: dict, path: str,
     return out
 
 
+def _summary(proj_name: str, plans: list[tuple[str, dict]], path: str,
+             name_glob: Optional[str], timeout: int) -> dict:
+    """The file count and total bytes per child of `path`, largest first, on every
+    env that may list it, with the totals."""
+    children: list[dict] = []
+    errors: list[dict] = []
+    for env_name, env in plans:
+        if env.get("type") == "local":
+            rows, unread = _local_summary(path, name_glob)
+            if unread:
+                errors.append({"compute_env": env_name, "path": path, "unread": unread[:20],
+                               "error": f"{len(unread)} path(s) could not be read; the totals leave them out"})
+        else:
+            try:
+                res = subprocess.run(_ssh_argv(env, _ssh_remote_cmd_summary(path, name_glob)),
+                                     capture_output=True, text=True, timeout=max(timeout, _SUMMARY_WALK_S + 30))
+            except subprocess.TimeoutExpired as e:
+                errors.append({"compute_env": env_name, "path": path,
+                               "error": f"no answer from {env_name} within {e.timeout}s"})
+                continue
+            rows = _parse_summary(res.stdout)
+            if res.returncode == 124:
+                errors.append({"compute_env": env_name, "path": path,
+                               "error": f"the walk stopped at {_SUMMARY_WALK_S}s; the totals cover only what "
+                                        f"it reached — summarize a deeper path"})
+            elif res.returncode != 0:
+                errors.append(_remote_error(env_name, env, path, res.returncode, res.stderr,
+                                            f"find could not read everything (rc={res.returncode}); the "
+                                            f"totals leave out what it could not read"))
+        children += [{"compute_env": env_name, **r} for r in rows]
+    children.sort(key=lambda r: -r["bytes"])
+    out = {"project": proj_name, "mode": "summary", "path": path, "name_glob": name_glob,
+           "compute_envs": [n for n, _ in plans],
+           "captured_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+           "children": children,
+           "files": sum(r["files"] for r in children), "bytes": sum(r["bytes"] for r in children),
+           "complete": not errors}
+    if errors:
+        out["errors"] = errors
+    return out
+
+
 def snapshot_project(project_name: str,
                      *, path: Optional[str] = None,
                      name_glob: Optional[str] = None,
                      max_entries: int = 20000,
+                     summary: bool = False,
                      access_path: Optional[str] = None,
                      timeout: int = 120) -> dict:
     """Return a directory snapshot for `project_name` across every compute
@@ -454,6 +564,11 @@ def snapshot_project(project_name: str,
     truncation STATED (`truncated` + a note naming the remedy; the cap is
     caller-raisable without ceiling, so a complete sweep is always one
     call away).
+
+    SUMMARY (`path=` and `summary=True`): instead of entries, the file count
+    and total bytes per child of `path` (`.` for the files directly in it),
+    added up where the files are, so it is one row per child however large
+    the tree.
 
     Returns:
       {
@@ -484,7 +599,10 @@ def snapshot_project(project_name: str,
         return refused("snapshot.no_env_access_blocks", error=f"project '{project_name}' has no compute_env_access blocks")
 
     if path is not None:
-        return _deep_listing(project, access, path, name_glob, max_entries, timeout)
+        return _deep_listing(project, access, path, name_glob, max_entries, timeout, summary)
+    if summary:
+        return refused("snapshot.summary_needs_path",
+                       error="summary=True adds up one directory: name it with path=")
 
     # First pass: collect (env_name, env_dict, tagged_paths). Gate every
     # path BEFORE any subprocess runs — defense-in-depth, even though every

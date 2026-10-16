@@ -16,10 +16,11 @@ from agent.skills.outcomes import refused
 @mcp.tool()
 def snapshot_project(project_name: str, path: Optional[str] = None,
                      name_glob: Optional[str] = None,
-                     max_entries: int = 20000) -> dict:
+                     max_entries: int = 20000,
+                     summary: bool = False) -> dict:
     """List a project's authorized directories — across every compute env it
     spans — as a file-tree snapshot tagged by env. Each entry is
-    {compute_env, path, size, mtime, type}. Two modes:
+    {compute_env, path, size, mtime, type}. Three modes:
 
     OVERVIEW (no `path`): every authorized dir at ONE level — root + its
     immediate children, subdirs by name. The cheap orientation call.
@@ -33,12 +34,20 @@ def snapshot_project(project_name: str, path: Optional[str] = None,
     short. Building a sample sheet: deep-list with a glob, raise the cap if
     `truncated`, then write the CSV from `entries[].path`.
 
+    SUMMARY (`path=` and `summary=True`): no entries; instead `children` —
+    {compute_env, name, files, bytes} per child of `path` (`.` for the files
+    directly in it), largest first — and the `files` / `bytes` totals, added up
+    where the files are, so a tree of any size answers in one row per child.
+    `complete: false` (with `errors`) means the walk could not read everything
+    or ran out of time. Size a pull-down with it before listing or downloading.
+
     This is the read-only INSPECTION primitive for a user's compute env —
     `upload` / `download` / `run_production_pipeline` / `run_step_on_cluster` are
     the actuators. The shell that runs here is fixed: `find` with a pinned
-    printf template (plus `-name <glob> | head -n <cap>` in deep mode) over
-    ssh; local envs use no subprocess at all. No file contents are read; no
-    other commands are reachable.
+    printf template (plus `-name <glob> | head -n <cap>` in deep mode, or a
+    fixed `awk` that adds sizes up in summary mode) over ssh; local envs use no
+    subprocess at all. No file contents are read; no other commands are
+    reachable.
 
     Authorization lives at the PROJECT level: each project's flat
     `directories[]` list (entries tagged with `env:`) names the dirs the
@@ -56,7 +65,8 @@ def snapshot_project(project_name: str, path: Optional[str] = None,
     try:
         return snapshot.snapshot_project(project_name, path=path,
                                          name_glob=name_glob,
-                                         max_entries=max_entries)
+                                         max_entries=max_entries,
+                                         summary=summary)
     except (PermissionDenied, ConfigError, FileNotFoundError, KeyError) as e:
         return refused("status.snapshot_gate_rejected", error=f"{type(e).__name__}: {e}")
 

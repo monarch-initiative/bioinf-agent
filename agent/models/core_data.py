@@ -36,8 +36,9 @@ Used by:
 
 from __future__ import annotations
 
+import fnmatch
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from collections.abc import Mapping
 from typing import Any, Literal, Optional, Union
 
@@ -330,10 +331,11 @@ class AuthoredArtifact(BaseModel):
                         writes the file AND records the verbatim content in
                         the spec so a reviewer can audit what the agent
                         authored.
-      generated_by    — file is binary or large (BAM, FASTA, indexed db) and
-                        was produced by a shell command the agent ran. The
-                        primitive records the genesis command instead of the
-                        bytes.
+      generated_by    — the file was produced by a shell command the agent
+                        ran (a BAM slice, an index, an existing script copied
+                        in). The primitive records the genesis command; a
+                        script's text is kept as in content mode, any other
+                        file's bytes are not.
 
     In both cases the runtime computes sha256(file_on_disk) at stage-time;
     finalize re-computes and refuses to write the spec if it has drifted.
@@ -347,9 +349,9 @@ class AuthoredArtifact(BaseModel):
     size_bytes:            int
     created_at:            str
     language:              Optional[str] = None   # hint: "r", "python", "bash", "tsv", "json", ...
-    content_excerpt:       Optional[str] = None   # first N bytes for human review (text mode)
+    content_excerpt:       Optional[str] = None   # the text (content mode, a generated_by script) or a preview
     content_full_in_spec:  bool = False           # True if content fit fully in spec
-    generated_by:          Optional[str] = None   # shell command that produced the file (binary mode)
+    generated_by:          Optional[str] = None   # shell command that produced the file (generated_by mode)
 
 
 # ---------------------------------------------------------------------------
@@ -1271,6 +1273,13 @@ def is_script_path(path: object) -> bool:
     return isinstance(path, str) and path.lower().endswith(SCRIPT_SUFFIXES)
 
 
+def frozen_image_ref(image: str, image_digest: str) -> str:
+    """The handle a frozen image is run, inspected and saved by: a ref already pinned by
+    digest (`repo@sha256:…`) as it is; otherwise the image id the record pins, which no
+    later `docker tag`, rebuild or cleanup of a tag can move, as a tag can."""
+    return image if "@sha256:" in (image or "") else (image_digest or image)
+
+
 def staged_sif_steps(spec: Any) -> list:
     """THE one reading of "is this workflow's container already delivered to the
     cluster": every pipeline_step that records a cluster-staged .sif fingerprint.
@@ -2079,6 +2088,24 @@ def fill_slots(text: str, substitutions: Mapping[str, Any]) -> str:
     for slot, val in substitutions.items():
         out = out.replace("{" + str(slot) + "}", str(val))
     return out
+
+
+def output_pattern(pattern: str, substitutions: Mapping[str, Any]) -> str:
+    """One `usage.outputs[*].files` pattern as the self-test reads it: relative to the
+    output directory (a leading `{OUTPUT_DIR}/`, however that slot is spelled, is
+    dropped) and every other slot filled from `substitutions` — the glob a file the
+    how-to wrote, by its path under that directory or by its name, is matched against."""
+    p = pattern or ""
+    m = SLOT_RE.match(p)
+    if m and is_output_slot(m.group(1)) and p[m.end():].startswith("/"):
+        p = p[m.end() + 1:]
+    return fill_slots(p, {k: v for k, v in substitutions.items() if not is_output_slot(str(k))})
+
+
+def output_matches(rel_path: str, pattern: str) -> bool:
+    """Whether a file the how-to wrote — by its path under the output directory — is one
+    an `output_pattern` names: by that path, or by its name."""
+    return fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(PurePosixPath(rel_path).name, pattern)
 
 
 def usage_slot_problems(usage: Any) -> list[str]:

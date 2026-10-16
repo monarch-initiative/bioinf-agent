@@ -503,7 +503,7 @@ def test_stage_authored_artifact_content_mode(tmp_path, monkeypatch):
 
 def test_stage_authored_artifact_generated_by_mode(tmp_path, monkeypatch):
     """generated_by mode requires the file to already exist; records the
-    genesis command + sha256 but no inline content."""
+    genesis command + sha256, and a binary file's bytes are not kept inline."""
     from agent.skills.pipeline_state import PipelineState
     import agent.mcp_server as srv
 
@@ -524,6 +524,32 @@ def test_stage_authored_artifact_generated_by_mode(tmp_path, monkeypatch):
     a = draft["authored_artifacts"][0]
     assert a["generated_by"] == "samtools view -bS in.sam > out.bam"
     assert a["content_full_in_spec"] is False
+
+
+def test_generated_by_keeps_a_scripts_text_so_a_render_carries_it_and_data_stays_a_path(tmp_path, monkeypatch):
+    """A script run unchanged is staged by copying it into the workspace, with the copy
+    as its genesis. Its text is kept as content mode keeps it, which is what a render
+    carries into bin/, so the script is never re-sent as `content`. A data file's bytes
+    are not kept, so a fixture stays a path input; past the limit a script keeps only
+    its sha256 anchor."""
+    from agent.skills.pipeline_state import PipelineState
+    import agent.mcp_server as srv
+    from agent.mcp_tools.workflow_tools import SPEC_FULL_LIMIT
+
+    ps = PipelineState({})
+    monkeypatch.setattr(srv, "_pipeline_state", ps)
+    ps.start("genby_text", "test")
+    files = {"reduce.py": "import sys\nprint(sys.argv)\n", "chr22.gtf": "chr22\tx\tgene\n",
+             "big.py": "#" * (SPEC_FULL_LIMIT + 1)}
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+        r = srv.stage_authored_artifact(pipeline_id="genby_text", path=str(tmp_path / name), role="staged",
+                                        description="d", generated_by=f"cp /src/{name} {tmp_path / name}")
+        assert r.get("success") is True, r
+    script, data, big = ps.get_draft("genby_text")["authored_artifacts"]
+    assert script["content_full_in_spec"] is True and script["content_excerpt"] == files["reduce.py"]
+    assert data["content_full_in_spec"] is False and data["content_excerpt"].startswith("<binary;")
+    assert big["content_full_in_spec"] is False
 
 
 def test_stage_authored_artifact_refuses_a_directory(tmp_path, monkeypatch):

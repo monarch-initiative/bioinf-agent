@@ -35,6 +35,7 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import os
 import re
 import shlex
 import sys
@@ -42,6 +43,16 @@ import uuid
 from typing import Any, Callable
 
 from agent.skills.outcomes import broke, loop, refused
+
+#: Set in a detached job's environment, naming the tool it runs.
+DETACHED_ENV = "BIOINF_DETACHED_TOOL"
+
+
+def detached() -> bool:
+    """Is this process a detached job? No stream watchdog waits on it, so a wait
+    capped to stay under one need not be."""
+    return bool(os.environ.get(DETACHED_ENV))
+
 
 #: tool name -> the parameter names tried, in order, to build a readable job_id.
 #: Populated by @backgroundable at import time, so it is DERIVED from the

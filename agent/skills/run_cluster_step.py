@@ -36,8 +36,9 @@ It composes:
   1. stage_apptainer_image   — get the .sif onto the env (idempotent)
   2. render_workflow_files   — produce main.nf / nextflow.config /
                                launcher.sh into a local tempdir
-  3. transfer.upload         — push each rendered file into the
-                               agent's scratch sandbox (the scratch
+  3. transfer.upload         — push the rendered files, as one
+                               directory, into the agent's scratch
+                               sandbox (the scratch
                                zone is routed by the workflow_dir path,
                                which is under agent_scratch_target)
   4. sbatch_via_ssh          — kick off the SLURM job, get job_id
@@ -68,6 +69,7 @@ came from sacct, not host psutil.
 from __future__ import annotations
 
 import re
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -84,7 +86,6 @@ from agent.models.core_data import PipelineStep, default_step_tool
 from agent.skills.outcomes import proven, refused, broke
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.validators.output_validator import infer_validator_type
-from agent.skills import workspace
 
 
 # workflow_name becomes a path component under scratch — keep it safe.
@@ -94,21 +95,6 @@ _WORKFLOW_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 _RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 
-# Where the rendered workflow files are staged locally before upload. This
-# MUST live under a Globus-accessible location for globus-transport envs:
-# Globus Connect Personal only scans its Accessible Folders (default $HOME)
-# and REFUSES a system temp dir like macOS's /var/folders or /tmp (surfaced
-# by the live acceptance run). The repo sits under $HOME, so a repo-local
-# staging dir works for BOTH transports (scp doesn't care where the source
-# is) and keeps everything self-contained in the project tree per the user's
-# rails. TemporaryDirectory still auto-cleans each run.
-# A FUNCTION, not a module constant. The location depends on the resolved
-# workspace, and a constant computed at import freezes whatever the environment
-# said at import time — which for a test process is "before the fixture
-# redirected it", so every staged file would land in the developer's real
-# workspace.
-def _render_stage_dir():
-    return workspace.scratch_dir("cluster_render_staging")
 
 
 # Terminal SLURM states — once we hit one of these the job is over.
@@ -416,31 +402,36 @@ def run_step_on_cluster(
                 error=f"workflow_render failed: {e}",
                 stage_result=stage)
 
-    files_uploaded: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="bioinf_cluster_step_",
-                                     dir=str(_render_stage_dir())) as td:
-        tdp = Path(td)
-        for fname in _RENDERED_FILES:
-            (tdp / fname).write_text(rendered[fname])
-
-        for fname in _RENDERED_FILES:
-            local = str(tdp / fname)
-            # workflow_dir already includes project_name; pass the full
-            # absolute path. transfer.upload routes via scratch zone
-            # because the path is under env.agent_scratch_target.
-            up = transfer.upload(
-                project_name=project_name,
-                compute_env_name=compute_env_name,
-                local_path=local,
-                remote_abs_path=f"{workflow_dir}/{fname}",
-                access_path=str(Path(access_path)) if access_path else None,
-                timeout=300)
-            if "error" in up:
-                return broke("run_cluster.upload_failed",
-                    error=f"upload of {fname} to scratch failed: {up['error']}",
-                    stage_result=stage,
-                    files_uploaded=files_uploaded)
-            files_uploaded.append(up["remote_abs_path"])
+    # One transfer creates workflow_dir with the rendered files in it (the
+    # scratch zone routes it; workflow_dir already includes project_name). The
+    # staged copy is removed once it has arrived: a transfer that stopped
+    # waiting may still be reading it.
+    staged = Path(tempfile.mkdtemp(prefix="bioinf_cluster_step_",
+                                   dir=transfer.staging_dir("cluster_render_staging")))
+    tree = staged / workflow_name
+    tree.mkdir()
+    for fname in _RENDERED_FILES:
+        (tree / fname).write_text(rendered[fname])
+    up = transfer.upload(
+        project_name=project_name,
+        compute_env_name=compute_env_name,
+        local_path=str(tree),
+        remote_abs_path=workflow_dir,
+        access_path=str(Path(access_path)) if access_path else None,
+        timeout=300)
+    if up.get("code") == "transfer.remote_exists":
+        shutil.rmtree(staged)
+        return refused("run_cluster.workflow_dir_exists",
+            error=f"{workflow_dir} already exists: the rendered files go up as "
+                  f"one directory, which creates it",
+            remedy="a fresh workflow_name for each attempt; inputs belong elsewhere in scratch",
+            stage_result=stage)
+    if "error" in up:
+        return broke("run_cluster.upload_failed",
+            error=f"upload of the rendered workflow to scratch failed: {up['error']}",
+            staged=str(tree), stage_result=stage)
+    shutil.rmtree(staged)
+    files_uploaded = [f"{workflow_dir}/{fname}" for fname in _RENDERED_FILES]
 
     sb = submit_workflow.sbatch_via_ssh(env, workflow_dir, timeout=300)
     if "error" in sb:
@@ -745,6 +736,7 @@ def run_step_on_cluster(
     validations: dict = {}
     output_types_used: set = set()
     if rc == 0 and step_index is not None:
+        by_path: dict = {}
         for path in downloaded:
             basename = Path(path).name
             ext = "".join(Path(path).suffixes).lower()
@@ -760,7 +752,9 @@ def run_step_on_cluster(
             # keyed by resolved PATH (see pipeline_state.validation_key) — a per-sample
             # cluster fan-out is precisely where two outputs share a basename.
             validations[_validation_key(path)] = v
-            _pipeline_state.add_validation(pipeline_id, step_index, path, v)
+            by_path[path] = v
+        # one draft write for every output, not one per file (a tree of outputs is thousands)
+        _pipeline_state.add_validations(pipeline_id, step_index, by_path)
     # Same disclosure as run_pipeline_step's: a key that bound to nothing is a
     # typo, a wrong extension, or a file the job never produced — and silently
     # dropping the caller's stated intent is how a wrong fallback takes over
@@ -774,6 +768,7 @@ def run_step_on_cluster(
         returncode=rc,
         job_id=job_id,
         sif_path=sif_path_remote,
+        env_record=stage.get("env_record"),
         cluster_sif_sha256=cluster_sif_sha256,
         cluster_image_verified=cluster_image_verified,
         cluster_image_digest_match=cluster_image_digest_match,

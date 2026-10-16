@@ -16,8 +16,9 @@ The file set
                      locally, the .sif on the cluster; per-stage resources; trace, report
                      and timeline under runs/<stamp>/, one directory per run
   params.yaml        the shared parameters with the sealed run's defaults, the
-                     samplesheet and the output directory — nothing about WHERE the
-                     pipeline runs; that is nextflow.config's
+                     samplesheet, the output directory and how outputs are published
+                     there — nothing about WHERE the pipeline runs; that is
+                     nextflow.config's
   samples.csv        `pipeline_record.render_samplesheet`, the ONE rendering; a CSV
                      cannot carry the leading comment the other files do (splitCsv
                      would read it as the header)
@@ -37,7 +38,8 @@ The binding table — how a how-to placeholder reaches a process script
   per-sample path column     {READS}         ->  ${reads}        `path(reads)` inside the meta tuple
   per-sample value column    {SAMPLE}        ->  ${meta.sample}
   thread slot                {THREADS}       ->  ${task.cpus}    the stage's cpus request
-                                                 (format: threads; the sealed count unless sized)
+                                                 (format: threads; the sealed count unless sized;
+                                                 locally at most this machine's cpus)
   samplesheet slot           {SHEET}         ->  ${sheet}        staged: `path sheet`
                                                  <- file(params.samplesheet) (format: samplesheet)
   collected input            {COUNTS_DIR}    ->  counts_dir      staged: `path 'counts_dir/*'` <-
@@ -74,7 +76,7 @@ from typing import Any, Mapping, Optional
 
 import yaml
 
-from agent.models.core_data import SLOT_RE
+from agent.models.core_data import SLOT_RE, frozen_image_ref
 from agent.skills import compute_access
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, MANAGER_JOB_REQUEST,
                                           NEXTFLOW_QUEUE_SIZE, NEXTFLOW_SUBMIT_RATE, SCRIPT_DIR, PipelineParam,
@@ -87,6 +89,20 @@ from agent.skills.workflow_render import (_GPU_PLACEMENT_HEADER_NOTE, _MEM_RE, _
 
 #: A Groovy identifier — a process name, a params key, an emit name, a staged-input name.
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: Names that match _IDENT_RE and still cannot be a staged-input or params name: Groovy's
+#: keywords (`path package` does not compile), and the names every rendered process already
+#: binds or reads (`meta`, `task`, `params`, `workflow`, `nextflow`), which an input of the
+#: same name would shadow.
+_RESERVED = frozenset({
+    "abstract", "as", "assert", "boolean", "break", "byte", "case", "catch", "char", "class",
+    "const", "continue", "def", "default", "do", "double", "else", "enum", "extends", "false",
+    "final", "finally", "float", "for", "goto", "if", "implements", "import", "in",
+    "instanceof", "int", "interface", "long", "native", "new", "null", "package", "permits",
+    "private", "protected", "public", "record", "return", "sealed", "short", "static",
+    "strictfp", "super", "switch", "synchronized", "this", "threadsafe", "throw", "throws",
+    "trait", "transient", "true", "try", "var", "void", "volatile", "while", "yield",
+    "meta", "task", "params", "workflow", "nextflow",
+})
 #: An artifact as the record names it: a bare filename, a glob, or a templated name.
 _ARTIFACT_RE = re.compile(r"^[A-Za-z0-9_.\-*?{}]+$")
 #: A script's file name under bin/: a bare filename, nothing a shell or a path would read.
@@ -176,6 +192,10 @@ RUN_RECORD_BLOCK = """\
 #: and main.nf spell them. The page reads the same pair.
 SAMPLESHEET_PARAM = ("samplesheet", "samples.csv")
 OUTDIR_PARAM = ("outdir", "results")
+PUBLISH_MODE_PARAM = ("publish_dir_mode", "copy")
+#: What PUBLISH_MODE_PARAM says, in both files that set it.
+_PUBLISH_MODE_NOTE = ("How outputs are published: copy, or link (a hard link, so no second copy on disk; "
+                      "results/ and work/ must share a filesystem)")
 
 
 # ── refusals ────────────────────────────────────────────────────────────────
@@ -196,6 +216,9 @@ def _check_identifier(label: str, value: str, remedy: str) -> None:
     if not isinstance(value, str) or not _IDENT_RE.match(value):
         raise ValueError(f"{label} {value!r} is not a Groovy identifier (letters, digits, "
                          f"`_`, not starting with a digit); {remedy}")
+    if value in _RESERVED:
+        raise ValueError(f"{label} {value!r} is a Groovy keyword or a name every rendered process "
+                         f"already uses, so main.nf would not compile or would shadow it; {remedy}")
 
 
 def _check_artifact(stage: PipelineStage, artifact: str, known: set[str]) -> None:
@@ -453,6 +476,8 @@ def _render_params_block(record: PipelineRecord, ctx: _Context) -> str:
                  + ("; a cohort stage publishes flat into it." if any(s.scope == "cohort" for s in record.stages)
                     else "."))
     lines.append(f"params.{OUTDIR_PARAM[0]} = {_nf_quote(OUTDIR_PARAM[1])}")
+    lines.append(f"// {_PUBLISH_MODE_NOTE}.")
+    lines.append(f"params.{PUBLISH_MODE_PARAM[0]} = {_nf_quote(PUBLISH_MODE_PARAM[1])}")
     return "\n".join(lines)
 
 
@@ -559,23 +584,29 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     if measured:
         head.append(f"// {measured}")
     if stage.consumes_workdir:
-        head.append("// This stage names the output directory bare (`.` below); only the "
-                    "artifacts declared as its inputs are staged into its work dir.")
+        head.append("// This stage names the output directory bare (`.` below): every artifact an "
+                    "earlier stage wrote is staged into its work dir, as the sealed run had them.")
 
     body: list[str] = []
     # Closures, not strings: a directive that names a task input must be evaluated
     # per task, and the strict parser refuses the string form outright.
     if not cohort:
         body.append("tag { meta.sample }")
-    if stage.outputs:
+    published = [o for o in stage.outputs if o.published]
+    if published:
         # One results directory per row, shared by every stage — the layout the sealed
-        # how-to ran in. Every artifact a stage writes is published; names are unique
-        # within a row by construction (the seal wrote them all into one working
-        # directory). `overwrite: true` because Nextflow's default is false on -resume:
-        # a stage re-executed after a parameter change must replace its stale
-        # published copy. A cohort stage publishes flat: it has no row.
+        # how-to ran in. What the how-to declares as its result is published; when the
+        # stage writes more, `saveAs` keeps to the output block's own names for it.
+        # Names are unique within a row by construction (the seal wrote them all into
+        # one working directory). `overwrite: true` because Nextflow's default is false
+        # on -resume: a stage re-executed after a parameter change must replace its
+        # stale published copy. A cohort stage publishes flat: it has no row.
         base = '{ "${params.outdir}" }' if cohort else '{ "${params.outdir}/${meta.sample}" }'
-        body.append(f"publishDir {base}, mode: 'copy', overwrite: true")
+        line = f"publishDir {base}, mode: params.{PUBLISH_MODE_PARAM[0]}, overwrite: true"
+        if len(published) < len(stage.outputs):
+            names = ", ".join(ctx.artifact_expr(stage, o.artifact) for o in published)
+            line += f",\n{_INDENT * 2}saveAs: {{ f -> {_DECLARED_FN}(f, [{names}]) ? f : null }}"
+        body.append(line)
     if stage.stage_in_copy:
         body.append("stageInMode 'copy'                       // this stage rewrites an artifact it consumed")
 
@@ -657,6 +688,22 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
     return "\n".join(lines)
 
 
+#: The helper a stage's `saveAs` asks; main.nf defines it when a stage publishes part,
+#: but not all, of what it writes.
+_DECLARED_FN = "declared"
+_DECLARED_DEF = "\n".join([
+    f"// {_DECLARED_FN}(name, results): whether a file a stage wrote is one of the results it publishes;",
+    "// `results` are the output block's own names, a glob where the sealed run named the file per row.",
+    f"def {_DECLARED_FN}(String name, List results) {{",
+    f"{_INDENT}results.any {{ r ->",
+    f"{_INDENT * 2}if (r.toString() == name) return true",
+    f"{_INDENT * 2}try {{ return java.nio.file.FileSystems.getDefault().getPathMatcher(\"glob:${{r}}\")"
+    ".matches(java.nio.file.Path.of(name)) }",
+    f"{_INDENT * 2}catch (java.util.regex.PatternSyntaxException e) {{ return false }}   // a name, not a glob",
+    f"{_INDENT}}}",
+    "}"])
+
+
 def _render_main(record: PipelineRecord, ctx: _Context) -> str:
     n_cohort = sum(1 for s in record.stages if s.scope == "cohort")
     how = ("each stage run once per samples.csv row" if not n_cohort else
@@ -673,6 +720,8 @@ def _render_main(record: PipelineRecord, ctx: _Context) -> str:
         _render_params_block(record, ctx),
         "",
     ]
+    if any(0 < sum(o.published for o in s.outputs) < len(s.outputs) for s in record.stages):
+        parts += [_DECLARED_DEF, ""]
     for s in record.stages:
         parts += [_render_process(record, s, ctx), ""]
     parts.append(_render_workflow_block(record, ctx))
@@ -680,6 +729,45 @@ def _render_main(record: PipelineRecord, ctx: _Context) -> str:
 
 
 # ── nextflow.config ────────────────────────────────────────────────────────
+
+
+def _stage_blocks(record: PipelineRecord, lines_of, comment=None) -> list[str]:
+    """One `withName` block per stage that has lines in a profile's process scope."""
+    out: list[str] = []
+    for s in record.stages:
+        lines = lines_of(s)
+        if not lines:
+            continue
+        note = comment(s) if comment else ""
+        out.append(f"{_INDENT * 3}withName: '{s.name}' {{" + (f"   // {note}" if note else ""))
+        out += [f"{_INDENT * 4}{x}" for x in lines]
+        out.append(f"{_INDENT * 3}}}")
+    return out
+
+
+def _local_stage_lines(stage: PipelineStage, ctx: _Context) -> list[str]:
+    """A stage on this machine: its own image when the pipeline has several, and its
+    cpus — capped at this machine's by the profile's resourceLimits — but never the
+    cluster's memory or time, which a laptop could not meet."""
+    out = []
+    if len(ctx.images) > 1:
+        im = ctx.image_of[stage.name]
+        out.append(f"container = {_nf_quote(_local_image(im))}   // {im['ref']}")
+    if stage.resources.cpus is not None:
+        out.append(f"cpus = {int(stage.resources.cpus)}"
+                   + ("   // the thread count the command runs with, through task.cpus"
+                      if stage.resources.threads_slot else ""))
+    return out
+
+
+def _slurm_stage_lines(stage: PipelineStage, ctx: _Context) -> list[str]:
+    """A stage on the cluster: its .sif when the pipeline has several, its request,
+    and its GPU placement."""
+    out = _sif_lines(ctx.image_of[stage.name], ctx) if len(ctx.images) > 1 else []
+    out += _sizing_lines(stage)
+    if stage.resources.gpus > 0:
+        out += _gpu_lines(stage, ctx)
+    return out
 
 
 def _fully_sized(stage: PipelineStage) -> bool:
@@ -753,10 +841,7 @@ def _local_image(im: dict) -> str:
     by digest (`repo@sha256:…`) is used as it is; otherwise the image id the seal
     recorded, which docker runs directly and which no later `docker tag`, rebuild or
     cleanup of a `:latest` tag can move. The tag stays in the comment, for the reader."""
-    ref = im.get("ref") or ""
-    if "@sha256:" in ref:
-        return ref
-    return im.get("digest") or ref
+    return frozen_image_ref(im.get("ref") or "", im.get("digest") or "")
 
 
 def _render_config(record: PipelineRecord, ctx: _Context) -> str:
@@ -768,11 +853,9 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
         im = ctx.images[0]
         L.append(f"{_INDENT * 3}// the frozen image by its immutable id; docker knows it here as {im['ref']}")
         L.append(f"{_INDENT * 3}container = {_nf_quote(_local_image(im))}")
-    else:
-        for s in record.stages:
-            im = ctx.image_of[s.name]
-            L.append(f"{_INDENT * 3}withName: '{s.name}' {{ container = "
-                     f"{_nf_quote(_local_image(im))} }}   // {im['ref']}")
+    L.append(f"{_INDENT * 3}resourceLimits = [cpus: Runtime.runtime.availableProcessors()]"
+             f"   // no request beyond this machine's cpus")
+    L += _stage_blocks(record, lambda s: _local_stage_lines(s, ctx))
     L += [f"{_INDENT * 2}}}", f"{_INDENT}}}", f"{_INDENT}slurm {{",
           f"{_INDENT * 2}apptainer.enabled = true",
           f"{_INDENT * 2}apptainer.autoMounts = true",
@@ -796,38 +879,23 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
         L.append(f"{_INDENT * 3}queue = '{ctx.cpu_partition}'")
     if ctx.account:
         L.append(f"{_INDENT * 3}clusterOptions = '--account={ctx.account}'")
-    for s in record.stages:
-        block: list[str] = []
-        if len(ctx.images) > 1:
-            block += _sif_lines(ctx.image_of[s.name], ctx)
-        if s.resources.gpus > 0:
-            block += _gpu_lines(s, ctx)
-        if block:
-            L.append(f"{_INDENT * 3}withName: '{s.name}' {{")
-            L += [f"{_INDENT * 4}{b}" for b in block]
-            L.append(f"{_INDENT * 3}}}")
+    # The cluster's sizing lives here, never in the local profile: a stage sized for a
+    # compute node (128 cpus) would not run on a laptop.
+    if not all(_fully_sized(s) for s in record.stages):
+        d = DEFAULT_STAGE_REQUEST
+        L += [f"{_INDENT * 3}// DEFAULT request — not sized for your data",
+              f"{_INDENT * 3}cpus = {int(d['cpus'])}",
+              f"{_INDENT * 3}memory = {_nf_memory(str(d['mem']))}",
+              f"{_INDENT * 3}time = {_nf_time(str(d['time']))}"]
+    L += _stage_blocks(record, lambda s: _slurm_stage_lines(s, ctx),
+                       comment=lambda s: _measured_comment(s) if _sizing_lines(s) else "")
     L += [f"{_INDENT * 2}}}", f"{_INDENT}}}", "}", ""]
 
-    # resources
     L += ["process {",
           f"{_INDENT}// One failing sample stops nothing already running: in-flight tasks complete, nothing",
           f"{_INDENT}// new is submitted, and -resume re-runs the failed tasks and what follows them.",
-          f"{_INDENT}errorStrategy = 'finish'"]
-    if not all(_fully_sized(s) for s in record.stages):
-        d = DEFAULT_STAGE_REQUEST
-        L += [f"{_INDENT}// DEFAULT request — not sized for your data",
-              f"{_INDENT}cpus = {int(d['cpus'])}",
-              f"{_INDENT}memory = {_nf_memory(str(d['mem']))}",
-              f"{_INDENT}time = {_nf_time(str(d['time']))}"]
-    for s in record.stages:
-        sizing = _sizing_lines(s)
-        if not sizing:
-            continue
-        measured = _measured_comment(s)
-        L.append(f"{_INDENT}withName: '{s.name}' {{" + (f"   // {measured}" if measured else ""))
-        L += [f"{_INDENT * 2}{x}" for x in sizing]
-        L.append(f"{_INDENT}}}")
-    L += ["}", ""]
+          f"{_INDENT}errorStrategy = 'finish'",
+          "}", ""]
 
     L.append(RUN_RECORD_CONFIG)
     return "\n".join(L) + "\n"
@@ -841,6 +909,22 @@ def _yaml_line(key: str, value: Any) -> str:
                           allow_unicode=True).rstrip("\n")
 
 
+#: What Nextflow's YAML reader (SnakeYAML) takes as a float — `1e-5` included, which
+#: PyYAML leaves a string — and would hand the command respelled (`1.0E-5`).
+_NF_FLOAT_RE = re.compile(r"^[-+]?(\.[0-9]+|[0-9_]+(\.[0-9_]*)?)([eE][-+]?[0-9]+)?$")
+
+
+def params_yaml_line(key: str, value: str) -> str:
+    """One params.yaml line that Nextflow reads back as the value written: an integer
+    as a number; a float-shaped value (`1e-5`) or a word YAML would take as something
+    else (`yes`) quoted, so the command gets the text, never a respelling."""
+    if _INT_RE.match(value):
+        return _yaml_line(key, int(value))
+    if _NF_FLOAT_RE.match(value):
+        return f"{key}: '{value}'"
+    return _yaml_line(key, value)
+
+
 def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
     L = [f"# rendered from sealed workflow {record.sealed_workflow} (pipeline {record.name}) — "
          f"edit this file and samples.csv, not main.nf",
@@ -850,15 +934,14 @@ def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
         if p.kind != "shared":
             continue                                  # a samplesheet column or a thread slot
         L.append(f"# {_param_comment(record, p)}")
-        if p.default is not None and _INT_RE.match(p.default):
-            L.append(_yaml_line(p.name.lower(), int(p.default)))
-        else:
-            L.append(_yaml_line(p.name.lower(), p.default or ""))
+        L.append(params_yaml_line(p.name.lower(), p.default or ""))
     cols = ", ".join(c.name for c in record.samplesheet.columns)
     L.append(f"# The samplesheet: one row per sample, columns {cols}.")
     L.append(_yaml_line(*SAMPLESHEET_PARAM))
     L.append("# Where published outputs land.")
     L.append(_yaml_line(*OUTDIR_PARAM))
+    L.append(f"# {_PUBLISH_MODE_NOTE}.")
+    L.append(_yaml_line(*PUBLISH_MODE_PARAM))
     return "\n".join(L) + "\n"
 
 
@@ -897,8 +980,9 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
           "# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,",
           "# report.html, timeline.html, nextflow.log), never overwritten; this job's .out file is",
           "# the manager's log.",
-          '# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow, so a value for',
-          "# this run only goes there and wins over params.yaml:  sbatch launcher.sh --<param> <value>",
+          '# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow: a value there',
+          "# wins over params.yaml for that one run only (sbatch launcher.sh --<param> <value>); to",
+          "# change what this directory runs, edit params.yaml.",
           RUN_HPC_NEXTFLOW,
           "",
           "# Work directories are never cleaned for you. Once the published outputs are where",
