@@ -45,8 +45,8 @@ from agent.skills.compute_access import (  # noqa: E402
     PROJECT_NAME_RE,
     VALID_JOB_MANAGERS,
     ConfigError,
-    _UUID_RE,
     default_access_path,
+    is_uuid,
     load_access,
 )
 
@@ -611,7 +611,7 @@ def _globus_local_id() -> str:
     except subprocess.TimeoutExpired:
         return ""
     out = p.stdout.strip()
-    return out if p.returncode == 0 and _UUID_RE.match(out) else ""
+    return out if p.returncode == 0 and is_uuid(out) else ""
 
 
 def _pick_globus_endpoint(which: str, cur_id: str, cur_name: str) -> tuple[str, str]:

@@ -101,7 +101,7 @@ def test_the_remote_script_is_built_from_validated_tokens_only():
     cmd = cj._build_pipeline_run_cmd("/work/pipelines/run1", "4242")
     assert cmd.startswith("bash -lc ")
     assert "/work/pipelines/run1/*-4242.out" in cmd and "trace.txt" in cmd
-    assert "runs/[0-9_]*" in cmd
+    assert "^run records: " in cmd, "the stamp is read off the line main.nf prints, nowhere else"
 
 
 def test_status_refuses_an_unsafe_run_dir_before_ssh(tmp_path):
@@ -353,6 +353,52 @@ def test_the_run_read_is_the_last_one_its_manager_logged_and_its_last_task_count
     assert out["stamp"] == "runs/20261010_090000"
     assert [t["status"] for t in out["tasks"]] == ["FAILED"] and out["verdict"] == "failed"
     assert list(out)[:2] == ["run_dir", "verdict"], "the verdict leads; the task list is as long as the run"
+
+
+def test_a_failed_tasks_command_in_the_manager_log_never_moves_the_stamp(tmp_path, monkeypatch):
+    """Nextflow echoes a failed task's command into the manager log after the run's own
+    line; an input under a sequencer's runs/<date>_… directory is not the run's stamp."""
+    import shlex
+    import subprocess
+    run = tmp_path / "run1"
+    (run / "runs/20261016_120000").mkdir(parents=True)
+    (run / "runs/20261016_120000/trace.txt").write_text(TRACE.splitlines()[0] + "\n" + TRACE.splitlines()[2] + "\n")
+    (run / "rnaseq-4242.out").write_text(
+        "run records: runs/20261016_120000/\n[PROCESS f8/47b90e] ALIGN (s1)\n"
+        "ERROR ~ Error executing process > 'ALIGN (s1)'\n\nCommand executed:\n\n"
+        "  echo reading /data/runs/240115_A01234_0123_BHXXXX/s1.fq\n  exit 3\n\n"
+        "Command error:\n  reading /data/runs/240115_A01234_0123_BHXXXX/s1.fq\n")
+    real = subprocess.run
+    monkeypatch.setattr(subprocess, "run", lambda argv, *a, **kw: real(
+        ["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=True))
+    out = cj._read_pipeline_run({"host": "h", "user": "u"}, str(run), "4242", [{"verdict": cj.SUCCEEDED}],
+                                timeout=30)
+    assert out["stamp"] == "runs/20261016_120000" and out["verdict"] == "failed"
+
+
+def test_a_look_that_reads_less_than_the_last_never_replaces_it(tmp_path, monkeypatch):
+    """The run records are the slow hop. Late in a wait each hop's share of the time
+    left is shorter than that hop takes, and the look comes back without them: the
+    answer is the last look that read them."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+
+    def timed(argv, **kw):
+        cost = 8 if "TRACE_BEGIN" in argv[-1] else 1
+        if cost > kw["timeout"]:
+            clock.now += kw["timeout"]
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"])
+        clock.now += cost
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", timed)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                              access_path=_access(tmp_path))
+    assert "error" not in r["pipeline"] and r["pipeline"]["verdict"] == "running"
+    assert {t["native_id"] for t in r["pipeline"]["tasks"]} == {"501", "502", "503"}
+    assert r["waited_s"] <= 540
 
 
 def test_a_look_that_hangs_still_ends_the_wait_by_its_cap(tmp_path, monkeypatch):

@@ -171,7 +171,7 @@ class TestResubmit:
     one again (the job resumes) — once no job of it is still queued or running there,
     and only when the script there is this acquisition's own."""
 
-    def _resubmit(self, tmp_path, monkeypatch, *, squeue: str, there: str | None = None,
+    def _resubmit(self, tmp_path, monkeypatch, *, squeue: str, there: str | bytes | None = None,
                   second: dict | None = None, ssh_down: bool = False):
         import os
         import shlex
@@ -191,7 +191,8 @@ class TestResubmit:
             dest = Path(kw["remote_abs_path"])
             if dest.exists():
                 return {"outcome": "refused", "code": "transfer.remote_exists", "error": "exists"}
-            dest.write_bytes(Path(kw["local_path"]).read_bytes() if there is None else there.encode())
+            dest.write_bytes(Path(kw["local_path"]).read_bytes() if there is None else
+                             there if isinstance(there, bytes) else there.encode())
             return {"success": True}
         monkeypatch.setattr(transfer, "upload", fake_upload)
         monkeypatch.setattr(submit_workflow, "sbatch_via_ssh",
@@ -204,8 +205,8 @@ class TestResubmit:
 
         def via_bash(argv, *a, **kw):
             if ssh_down:
-                return subprocess.CompletedProcess(argv, 255, stdout="", stderr="Connection refused")
-            return real(["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=True,
+                return subprocess.CompletedProcess(argv, 255, stdout=b"", stderr=b"Connection refused")
+            return real(["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=kw.get("text"),
                         env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "USER": "u"})
         monkeypatch.setattr(acquire_data.subprocess, "run", via_bash)
 
@@ -245,6 +246,25 @@ class TestResubmit:
     def test_another_acquisitions_script_is_refused_not_overwritten(self, tmp_path, monkeypatch):
         first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", there="#!/bin/bash\nother\n")
         assert (again["outcome"], again["code"]) == ("refused", "acquire.acq_dir_holds_another"), again
+
+    @pytest.mark.parametrize("there", [
+        b"#!/bin/bash\r\nset -euo pipefail\r\n",                     # another file's line endings
+        b"#!/bin/bash\nBIOINF_FILE_END\nLIVE=12 RUNNING\nSHA=x\n",   # lines that look like the probe's own
+        b"\xff\xfe\x00binary",                                        # not text at all
+    ], ids=["crlf", "probe_lines_inside", "not_utf8"])
+    def test_a_file_is_the_same_only_byte_for_byte(self, tmp_path, monkeypatch, there):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", there=there)
+        assert (again["outcome"], again["code"]) == ("refused", "acquire.acq_dir_holds_another"), again
+        assert len(sent["sbatch"]) == 1
+
+    def test_this_script_with_its_line_endings_changed_is_another_file(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n")
+        script = next((tmp_path / "common" / "gnomad").glob("*.sh"))
+        script.write_bytes(script.read_bytes().replace(b"\n", b"\r\n"))
+        third = acquire_data.acquire_to_cluster(name="gnomad", url="https://x.org/g.vcf.bgz",
+                                                compute_env="hpc", _pipeline_state=object())
+        assert (third["outcome"], third["code"]) == ("refused", "acquire.acq_dir_holds_another"), third
+        assert len(sent["sbatch"]) == 2
 
 
 # ---------------------------------------------------------------------------

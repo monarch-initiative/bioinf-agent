@@ -803,6 +803,7 @@ class TestTaskStatusPrimitive:
         "27155-aaa",
         "",
         "33333333-3333-3333-3333-333333333333; ls",
+        "33333333-3333-3333-3333-333333333333\n",
     ])
     def test_task_status_refuses_bad_uuid(self, monkeypatch, bad_task_id):
         # Bad task_id must be refused BEFORE any subprocess — defense

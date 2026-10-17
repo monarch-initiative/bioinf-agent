@@ -666,7 +666,7 @@ class GlobusProvider(TransferProvider):
         fields = {k: v for k, v in out.items() if k not in ("outcome", "code", "error")}
         return loop("transfer.globus_task_unobserved", **fields, error=(
             f"{out['error']} Cancelling the task failed, so it may resume once that is fixed: "
-            f"globus_task_status(task_id='{task_id}') says how it ended; retry only after it does."))
+            f"globus_task_status with task_id '{task_id}' says how it ended; retry only after it does."))
 
     # ─── internals ─────────────────────────────────────────────────────
 
@@ -702,7 +702,7 @@ class GlobusProvider(TransferProvider):
                 fields = {k: v for k, v in status.items() if k not in ("outcome", "code", "error")}
                 return loop("transfer.globus_task_unobserved", **fields, task_id=task_id, error=(
                     f"{status['error']}. Globus task {task_id} was submitted and its end was "
-                    f"not observed: globus_task_status(task_id='{task_id}') says how it "
+                    f"not observed: globus_task_status with task_id '{task_id}' says how it "
                     f"ended; do not re-run the transfer before it does."))
             last_status = status
             # PERMISSION_DENIED while ACTIVE — task will hang indefinitely
@@ -735,8 +735,8 @@ class GlobusProvider(TransferProvider):
                         f"task is still {status.get('status')!r} — WE stopped "
                         f"waiting; Globus did NOT stop transferring. It keeps "
                         f"running server-side, so the bytes may well land. "
-                        f"Poll it with globus_task_status(task_id="
-                        f"'{task_id}') until SUCCEEDED/FAILED (or "
+                        f"Poll it with globus_task_status with task_id "
+                        f"'{task_id}' until SUCCEEDED/FAILED (or "
                         f"`globus task wait {task_id}` by hand). Do NOT assume "
                         f"the transfer failed, and do NOT re-run it blind — a "
                         f"second transfer of the same bytes races the first. "
@@ -746,7 +746,7 @@ class GlobusProvider(TransferProvider):
                     provider=self.name,
                     task_id= task_id,
                     hint=    f"still running server-side — poll "
-                             f"globus_task_status(task_id='{task_id}')",
+                             f"globus_task_status with task_id '{task_id}'",
                 )
             time.sleep(self._POLL_INTERVAL_S)
 
@@ -1264,7 +1264,7 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     # Validate the task_id shape BEFORE shelling out — Globus task IDs
     # are UUIDs. Defense against any caller smuggling a metacharacter
     # into the argv.
-    if not compute_access._UUID_RE.match(task_id):
+    if not compute_access.is_uuid(task_id):
         return refused("transfer.task_status_bad_uuid", error=
             f"task_id {task_id!r} is not a canonical UUID — refused "
             f"before any subprocess")

@@ -265,7 +265,7 @@ class TestGlobus:
         assert not any(c[:2] == ["globus", "rename"] for c in calls), "nothing in place yet"
         rec = json.loads(Path(out["manifest"]).read_text())
         assert rec["outcome"] == "still running" and "Failed" not in rec["summary"]
-        assert rec["pending_rename"] == {"from": "/w/scratch/demo_project/.big.sif.partial",
+        assert rec["pending_rename"] == {"env": "hpc", "from": "/w/scratch/demo_project/.big.sif.partial",
                                          "to": "/w/scratch/demo_project/big.sif"}
 
         clock["done"] = True
@@ -418,6 +418,57 @@ class TestGlobus:
         state["show"] = "error"
         assert transfer.upload("demo_project", "hpc", str(src), "/w/common/ref",
                                access_path=access)["code"] != "transfer.upload_in_flight"
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("there,code,outcome,held", [
+        ({"/w/common/.ref.partial"}, "transfer.task_rename_failed", "still running", True),
+        ({"/w/common/ref"}, "transfer.task_rename_unconfirmed", "unconfirmed", False),
+        ({"/w/common/.ref.partial", "/w/common/ref"}, "transfer.task_rename_blocked", "refused", False),
+    ], ids=["partial_only_retries", "destination_only_unconfirmed", "both_nothing_replaced"])
+    def test_a_rename_that_did_not_answer_holds_only_while_a_retry_can_make_it(
+            self, tmp_path, monkeypatch, there, code, outcome, held):
+        state = {"show": "error"}
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus([], state))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        access = str(_globus_access(tmp_path))
+        first = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
+        state.update(show="SUCCEEDED", there=there)
+        env = {**_env_ssh(), "data_transfer": {"type": "globus", "globus": _GLOBUS}}
+        st = transfer.resolve_globus_task(env, _TASK_ID)
+        assert st["code"] == code and st["remedy"], st
+        assert json.loads(Path(first["manifest"]).read_text())["outcome"] == outcome
+        state["show"] = "error"
+        again = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
+        assert (again["code"] == "transfer.upload_in_flight") is held, again
+
+    @pytest.mark.integration
+    def test_a_task_resolved_from_another_env_changes_nothing(self, tmp_path, monkeypatch):
+        state = {"show": "error"}
+        calls: list = []
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus(calls, state))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        first = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref",
+                                access_path=str(_globus_access(tmp_path)))
+        state["show"] = "SUCCEEDED"
+        other = {**_env_ssh(), "name": "hpc2", "data_transfer": {"type": "globus", "globus": _GLOBUS}}
+        st = transfer.resolve_globus_task(other, _TASK_ID)
+        assert st["code"] == "transfer.task_other_env", st
+        assert "compute_env_name='hpc'" in st["remedy"] and "project_name='demo_project'" in st["remedy"]
+        assert not any(c[:2] == ["globus", "rename"] for c in calls)
+        assert json.loads(Path(first["manifest"]).read_text())["outcome"] == "still running"
+
+    @pytest.mark.integration
+    def test_a_receipt_that_is_not_a_record_is_passed_over(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus([], {"show": "error"}))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        access = str(_globus_access(tmp_path))
+        first = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
+        (Path(first["manifest"]).parent / "zzzz.json").write_text("[1, 2]")
+        again = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
+        assert again["code"] == "transfer.upload_in_flight", again
 
     @pytest.mark.integration
     def test_a_task_whose_cancel_failed_is_still_running_not_failed(self, tmp_path, monkeypatch):

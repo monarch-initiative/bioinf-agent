@@ -109,8 +109,8 @@ def render_step_commands(step: dict) -> list[str]:
     This renders records that carry no transcript, and the operator-supplied
     instruction, which is not a command and has no transcript equivalent.
 
-    Where it must guess, it states the guess, and it never emits a line that fails
-    when pasted."""
+    Where it must guess, it states the guess; a source the record does not carry
+    renders as a `<placeholder>` (`<jar_url>`, `<repo_url>`, `<binary_url>`) to fill in."""
     im = step.get("install_method") if isinstance(step.get("install_method"), dict) else {}
     name = step.get("tool") or step.get("name") or im.get("name") or "tool"
     t = (im.get("type") or step.get("type") or "").strip()
@@ -316,7 +316,9 @@ def _section_build(recipe: dict, record: Optional[dict]) -> list[str]:
                 "(this is the conda/pixi env the previous step created):", ""]
         out += _fence(['export PREFIX="$CONDA_PREFIX"   '
                        '# or the absolute path of the env you just created'])
-    # the steps freeze itself replays (`non_conda_installs`), each with its install_method
+    # the steps freeze itself replays (`non_conda_installs`), each with its install_method:
+    # a raw install_step carries none (it sits under installed_packages[].install_method),
+    # so a loop over raw steps would drop every non-conda step, the operator-supplied one too
     longtail = [p for p in _freeze.non_conda_installs(recipe) if render_step_commands(p)]
     if built:
         # the transcript: the exact strings emit_dockerfile baked as `RUN <command>`
@@ -607,10 +609,13 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
              "(or the image itself, which its image digest identifies) ")
           + "and run it — byte-identical, nothing to install:", ""]
     img = record.get("image") or (recipe.get("adopt_image") or f"{name}:{ver or 'latest'}")
+    image_digest = record.get("image_digest")
+    # an adopted or authors' image is addressed by its own digest; a build here also by its inputs'
     L += _fence([f"apptainer exec --cleanenv {name}.sif <command>",
                  f"# image: {img}",
-                 f"# image digest: {record.get('image_digest') or '(not recorded)'}",
-                 f"# content digest (of the build's inputs): {content_digest or '(none)'}"])
+                 f"# image digest: {image_digest or '(not recorded)'}"]
+                + ([f"# content digest (of the build's inputs): {content_digest}"]
+                   if content_digest and content_digest != image_digest else []))
 
     # Option B — rebuild from scratch (method-specific)
     if method == "adopt":
@@ -628,8 +633,8 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
     sb = _shipped_binaries(record)
     if sb:
         L += ["**Long-tail binaries baked in** (the pieces a package manager wouldn't give you):", ""]
-        # the version the table above and the ENV report read (`_resolved_version`, the
-        # SBOM's), else the binary's own row; "version unrecorded" when neither has one
+        # the version the table above and the ENV report read, by `_resolved_version` over
+        # every source it knows; "version unrecorded" when it resolves none
         from agent.skills.env_report_helpers import (
             _pkg_index, _resolved_version, _verif_index)
         _pidx = _pkg_index(record.get("resolved_packages")
@@ -683,8 +688,9 @@ def _verify_section(method: str, content_digest: str, recipe: dict) -> list[str]
     A container-native build is rebuilt and checked against the recorded content
     digest; an adopted image is re-pulled and its registry digest compared (no
     rebuild); an authors-Dockerfile build is not bit-reproducible, so the tool declines
-    to check and the page says so instead of sending the reader to a refusal. The
-    wording follows the refusal `verify_env_recipe` composes."""
+    to check (`freeze.recipe_verify_unavailable`) and the page says so instead of
+    sending the reader to a refusal. The wording follows the refusal
+    `verify_env_recipe` composes."""
     out = ["## Verify what you rebuilt", "",
            "- **Exact bytes:** the shipped `.sif`'s sha256 is recorded in the run report / "
            "delivery manifest — compare it after transfer."]

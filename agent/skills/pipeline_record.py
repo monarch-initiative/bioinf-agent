@@ -537,7 +537,7 @@ def _sheet_slot(ph: str, values: list[str], declared: Mapping, caller_named: set
 def _parse_csv(text: str) -> tuple[list[str], list[dict[str, str]]]:
     import csv
     import io
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(text.removeprefix("\ufeff")))   # a byte-order mark is not a column name
     cols = [c.strip() for c in (reader.fieldnames or [])]
     rows = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in reader]
     return cols, rows
@@ -875,7 +875,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         notes.append(f"sealed steps {unmatched_steps} match no how-to command and produce no "
                      f"how-to input; they are not part of the pipeline")
 
-    # ── artifacts: producers, consumers, observed names ────────────────────
+    # ── artifacts: who wrote each, and the names it was observed under ─────
     env_map: dict[str, dict] = {}
     for e in (spec_d.get("envs") or []):
         if isinstance(e, dict) and e.get("image_digest"):
@@ -938,13 +938,10 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             elif not steps_here:
                 # no sealed step to observe: a redirect / -o target is the producer, else a consumer
                 if re.search(r"(>\s*|-o\s+|--out\S*[= ]\s*)\{[A-Z0-9_]+\}/" + re.escape(tok), tmpl):
-                    if tok not in history:
-                        _produce(tok, ti)
+                    _produce(tok, ti)
                     observed[(ti, tok)] = []
                     notes.append(f"{tok}: producer inferred from the command text of how-to "
                                  f"command {ti + 1} (no sealed step to confirm it)")
-                elif tok in history:
-                    pass                      # consumed from an earlier command
                 else:
                     head = tmpl if len(tmpl) <= 90 else tmpl[:87] + "..."
                     raise PipelineDerivationError(

@@ -357,6 +357,23 @@ def test_an_adopt_record_anchors_on_the_registry_manifest_not_the_local_id(tmp_p
         "registry_manifest_digest — a local .Id there cannot be reproduced by anyone else")
 
 
+def test_a_daemon_whose_local_id_is_the_manifest_digest_still_pins_the_image(tmp_path, monkeypatch):
+    """Under the containerd snapshotter `.Id` IS the registry manifest digest: the image
+    is pinned all the same, never recorded as one no registry served."""
+    manifest = "sha256:" + "45" * 32
+    _mock_docker(monkeypatch, digest=manifest)
+    _mock_registry_digest(monkeypatch, manifest)
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="quay.io/biocontainers/miniprot:0.13", name="miniprot_bc", version="0.13",
+        tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    rec = list(cache.registered.values())[0]
+    assert rec["image_by_digest"] == f"quay.io/biocontainers/miniprot@{manifest}"
+    assert "adopt_pin_error" not in rec
+
+
 def test_an_unpullable_adopt_image_keeps_the_local_id_and_says_it_is_unpinnable(tmp_path, monkeypatch):
     """No registry digest means the image was never pulled from a registry. Say so — do not
     invent a pin — and do not lose the local handle BUILT needs."""

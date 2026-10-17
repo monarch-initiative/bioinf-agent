@@ -675,10 +675,9 @@ def freeze_from_image(
     # registry, so there is nothing to pin: say so rather than emit an unpullable string.
     adopt_ref = ""
     if build_method == "adopt-image":
-        # `content_digest` above already resolved the manifest digest for this image;
-        # reuse it rather than making a second registry call that could answer differently.
-        md = content_digest if content_digest != digest else ""
-        adopt_ref = f"{image.split('@', 1)[0].split(':')[0]}@{md}" if md else ""
+        # the manifest digest resolved above, reused rather than asked again; under the
+        # containerd snapshotter it equals `.Id`, and it is a pin all the same
+        adopt_ref = f"{image.split('@', 1)[0].split(':')[0]}@{_md}" if _md else ""
         if adopt_ref:
             record["image_by_digest"] = adopt_ref
         else:

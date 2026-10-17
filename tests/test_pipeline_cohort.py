@@ -206,6 +206,9 @@ class TestRefusals:
         e = _refusal(sheet_files={SHEET: "id,condition\nx,untrt\n"})
         assert e.code == "pipeline.samplesheet_slot_no_key" and "['id', 'condition']" in e.error
 
+    def test_a_trial_sheet_saved_with_a_byte_order_mark_reads_as_nextflow_reads_it(self):
+        assert _composed(sheet_files={SHEET: "\ufeff" + sheet_text()}).model_dump() == _composed().model_dump()
+
     def test_a_script_the_seal_only_excerpted_is_refused(self):
         e = _refusal(cohort=[_request(sealed_deseq2_spec(script_text=None))])
         assert e.code == "pipeline.script_not_carried" and MERGE_SCRIPT in e.error

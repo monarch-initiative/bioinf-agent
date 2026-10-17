@@ -94,8 +94,8 @@ def upload(project_name: str,
     one whose end could not be seen (a status query that failed, a cancel
     that did not take) `globus_task_unobserved` — the transfer may still be
     running server-side; resolve it with `globus_task_status`, do not
-    assume it failed. Until then, an upload to the same path is refused
-    (`upload_in_flight`).
+    assume it failed. Until then, an upload to the same path sends nothing
+    and returns `upload_in_flight` with the call that resolves it.
 
     Manifest: every call (success OR failure) writes a JSON record under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_upload_<hash>.json`
@@ -274,6 +274,13 @@ def globus_task_status(project_name: str,
     the task has SUCCEEDED, this call renames it into place (`renamed_to`)
     and the upload's receipt says it finished; when it ended otherwise,
     the receipt says it failed and an upload to that path may go again.
+    The rename is made only on the env the upload went to (another env is
+    refused, `task_other_env`, naming the call). When the rename does not
+    answer as made, what is at each name decides: the partial still there
+    and the destination free keeps the hold (call again); the destination
+    written meanwhile is `task_rename_blocked` (nothing replaced, the bytes
+    stay at the partial); the partial gone and the destination there is
+    `task_rename_unconfirmed`; both gone clears the way to upload again.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.

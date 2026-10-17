@@ -167,6 +167,8 @@ def test_repeated_supersede_never_collides(tmp_path):
     _write(_env(), _spec(content_digest="cd-C", image_digest="sha256:C"))
     assert workspace.sealed_workflow_names() == ["wf1"]
     assert workspace.sealed_workflow_path("wf1") == _env() / "wf1.workflow.yaml"
+    # and in another environments zone (a re-render script's --dir), the same rule
+    assert workspace.sealed_workflow_paths(_env().parent) == [_env() / "wf1.workflow.yaml"]
 
 
 def test_next_superseded_path_picks_the_first_free_integer(tmp_path):

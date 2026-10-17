@@ -399,6 +399,47 @@ class TestAdoptHappyPath:
         assert r["skipped"] is True
 
 
+class TestEarlierUploadInFlight:
+    """An earlier Globus upload of the .sif whose end was not seen holds a rebuild of
+    the local .sif it may still be reading; on another wire nothing can lift such a
+    hold, so there is none."""
+    SIF = "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif"
+
+    def _receipt(self):
+        import json
+        from agent.skills import workspace
+        d = workspace.scratch_dir() / "transfer_history" / "demo" / "2026-10-16"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "x_upload_abc.json").write_text(json.dumps({
+            "outcome": "still running", "to": f"fakehpc:{self.SIF}",
+            "globus_task_id": "33333333-3333-3333-3333-333333333333",
+            "pending_rename": {"env": "fakehpc", "from": self.SIF.replace("samtools_", ".samtools_") + ".partial",
+                               "to": self.SIF}}))
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("wire,held", [("globus", True), ("scp_head_node", False)])
+    def test_the_hold_is_only_where_globus_can_lift_it(self, tmp_path, monkeypatch, wire, held):
+        access = yaml.safe_load(_good_access(tmp_path).read_text())
+        access["compute_envs"][0]["data_transfer"] = (
+            {"type": "globus", "globus": {"local_endpoint_id": "11111111-1111-1111-1111-111111111111",
+                                          "local_endpoint_name": "laptop",
+                                          "remote_endpoint_id": "22222222-2222-2222-2222-222222222222",
+                                          "remote_endpoint_name": "hpc"}}
+            if wire == "globus" else {"type": "scp_head_node"})
+        access_path = _write_access(tmp_path, access)
+        cache = FakeEnvCache({"samtools|linux/amd64|none": _staged_record(
+            image="quay.io/biocontainers/samtools@sha256:23cda", image_digest="sha256:23cda33a3a4212587276",
+            content_digest="sha256:23cda33a3a4212587276")})
+        _install_local_build_mocks(monkeypatch, remote_exists=False)
+        self._receipt()
+        r = stage_apptainer.stage_apptainer_image(
+            project_name="demo", compute_env_name="fakehpc", freeze_request_key="samtools|linux/amd64|none",
+            env_cache=cache, access_path=str(access_path))
+        assert (r.get("code") == "stage.sif_upload_still_running") is held, r
+        if held:
+            assert "compute_env_name='fakehpc'" in r["remedy"]
+
+
 # ===========================================================================
 # BUILD mode — the locally-built .sif ships to container_upload_target,
 # NOT common_data (container-artifacts-routing), and NOTHING builds on the

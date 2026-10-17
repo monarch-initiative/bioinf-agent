@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 from agent.skills import cluster_jobs, compute_access, stage_apptainer, transfer, submit_workflow, workflow_render
+from agent.models.core_data import sha256_file
 from agent.skills.outcomes import proven, refused, broke, loop
 
 
@@ -62,29 +63,34 @@ _DEFAULT_DL_SLURM = {"time": "1-00:00:00", "mem": "4g"}
 _PROBE_TIMEOUT = 120
 
 
-#: Markers around a file's text in a probe's output.
+#: Markers around a file's text at the end of a probe's output.
 _FILE_BEGIN, _FILE_END = "BIOINF_FILE_BEGIN", "BIOINF_FILE_END"
-_SBATCH_LINE_RE = re.compile(r"(?m)^#SBATCH .*$")
+_SBATCH_LINE_RE = re.compile(r"(?m)^#SBATCH .*(?:\n|\Z)")
 
 
 def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Optional[str]) -> Optional[dict]:
     """Put `src` in the acquisition directory for its job. A re-submit finds the same
     file there and runs it again (the job resumes), once no job of the acquisition
-    is still queued or running there; a different file under that name is refused,
-    never overwritten. Returns the failure, or None."""
+    is still queued or running there; a different file under that name (by sha256)
+    is refused, never overwritten. Returns the failure, or None."""
     remote = f"{acq_dir}/{src.name}"
     up = transfer.upload(project_name=transfer.AD_HOC_PROJECT_NAME, compute_env_name=compute_env,
                          local_path=str(src), remote_abs_path=remote,
                          access_path=str(Path(access_path)) if access_path else None, timeout=600)
     if up.get("code") == "transfer.remote_exists":
         from agent.skills.snapshot import _ssh_argv
-        script = (f"echo {_FILE_BEGIN}; cat {shlex.quote(remote)}; echo; echo {_FILE_END}; "
-                  + cluster_jobs.jobs_in_dir_sh(acq_dir))
+        q = shlex.quote(remote)
+        # the file's text comes last, so no line of it is read as the scheduler's or the hash
+        script = (cluster_jobs.jobs_in_dir_sh(acq_dir) + "; "
+                  f"echo SHA=$( (sha256sum {q} 2>/dev/null || shasum -a 256 {q}) | cut -d' ' -f1); "
+                  f"echo {_FILE_BEGIN}; cat {q}; echo; echo {_FILE_END}")
         try:
+            # bytes, split on \n alone: a line keeps a \r the file has
             res = subprocess.run(_ssh_argv(env, f"bash -lc {shlex.quote(script)}"),
-                                 capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
-            lines = (res.stdout or "").splitlines()
-            said_ssh = (f"ssh rc={res.returncode}: {(res.stderr or '').strip()[:200]}"
+                                 capture_output=True, timeout=_PROBE_TIMEOUT)
+            lines = (res.stdout or b"").decode("utf-8", "replace").split("\n")
+            said_ssh = (f"ssh rc={res.returncode}: "
+                        f"{(res.stderr or b'').decode('utf-8', 'replace').strip()[:200]}"
                         if res.returncode != 0 else "")
         except subprocess.TimeoutExpired:
             lines, said_ssh = [], "ssh timed out"
@@ -93,9 +99,10 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
                 error=f"could not read {remote} and the scheduler's jobs in {acq_dir} "
                       f"({said_ssh or 'the probe printed no answer'}); a re-submit is not sent unchecked",
                 remedy="submit again once ssh to the cluster answers")
-        a, b = lines.index(_FILE_BEGIN), lines.index(_FILE_END)
-        there = "\n".join(lines[a + 1:b]).strip()
-        live, said = cluster_jobs.jobs_in_dir(lines[b + 1:])
+        a, b = lines.index(_FILE_BEGIN), len(lines) - 1 - lines[::-1].index(_FILE_END)
+        there = "\n".join(lines[a + 1:b])          # the file as it is, `echo` taking off its last \n
+        sha = next((ln[len("SHA="):] for ln in lines[:a] if ln.startswith("SHA=")), "")
+        live, said = cluster_jobs.jobs_in_dir(lines[:a])
         if said is not None:
             return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
                 error=f"could not tell whether a job of this acquisition still runs in {acq_dir} "
@@ -106,10 +113,14 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
                 error=f"a job of this acquisition is still queued or running in {acq_dir} ({live}); "
                       f"a second one would race it for the same files",
                 remedy="cluster_job_status on it; submit again only once it has ended")
-        mine = src.read_text().strip()
-        if there == mine:
+        if not sha:
+            return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
+                error=f"could not hash {remote} on the cluster; a re-submit is not sent unchecked",
+                remedy="submit again once sha256sum answers on the login node")
+        if sha == sha256_file(src):
             return None
-        if _SBATCH_LINE_RE.sub("", there).strip() == _SBATCH_LINE_RE.sub("", mine).strip():
+        mine = src.read_bytes().decode("utf-8", "replace")
+        if _SBATCH_LINE_RE.sub("", there) == _SBATCH_LINE_RE.sub("", mine):
             return refused("acquire.slurm_differs", acq_dir=acq_dir,
                 error=f"{remote} is this acquisition's job script with another SLURM request; "
                       f"it is never rewritten under a job that may resume from it",

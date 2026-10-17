@@ -116,7 +116,7 @@ from typing import Optional
 
 from agent.skills import compute_access
 from agent.skills.backgroundable import detached
-from agent.skills.outcomes import proven, refused, broke, loop
+from agent.skills.outcomes import proven, refused, broke, degraded, loop
 
 
 # ---------------------------------------------------------------------------
@@ -1026,8 +1026,7 @@ def _do_transfer(*, direction: str,
         # REFUSAL (intended safety behavior), not a failure. An earlier
         # upload still landing under its partial name counts as there.
         if direction == "upload":
-            inflight = (_pending_receipt(env=compute_env_name, to=normed_remote)
-                        if transport_name == "globus" else None)
+            inflight = pending_upload(env, normed_remote)
             if inflight is not None:
                 path, rec = inflight
                 tid = rec.get("globus_task_id")
@@ -1117,7 +1116,7 @@ def _do_transfer(*, direction: str,
             # see how it ended. Not a failure, and the receipt must not say one: it
             # carries the task, and for an upload the rename that completes it once
             # the task succeeds.
-            pending = ({"from": pr["partial_path"], "to": normed_remote}
+            pending = ({"env": compute_env_name, "from": pr["partial_path"], "to": normed_remote}
                        if pr.get("partial_path") else None)
             mpath = _journal(result="waiting", zone=zone,
                 transport=pr.get("provider") or transport_name,
@@ -1229,7 +1228,7 @@ def resolve_globus_task(env: dict, task_id: str) -> dict:
     its receipt names the rename that completes it. When the task has SUCCEEDED,
     that rename is made here and the receipt says the upload finished; when it
     ended otherwise, the receipt says it failed and no longer holds the
-    destination for it."""
+    destination for it. The rename is made only on the env the upload went to."""
     from agent.skills import transfer_providers
     status = transfer_providers.globus_task_status(env, task_id)
     found = _pending_receipt(task_id=task_id)
@@ -1237,7 +1236,14 @@ def resolve_globus_task(env: dict, task_id: str) -> dict:
                                                      "transfer.task_incomplete"):
         return status
     path, rec = found
-    pending = rec.pop("pending_rename")
+    pending = rec["pending_rename"]
+    if pending.get("env") != env.get("name"):
+        call = status_call(str(rec.get("project", "?")), str(pending.get("env")), task_id)
+        return refused("transfer.task_other_env", success=False, manifest=str(path), status_call=call,
+                       error=(f"Globus task {task_id} is an upload to env {pending.get('env')!r}; "
+                              f"its rename into place is made there, so nothing was changed"),
+                       remedy=call)
+    rec.pop("pending_rename")
     if status["code"] != "transfer.task_status_ok":
         # the task ended without the upload: nothing is renamed, the way is clear
         rec["outcome"] = "failed"
@@ -1253,18 +1259,7 @@ def resolve_globus_task(env: dict, task_id: str) -> dict:
     provider = transfer_providers.GlobusProvider(compute_access.get_globus_endpoints(env))
     moved = provider.rename(pending["from"], pending["to"])
     if "error" in moved:
-        there = provider.remote_exists(env=env, abs_remote_path=pending["from"], timeout=60)
-        if there.get("exists") is False:
-            # the task's bytes are gone from the partial name: the upload did not land
-            rec["outcome"] = "failed"
-            rec["reason"] = f"the task succeeded, but nothing is at {pending['from']} to rename"
-            _rewrite_receipt(path, rec)
-            return broke("transfer.task_rename_failed", success=False, manifest=str(path), **fields,
-                         error=f"{moved['error']}; nothing is at {pending['from']} any more",
-                         remedy=f"upload it again: the way to {pending['to']} is clear")
-        return broke("transfer.task_rename_failed", success=False, error=moved["error"],
-                     partial_path=pending["from"], manifest=str(path), **fields,
-                     remedy="globus_task_status again: it retries the rename")
+        return _unrenamed(provider, env, task_id, path, rec, pending, moved["error"], fields)
     rec["outcome"] = "uploaded"
     rec["summary"] = _summarize(
         outcome="uploaded", direction="upload", transport="globus",
@@ -1277,24 +1272,73 @@ def resolve_globus_task(env: dict, task_id: str) -> dict:
                   manifest=str(path), **fields)
 
 
+def _unrenamed(provider, env: dict, task_id: str, path: Path, rec: dict, pending: dict,
+               why: str, fields: dict) -> dict:
+    """A succeeded task whose rename did not answer as made, by what is at each name.
+    The receipt keeps holding the destination only while a later rename can still
+    make it: the partial is there and the destination is not, or either could not
+    be read."""
+    def at(p: str):
+        seen = provider.remote_exists(env=env, abs_remote_path=p, timeout=60)
+        return seen.get("exists"), seen.get("error")
+    (part, part_err), (dest, dest_err) = at(pending["from"]), at(pending["to"])
+    if part is None or dest is None or (part and not dest):
+        unread = "; ".join(e for e in (part_err, dest_err) if e)
+        return broke("transfer.task_rename_failed", success=False, partial_path=pending["from"],
+                     manifest=str(path), **fields, error=why + (f"; {unread}" if unread else ""),
+                     remedy="globus_task_status again: it retries the rename")
+    rec["reason"] = {
+        (False, False): f"the task succeeded, but nothing is at {pending['from']} to rename",
+        (False, True): (f"the task succeeded and {pending['to']} holds a file, but the rename "
+                        f"that would have put this upload there was not seen to complete"),
+        (True, True): (f"the task succeeded, but {pending['to']} was written while it ran; "
+                       f"this upload's bytes stay at {pending['from']} and nothing was replaced"),
+    }[(part, dest)]
+    rec["outcome"] = {(False, True): "unconfirmed", (True, True): "refused"}.get((part, dest), "failed")
+    rec["summary"] = f"Upload of {rec.get('file', '')} to {env.get('name', '?')}: {rec['reason']}."
+    _rewrite_receipt(path, rec)
+    if not part and dest:
+        return degraded("transfer.task_rename_unconfirmed", success=False, manifest=str(path),
+                        **fields, error=f"{why}; {rec['reason']}",
+                        remedy=(f"download {pending['to']} and compare it with the file uploaded, "
+                                f"if it must be this upload's bytes"))
+    if part and dest:
+        return refused("transfer.task_rename_blocked", success=False, partial_path=pending["from"],
+                       manifest=str(path), **fields, error=f"{why}; {rec['reason']}",
+                       remedy=(f"upload to another path; {pending['from']} holds this upload's "
+                               f"verified bytes, left for you to keep or remove"))
+    return broke("transfer.task_rename_failed", success=False, manifest=str(path), **fields,
+                 error=f"{why}; nothing is at {pending['from']} any more",
+                 remedy=f"upload it again: the way to {pending['to']} is clear")
+
+
 def _pending_receipt(*, task_id: Optional[str] = None, env: Optional[str] = None,
                      to: Optional[str] = None) -> Optional[tuple[Path, dict]]:
     """The receipt, under any project, of an upload whose Globus task has not been
     seen to end, and so still waits to be renamed into place: by its task, or by the
-    env and the path it goes to (its pending rename's `to`)."""
+    env and the path it goes to (its pending rename's `env` and `to`)."""
     root = _record_root() / "transfer_history"
     for p in sorted(root.glob("*/*/*.json"), key=lambda p: p.name, reverse=True):
         try:
             rec = json.loads(p.read_text())
         except (OSError, ValueError):
             continue
-        pending = rec.get("pending_rename")
+        pending = rec.get("pending_rename") if isinstance(rec, dict) else None
         if not isinstance(pending, dict):
             continue
         if (rec.get("globus_task_id") == task_id if task_id
-                else (pending.get("to") == to and str(rec.get("to", "")).startswith(f"{env}:"))):
+                else (pending.get("env"), pending.get("to")) == (env, to)):
             return p, rec
     return None
+
+
+def pending_upload(env: dict, remote_abs_path: str) -> Optional[tuple[Path, dict]]:
+    """The receipt of an earlier upload to `remote_abs_path` on `env` whose Globus
+    task has not been seen to end. Only on an env whose wire is Globus: the one wire
+    globus_task_status resolves a task on, so the only one a hold lifts on."""
+    if env.get("type") != "ssh" or compute_access.get_globus_endpoints(env) is None:
+        return None
+    return _pending_receipt(env=env.get("name"), to=_validate_remote_abs_path(remote_abs_path))
 
 
 def status_call(project_name: str, compute_env_name: str, task_id: Optional[str]) -> str:

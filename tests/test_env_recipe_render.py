@@ -514,3 +514,13 @@ def test_option_a_names_the_image_digest_not_the_inputs_checksum_as_what_to_pull
     assert "pull the image by digest" not in option_a, "a local build has nothing to pull"
     assert f"# image digest: sha256:{'82' * 32}" in option_a
     assert "# content digest (of the build's inputs): sha256:" in option_a
+
+
+def test_an_image_whose_content_digest_is_its_own_digest_names_it_once():
+    r = er.extract_recipe(None, name="seqkit", version="2.8", conda_deps=["seqkit=2.8"],
+                          primary_tools=["seqkit"], content_digest="sha256:" + "45" * 32)
+    md = R.render_recipe_markdown(r, {"image": "quay.io/biocontainers/seqkit@sha256:" + "45" * 32,
+                                      "image_digest": "sha256:" + "45" * 32})
+    option_a = md[md.index("## Option A"):md.index("## Option B")]
+    assert f"# image digest: sha256:{'45' * 32}" in option_a
+    assert "of the build's inputs" not in option_a, "an image addressed by its own digest has no separate inputs digest"

@@ -173,10 +173,11 @@ def env_cache_path() -> Path:
     return environments_dir() / ENV_CACHE_FILE
 
 
-def sealed_workflow_paths() -> list[Path]:
-    """Every live sealed workflow spec, across every env directory, sorted by name;
-    a spec a re-seal superseded is kept on disk but is not one of them."""
-    root = workspace_root() / ENVIRONMENTS
+def sealed_workflow_paths(root: Path | None = None) -> list[Path]:
+    """Every live sealed workflow spec, across every env directory of the
+    environments zone (or of `root`, another such zone), sorted by name; a spec a
+    re-seal superseded is kept on disk but is not one of them."""
+    root = Path(root) if root is not None else workspace_root() / ENVIRONMENTS
     if not root.is_dir():
         return []
     return sorted((p for p in root.glob(f"*/*{WORKFLOW_SUFFIX}")

@@ -47,10 +47,11 @@ from agent.skills.outcomes import refused, broke, loop
 from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
 
-# Fields we ask sacct for, in order. Keep this fixed — the parser
-# depends on the column ordering matching this tuple exactly.
-_SACCT_FIELDS = ("JobID", "State", "Elapsed", "ExitCode",
-                 "NodeList", "Reason", "Start", "End")
+# The fields we ask sacct for, in order, each with the key its row dict reads it
+# under: the command and the parse both read this one map.
+_SACCT_KEYS = {"JobID": "job_id", "State": "state", "Elapsed": "elapsed", "ExitCode": "exit_code",
+               "NodeList": "nodelist", "Reason": "reason", "Start": "start", "End": "end"}
+_SACCT_FIELDS = tuple(_SACCT_KEYS)
 
 # A SLURM job_id token: digits, optionally `_<task>` for array tasks.
 # Bounded at 12 digits each (longer than any cluster's actual ids).
@@ -184,9 +185,9 @@ def _sacct_rows(text: str, keys: tuple[str, ...]) -> list[dict]:
 
 
 def _parse_sacct_output(text: str) -> list[dict]:
-    """The status rows, in `_SACCT_FIELDS` order; `exit_code` keeps sacct's
+    """The status rows, keyed by `_SACCT_KEYS`; `exit_code` keeps sacct's
     `<rc>:<signal>` shape verbatim."""
-    return _sacct_rows(text, ("job_id", "state", "elapsed", "exit_code", "nodelist", "reason", "start", "end"))
+    return _sacct_rows(text, tuple(_SACCT_KEYS.values()))
 
 
 #: The longest one call waits (under the client's ~600 s stream watchdog), and how
@@ -284,7 +285,8 @@ def cluster_job_status(project_name: str,
         deadline = started + min(max(int(wait_s or 0), 0), _WAIT_CAP_S)
         # The next look starts only if one as long as the last still ends by the deadline,
         # and each of its ssh hops is held to an equal share of the time left, so a look
-        # that hangs ends by the deadline too; the last answer then stands.
+        # that hangs ends by the deadline too. The last answer then stands, as it does
+        # when a later look reads less than it did.
         while ("error" not in out and not _settled(out) and _progress(out) == mark
                and time.monotonic() + _POLL_S + look_s <= deadline):
             time.sleep(_POLL_S)
@@ -293,9 +295,12 @@ def cluster_job_status(project_name: str,
             if hop_s < 1:
                 break
             try:
-                out = _observe(env, compute_env_name, norm_id, run_dir, timeout=min(timeout, hop_s))
+                look = _observe(env, compute_env_name, norm_id, run_dir, timeout=min(timeout, hop_s))
             except subprocess.TimeoutExpired:
                 break
+            if _read_less(look, out):
+                break
+            out = look
             look_s = time.monotonic() - looked
         if wait_s and "error" not in out:
             out["waited_s"] = round(time.monotonic() - started)
@@ -354,6 +359,15 @@ def _settled(status: dict) -> bool:
     return _over(status.get("jobs") or [])
 
 
+def _read_less(look: dict, last: dict) -> bool:
+    """`look` failed to read something `last` read: the job's row, the run's records,
+    or the scheduler's state for its tasks in flight."""
+    def gaps(status: dict) -> tuple:
+        run = status.get("pipeline") or {}
+        return "error" in status, "error" in run, "scheduler_unread" in run
+    return any(now and not before for now, before in zip(gaps(look), gaps(last)))
+
+
 def _progress(status: dict) -> tuple:
     """What a wait watches for a change in: each job's state and each task's."""
     tasks = (status.get("pipeline") or {}).get("tasks") or []
@@ -386,8 +400,11 @@ def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
     script = (_SEEN_FN + f'out=$(ls -1 {q(run_dir)}/*-{job_id}.out 2>/dev/null | head -n 1); '
               f'if [ -z "$out" ]; then echo NOOUT; exit 0; fi; '
               f'echo "OUT=$out"; '
-              # a requeued manager appends its next run to the same log: the last stamp
-              f'stamp=$(grep -o "runs/[0-9_]*" "$out" | tail -n 1); echo "STAMP=$stamp"; '
+              # the stamp from the last line main.nf opens with `run records:` (a requeued
+              # manager appends its next run to the same log); a task's command echoed
+              # into the log may name other runs/ paths, never at the start of that line
+              f"stamp=$(sed -n 's|^run records: \\(runs/[0-9_][0-9_]*\\).*|\\1|p' \"$out\" | tail -n 1); "
+              f'echo "STAMP=$stamp"; '
               # `echo` ends a trace whose last line is still being written
               f'if [ -n "$stamp" ] && seen {q(run_dir)}/"$stamp"/trace.txt; then '
               f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo; echo TRACE_END; fi; '
@@ -657,7 +674,9 @@ def remote_paths_exist(env: dict, paths: list[str], *,
 # run_pipeline_step's psutil-monitor output.
 
 
-_RES_FIELDS = ("JobID", "Elapsed", "MaxRSS", "AveCPU", "TotalCPU")
+_RES_KEYS = {"JobID": "job_id", "Elapsed": "elapsed", "MaxRSS": "max_rss", "AveCPU": "ave_cpu",
+             "TotalCPU": "total_cpu"}
+_RES_FIELDS = tuple(_RES_KEYS)
 
 
 def _build_sacct_resource_cmd(job_id: str) -> str:
@@ -774,7 +793,7 @@ def cluster_job_resources(project_name: str,
                 f"{(res.stderr or '').strip()[:500]}",
                 **({"hint": hint} if hint else {}))
 
-        rows = _sacct_rows(res.stdout or "", ("job_id", "elapsed", "max_rss", "ave_cpu", "total_cpu"))
+        rows = _sacct_rows(res.stdout or "", tuple(_RES_KEYS.values()))
 
         if not rows:
             return loop("cluster.res_no_rows_retry", error=

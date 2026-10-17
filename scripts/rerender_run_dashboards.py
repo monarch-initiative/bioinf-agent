@@ -72,7 +72,7 @@ def main() -> int:
     if args.dir:
         out_dir = Path(args.dir).expanduser().resolve()
         _cache_path = out_dir / workspace.ENV_CACHE_FILE
-        specs = sorted(out_dir.glob("*/*.workflow.yaml"))
+        specs = workspace.sealed_workflow_paths(out_dir)
     else:
         out_dir = workspace.environments_dir()
         specs = workspace.sealed_workflow_paths()
