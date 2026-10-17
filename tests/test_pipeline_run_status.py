@@ -425,6 +425,31 @@ def test_a_read_the_deadline_cuts_short_leaves_the_last_whole_answer(tmp_path, m
     assert r["waited_s"] <= 540
 
 
+def test_a_scheduler_read_the_deadline_cuts_short_leaves_the_last_whole_answer(tmp_path, monkeypatch):
+    """The same for the last hop of a look, the sacct for the tasks in flight: cut short
+    by the wait, it is not reported as a scheduler that could not be read."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+
+    def slower_at_the_end(argv, **kw):
+        cmd = argv[-1]
+        in_flight = "TRACE_BEGIN" not in cmd and "sacct -j 4242 " not in cmd
+        cost = (25 if clock.now >= 1000 + 500 else 1) if in_flight else 1
+        if cost > kw["timeout"]:
+            clock.now += kw["timeout"]
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"])
+        clock.now += cost
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", slower_at_the_end)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                              access_path=_access(tmp_path))
+    assert "scheduler_unread" not in r["pipeline"], r["pipeline"]
+    assert {t["native_id"]: t["status"] for t in r["pipeline"]["tasks"]}["502"] == "PENDING"
+
+
 class _Phased(_Cluster):
     """The first look: task 501 done. Every later look: 502 failed too, and the sacct
     for the tasks still in flight fails, or with `ssh_dies` the manager's row cannot

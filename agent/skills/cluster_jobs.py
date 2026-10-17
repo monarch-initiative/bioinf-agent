@@ -307,8 +307,9 @@ def cluster_job_status(project_name: str,
 
 def _hop_s(timeout: int, deadline: Optional[float]) -> int:
     """One ssh hop's timeout: the call's own, held to the time left before a wait's
-    deadline when there is one. A hop that times out under less than its own
-    `timeout` was cut short by the wait, not by the cluster: it raises."""
+    deadline when there is one. A hop held to less than its own `timeout` that
+    times out was cut short by the wait, not by the cluster: it raises, and the
+    wait keeps its last answer (the next call reads what this look did not)."""
     if deadline is None:
         return timeout
     return max(1, min(timeout, int(deadline - time.monotonic())))
@@ -425,17 +426,18 @@ def _in_flight(env: dict, submitted: list[str], finished: set, *,
         return [], ""
     rows: dict = {}
     unread = ""
+    hop = _hop_s(timeout, deadline)
     try:
         res = subprocess.run(_ssh_argv(env, _build_sacct_cmd(",".join(live))),
-                             capture_output=True, text=True, timeout=_hop_s(timeout, deadline))
+                             capture_output=True, text=True, timeout=hop)
         if res.returncode == 0:
             rows = {r["job_id"]: r for r in _parse_sacct_output(res.stdout)}
         else:
             unread = f"sacct for the tasks in flight failed (rc={res.returncode}): {(res.stderr or '').strip()[:200]}"
-    except subprocess.TimeoutExpired as e:
-        if e.timeout < timeout:
+    except subprocess.TimeoutExpired:
+        if hop < timeout:
             raise
-        unread = f"sacct for the tasks in flight timed out after {e.timeout}s"
+        unread = f"sacct for the tasks in flight timed out after {timeout}s"
     tasks = []
     for jid, task in live.items():
         row = rows.get(jid, {})
@@ -528,13 +530,14 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
     such beside the manager's SLURM row; only a hop a wait's deadline cut short
     raises (`_hop_s`)."""
     argv = _ssh_argv(env, _build_pipeline_run_cmd(run_dir, job_id))
+    hop = _hop_s(timeout, deadline)
     try:
-        res = subprocess.run(argv, capture_output=True, text=True, timeout=_hop_s(timeout, deadline))
-    except subprocess.TimeoutExpired as e:
-        if e.timeout < timeout:
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=hop)
+    except subprocess.TimeoutExpired:
+        if hop < timeout:
             raise
         return broke("cluster.run_records_timeout", run_dir=run_dir,
-                     error=f"reading the run records timed out after {e.timeout}s")
+                     error=f"reading the run records timed out after {timeout}s")
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
         return broke("cluster.run_records_ssh_failed", run_dir=run_dir,
