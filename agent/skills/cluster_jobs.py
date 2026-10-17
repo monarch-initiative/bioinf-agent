@@ -283,8 +283,9 @@ def cluster_job_status(project_name: str,
         deadline = started + min(max(int(wait_s or 0), 0), _WAIT_CAP_S)
         # The next look starts only if one as long as the last still ends by the deadline,
         # and each of its ssh hops is held to the time left, so a look that hangs ends by
-        # the deadline too. A hop the deadline cuts short leaves the last answer standing;
-        # a read that runs out its own timeout is reported in the answer.
+        # the deadline too. A hop the deadline cuts short leaves the last answer standing,
+        # as does a later look's own sacct row timing out; the run's records or its tasks
+        # in flight running out their own timeout are reported in the answer.
         while ("error" not in out and not _settled(out) and _progress(out) == mark
                and time.monotonic() + _POLL_S + look_s <= deadline):
             time.sleep(_POLL_S)
@@ -301,15 +302,16 @@ def cluster_job_status(project_name: str,
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
         return refused("cluster.status_bad_arg", error=f"{type(e).__name__}: {e}")
-    except subprocess.TimeoutExpired as e:
-        return broke("cluster.status_timeout", error=f"sacct timed out after {e.timeout}s")
+    except subprocess.TimeoutExpired:
+        # only a first look's own sacct row reaches here, and it had its whole timeout
+        return broke("cluster.status_timeout", error=f"sacct timed out after {timeout}s")
 
 
 def _hop_s(timeout: int, deadline: Optional[float]) -> int:
     """One ssh hop's timeout: the call's own, held to the time left before a wait's
     deadline when there is one. A hop held to less than its own `timeout` that
     times out was cut short by the wait, not by the cluster: it raises, and the
-    wait keeps its last answer (the next call reads what this look did not)."""
+    wait keeps its last answer, setting aside what this look had read so far."""
     if deadline is None:
         return timeout
     return max(1, min(timeout, int(deadline - time.monotonic())))

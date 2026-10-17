@@ -8,6 +8,8 @@ built only from validated tokens.
 """
 from __future__ import annotations
 
+import pytest
+
 from agent.skills import cluster_jobs as cj
 
 TRACE = "\n".join([
@@ -410,10 +412,13 @@ def test_a_read_the_deadline_cuts_short_leaves_the_last_whole_answer(tmp_path, m
     monkeypatch.setattr(cj.time, "sleep", clock.sleep)
     cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
 
+    cut = []
+
     def slower_at_the_end(argv, **kw):
         records = "TRACE_BEGIN" in argv[-1]
         cost = (25 if clock.now >= 1000 + 500 else 8) if records else 1
         if cost > kw["timeout"]:
+            cut.append(kw["timeout"])
             clock.now += kw["timeout"]
             raise subprocess.TimeoutExpired("ssh", kw["timeout"])
         clock.now += cost
@@ -421,6 +426,7 @@ def test_a_read_the_deadline_cuts_short_leaves_the_last_whole_answer(tmp_path, m
     monkeypatch.setattr(subprocess, "run", slower_at_the_end)
     r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
                               access_path=_access(tmp_path))
+    assert cut and cut[-1] < 60, "the records read was cut short by the wait"
     assert "error" not in r["pipeline"] and r["pipeline"]["verdict"] == "running", r["pipeline"]
     assert r["waited_s"] <= 540
 
@@ -434,11 +440,14 @@ def test_a_scheduler_read_the_deadline_cuts_short_leaves_the_last_whole_answer(t
     monkeypatch.setattr(cj.time, "sleep", clock.sleep)
     cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
 
+    cut = []
+
     def slower_at_the_end(argv, **kw):
         cmd = argv[-1]
         in_flight = "TRACE_BEGIN" not in cmd and "sacct -j 4242 " not in cmd
         cost = (25 if clock.now >= 1000 + 500 else 1) if in_flight else 1
         if cost > kw["timeout"]:
+            cut.append(kw["timeout"])
             clock.now += kw["timeout"]
             raise subprocess.TimeoutExpired("ssh", kw["timeout"])
         clock.now += cost
@@ -446,8 +455,34 @@ def test_a_scheduler_read_the_deadline_cuts_short_leaves_the_last_whole_answer(t
     monkeypatch.setattr(subprocess, "run", slower_at_the_end)
     r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
                               access_path=_access(tmp_path))
+    assert cut and cut[-1] < 60, "the in-flight sacct was cut short by the wait"
     assert "scheduler_unread" not in r["pipeline"], r["pipeline"]
     assert {t["native_id"]: t["status"] for t in r["pipeline"]["tasks"]}["502"] == "PENDING"
+
+
+@pytest.mark.parametrize("slow", ["records", "in_flight"])
+def test_a_first_looks_timed_out_read_is_in_its_answer_however_the_timeout_says_it(
+        tmp_path, monkeypatch, slow):
+    """A first look has no deadline: every hop has its whole timeout, so a read that runs
+    out is the cluster's, reported in the answer. `communicate()` may raise with the time
+    remaining rather than the timeout passed (a child whose pipes closed first)."""
+    import subprocess
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+
+    def times_out(argv, **kw):
+        cmd = argv[-1]
+        kind = "records" if "TRACE_BEGIN" in cmd else "manager" if "sacct -j 4242 " in cmd else "in_flight"
+        if kind == slow:
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"] - 0.01)
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", times_out)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", access_path=_access(tmp_path))
+    assert r.get("code") != "cluster.status_timeout" and r["jobs"], r
+    if slow == "records":
+        assert r["pipeline"]["code"] == "cluster.run_records_timeout"
+        assert "timed out after 60s" in r["pipeline"]["error"]
+    else:
+        assert "timed out after 60s" in r["pipeline"]["scheduler_unread"]
 
 
 class _Phased(_Cluster):
