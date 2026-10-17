@@ -218,6 +218,13 @@ def test_coverage_states_what_it_could_not_read():
     assert "unrecognised (b)" in cov.detail
 
 
+def test_a_long_unrecognised_list_says_how_many_it_left_out():
+    cov, _ = EH._clause_license(_rec(
+        [{"name": f"p{i}", "version": "1", "kind": "pypi", "license": ""} for i in range(9)],
+        redistributable=True))
+    assert "9 unrecognised (p0, p1, p2, p3, p4, and 4 more)" in cov.detail
+
+
 def test_a_record_with_no_closure_says_so():
     cov, _ = EH._clause_license(_rec([], redistributable=True))
     assert "no conda/pip closure" in cov.detail

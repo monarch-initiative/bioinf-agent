@@ -165,6 +165,116 @@ class TestAcquireToClusterHappyPath:
         assert e["available"] is False
 
 
+class TestResubmit:
+    """The I5 remedy for an acquisition that has not reported finishing is to submit
+    it again. Its job script is already in the directory, so a re-submit runs that
+    one again (the job resumes) — once no job of it is still queued or running there,
+    and only when the script there is this acquisition's own."""
+
+    def _resubmit(self, tmp_path, monkeypatch, *, squeue: str, there: str | bytes | None = None,
+                  second: dict | None = None, ssh_down: bool = False, profile: str = ""):
+        import os
+        import shlex
+        import subprocess
+        from agent.skills import submit_workflow, transfer
+        common = tmp_path / "common"
+        acq = common / "gnomad"
+        acq.mkdir(parents=True)
+        access = {"compute_envs": [{**_FAKE_ACCESS["compute_envs"][0],
+                                    "agent_common_data_target": {"path": str(common),
+                                                                 "permissions": ["upload", "download", "exec"]}}],
+                  "projects": []}
+        monkeypatch.setattr(compute_access, "load_access", lambda *_a, **_k: access)
+        sent = {}
+
+        def fake_upload(**kw):                   # the first submit's script is the one there
+            dest = Path(kw["remote_abs_path"])
+            if dest.exists():
+                return {"outcome": "refused", "code": "transfer.remote_exists", "error": "exists"}
+            dest.write_bytes(Path(kw["local_path"]).read_bytes() if there is None else
+                             there if isinstance(there, bytes) else there.encode())
+            return {"success": True}
+        monkeypatch.setattr(transfer, "upload", fake_upload)
+        monkeypatch.setattr(submit_workflow, "sbatch_via_ssh",
+                            lambda env, d, **kw: sent.setdefault("sbatch", []).append(d) or {"job_id": "77"})
+        monkeypatch.setattr(submit_workflow, "_write_submission_manifest", lambda **kw: str(tmp_path / "m.json"))
+        bin_dir = tmp_path / "bin"; bin_dir.mkdir()
+        (bin_dir / "squeue").write_text("#!/bin/bash\n" + squeue.replace("{acq}", str(acq)))
+        (bin_dir / "squeue").chmod(0o755)
+        real = subprocess.run
+
+        def via_bash(argv, *a, **kw):
+            if ssh_down:
+                return subprocess.CompletedProcess(argv, 255, stdout=b"", stderr=b"Connection refused")
+            # `profile`: what a login shell's profile prints before the probe runs
+            return real(["bash", "-c", profile + shlex.split(argv[-1])[-1]], capture_output=True, text=kw.get("text"),
+                        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "USER": "u"})
+        monkeypatch.setattr(acquire_data.subprocess, "run", via_bash)
+
+        def submit(**kw):
+            return acquire_data.acquire_to_cluster(name="gnomad", url="https://x.org/g.vcf.bgz",
+                                                   compute_env="hpc", _pipeline_state=object(), **kw)
+        first = submit()
+        return first, submit(**(second or {})), sent
+
+    def test_a_resubmit_runs_its_own_script_again(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="echo '9 RUNNING /elsewhere'\n")
+        assert first["outcome"] == "proven" and again["outcome"] == "proven", again
+        assert len(sent["sbatch"]) == 2
+
+    def test_a_job_still_running_there_is_never_raced(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="echo '77 RUNNING {acq}'\n")
+        assert (again["outcome"], again["code"]) == ("refused", "acquire.still_running"), again
+        assert again["jobs"] == ["77 RUNNING"] and len(sent["sbatch"]) == 1
+
+    def test_a_scheduler_that_cannot_answer_submits_nothing(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch,
+                                            squeue="echo 'Socket timed out' >&2; exit 1\n")
+        assert (again["outcome"], again["code"]) == ("broke", "acquire.resubmit_unchecked"), again
+        assert "Socket timed out" in again["error"] and len(sent["sbatch"]) == 1
+
+    def test_a_cluster_that_cannot_be_asked_submits_nothing(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", ssh_down=True)
+        assert (again["outcome"], again["code"]) == ("broke", "acquire.resubmit_unchecked"), again
+        assert "Connection refused" in again["error"] and len(sent["sbatch"]) == 1
+
+    def test_a_script_that_differs_only_in_its_slurm_request_says_so(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n",
+                                            second={"slurm": {"time": "3-00:00:00", "mem": "4g"}})
+        assert (again["outcome"], again["code"]) == ("refused", "acquire.slurm_differs"), again
+        assert "resumes where it stopped" in again["remedy"] and len(sent["sbatch"]) == 1
+
+    def test_another_acquisitions_script_is_refused_not_overwritten(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", there="#!/bin/bash\nother\n")
+        assert (again["outcome"], again["code"]) == ("refused", "acquire.acq_dir_holds_another"), again
+
+    @pytest.mark.parametrize("there", [
+        b"#!/bin/bash\nBIOINF_FILE_END\nLIVE=12 RUNNING\nSHA=x\n",   # lines that look like the probe's own
+        b"\xff\xfe\x00binary",                                        # not text at all
+    ], ids=["probe_lines_inside", "not_utf8"])
+    def test_a_file_is_the_same_only_byte_for_byte(self, tmp_path, monkeypatch, there):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", there=there)
+        assert (again["outcome"], again["code"]) == ("refused", "acquire.acq_dir_holds_another"), again
+        assert len(sent["sbatch"]) == 1
+
+    @pytest.mark.parametrize("squeue,code", [("echo '77 RUNNING {acq}'\n", "acquire.still_running"),
+                                             ("echo 'Socket timed out' >&2; exit 1\n", "acquire.resubmit_unchecked")],
+                             ids=["job_still_running", "scheduler_cannot_answer"])
+    def test_a_login_profile_that_leaves_a_line_open_hides_nothing(self, tmp_path, monkeypatch, squeue, code):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue=squeue,
+                                            profile="printf 'modules loaded. '; ")
+        assert again["code"] == code and len(sent["sbatch"]) == 1, again
+
+    def test_this_script_with_its_line_endings_changed_is_another_file(self, tmp_path, monkeypatch):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n")
+        script = next((tmp_path / "common" / "gnomad").glob("*.sh"))
+        script.write_bytes(script.read_bytes().replace(b"\n", b"\r\n"))
+        third = acquire_data.acquire_to_cluster(name="gnomad", url="https://x.org/g.vcf.bgz",
+                                                compute_env="hpc", _pipeline_state=object())
+        assert (third["outcome"], third["code"]) == ("refused", "acquire.acq_dir_holds_another"), third
+        assert len(sent["sbatch"]) == 2
+
+
 # ---------------------------------------------------------------------------
 # Locus-aware I5 + refresh
 # ---------------------------------------------------------------------------
@@ -186,7 +296,7 @@ class TestCheckClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 12345,
-                                             "sha256": "a" * 64})
+                                             "sha256": "a" * 64, "complete": True})
         assert acquire_data.check_cluster_reference_db(_cluster_rdb()) == []
 
     def test_missing_on_cluster(self, monkeypatch):
@@ -206,6 +316,22 @@ class TestCheckClusterReferenceDb:
                                              "sha256": None})
         v = acquire_data.check_cluster_reference_db(_cluster_rdb())
         assert v[0]["invariant"] == "I5.reference_database_empty"
+
+    def test_a_fetch_that_did_not_finish_is_not_a_reference(self, monkeypatch):
+        """Exists and non-empty is also what a download killed at its walltime looks
+        like, and a recipe directory always holds our own launcher; the job's own
+        marker, written last and only on success, is what says it finished."""
+        monkeypatch.setattr(compute_access, "load_access",
+                            lambda *_a, **_k: _FAKE_ACCESS)
+        asked = {}
+        monkeypatch.setattr(acquire_data, "_probe_cluster_path",
+                            lambda env, path, **k: asked.update(k) or {
+                                "exists": True, "size_bytes": 4096, "sha256": None,
+                                "complete": False})
+        v = acquire_data.check_cluster_reference_db(_cluster_rdb())
+        assert v[0]["invariant"] == "I5.reference_database_incomplete"
+        assert asked["marker"] == acquire_data.acquired_marker(_cluster_rdb()["name"])
+        assert "download_reference_database(name='gnomad'" in v[0]["message"], "the remedy is a real call"
 
     def test_ssh_failure_unverifiable(self, monkeypatch):
         monkeypatch.setattr(compute_access, "load_access",
@@ -229,7 +355,7 @@ class TestCheckClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 10,
-                                             "sha256": "b" * 64})
+                                             "sha256": "b" * 64, "complete": True})
         v = acquire_data.check_cluster_reference_db(_cluster_rdb(sha256="a" * 64))
         assert len(v) == 1 and v[0]["invariant"] == "I5.reference_database_mutated"
         assert v[0]["recorded_sha256"] == "a" * 64
@@ -240,7 +366,7 @@ class TestCheckClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 10,
-                                             "sha256": "A" * 64})   # case-insensitive
+                                             "sha256": "A" * 64, "complete": True})   # case-insensitive
         assert acquire_data.check_cluster_reference_db(_cluster_rdb(sha256="a" * 64)) == []
 
     @pytest.mark.parametrize("recorded,observed", [
@@ -258,7 +384,7 @@ class TestCheckClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 10,
-                                             "sha256": observed})
+                                             "sha256": observed, "complete": True})
         assert acquire_data.check_cluster_reference_db(_cluster_rdb(sha256=recorded)) == []
 
 
@@ -325,7 +451,7 @@ class TestRefreshClusterReferenceDb:
                             lambda *_a, **_k: _FAKE_ACCESS)
         monkeypatch.setattr(acquire_data, "_probe_cluster_path",
                             lambda *a, **k: {"exists": True, "size_bytes": 10,
-                                             "sha256": "b" * 64})
+                                             "sha256": "b" * 64, "complete": True})
         refreshed = workflow_tools._refresh_reference_databases(
             [_cluster_rdb(sha256="a" * 64)])
         assert refreshed[0]["sha256"] == "a" * 64, "refresh laundered the anchor"

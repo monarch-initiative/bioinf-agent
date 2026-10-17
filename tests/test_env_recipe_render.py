@@ -414,11 +414,21 @@ def _authors_recipe(patches):
 
 def test_an_authors_recipe_renders_each_patch_as_file_reason_and_substitution():
     md = R.render_recipe_markdown(_authors_recipe([_PATCH]), {})
-    assert "### Patches applied to the authors' source (1)" in md
+    assert "### Patches to apply to the checkout before building (1)" in md
     assert "**1. `docker/Dockerfile`** · uv clones a git dependency from the lock file" in md
     assert "```diff\n--- find\napt-get install -y curl\n+++ replace\napt-get install -y curl git\n```" in md
     assert "sha256 before `aaaaaaaaaaaaaaaaaaa…` → after `bbbbbbbbbbbbbbbbbbb…`" in md
-    assert "re-apply each one to the pinned commit before building" in md
+    assert "apply each one to the pinned commit, then build" in md
+    # a reader pasting top to bottom edits the checkout before building, never after
+    assert md.index("git checkout") < md.index("### Patches to apply") < md.index("docker build --platform")
+    assert "requested as v12.2.0" in md and "# tag" not in md
+
+
+def test_a_ref_that_is_the_commit_is_not_repeated_as_a_tag():
+    r = _authors_recipe([])
+    r["dockerfile_source"]["tag"] = "c" * 12
+    md = R.render_recipe_markdown(r, {})
+    assert "requested as" not in md and f"git checkout {'c' * 40}" in md
 
 
 def test_the_verify_section_counts_the_patches_a_rebuild_must_reapply():
@@ -430,7 +440,7 @@ def test_the_verify_section_counts_the_patches_a_rebuild_must_reapply():
 
 def test_an_authors_recipe_without_patches_renders_no_patch_block():
     md = R.render_recipe_markdown(_authors_recipe([]), {})
-    assert "Patches applied" not in md
+    assert "### Patches" not in md
     assert "re-applied" not in md and "patches=" not in md
 
 
@@ -476,3 +486,52 @@ def test_a_recipe_without_an_observed_origin_has_no_origin_row():
     r = er.extract_recipe(None, name="x", conda_deps=["x"], primary_tools=["x"])
     assert "image_origin" not in r, "an unobserved origin is absent, never blanked"
     assert "Image origin" not in R.render_recipe_markdown(r, {})
+
+
+def test_a_locked_build_is_materialized_from_its_lock_even_with_named_specs():
+    """The build ran `pixi install --locked`; a `conda create` re-solve under a label
+    saying "pinned by the lockfile" would contradict itself."""
+    r = er.extract_recipe(None, name="counts", version="1", conda_deps=["subread=2.0.6"],
+                          primary_tools=["featureCounts"], content_digest="sha256:" + "ab" * 32,
+                          conda_lock={"pixi.toml": "x", "pixi.lock": "y"})
+    md = R.render_recipe_markdown(r, {})
+    assert "pixi install --locked" in md and "conda create -y" not in md
+    assert "the specs asked for: `subread=2.0.6`" in md
+
+
+def test_steps_are_numbered_in_the_order_they_appear():
+    r = er.extract_recipe(None, name="counts", version="1", conda_deps=["subread=2.0.6"],
+                          primary_tools=["featureCounts"], content_digest="sha256:" + "ab" * 32)
+    md = R.render_recipe_markdown(r, {})
+    assert "# 1. create the conda/pip env" in md and "# 2. bake into an image" in md and "# 3." not in md
+
+
+def test_option_a_names_the_image_digest_not_the_inputs_checksum_as_what_to_pull():
+    r = er.extract_recipe(None, name="counts", version="1", conda_deps=["subread=2.0.6"],
+                          primary_tools=["featureCounts"], content_digest="sha256:" + "ab" * 32)
+    md = R.render_recipe_markdown(r, {"image": "counts:1", "image_digest": "sha256:" + "82" * 32})
+    option_a = md[md.index("## Option A"):md.index("## Option B")]
+    assert "pull the image by digest" not in option_a, "a local build has nothing to pull"
+    assert f"# image digest: sha256:{'82' * 32}" in option_a
+    assert "# content digest (of the build's inputs): sha256:" in option_a
+
+
+def test_an_image_whose_content_digest_is_its_own_digest_names_it_once():
+    r = er.extract_recipe(None, name="seqkit", version="2.8", conda_deps=["seqkit=2.8"],
+                          primary_tools=["seqkit"], content_digest="sha256:" + "45" * 32)
+    md = R.render_recipe_markdown(r, {"image": "quay.io/biocontainers/seqkit@sha256:" + "45" * 32,
+                                      "image_digest": "sha256:" + "45" * 32})
+    option_a = md[md.index("## Option A"):md.index("## Option B")]
+    assert f"# image digest: sha256:{'45' * 32}" in option_a
+    assert "of the build's inputs" not in option_a, "an image addressed by its own digest has no separate inputs digest"
+
+
+def test_an_adopted_image_whose_local_id_is_not_its_manifest_digest_names_each_for_what_it_is():
+    manifest, local_id = "sha256:" + "2e" * 32, "sha256:" + "65" * 32
+    r = er.extract_recipe(None, name="miniprot", version="0.13", conda_deps=[], primary_tools=["miniprot"],
+                          content_digest=manifest, build_method="adopt",
+                          adopt_image=f"quay.io/biocontainers/miniprot@{manifest}")
+    md = R.render_recipe_markdown(r, {"image": "quay.io/biocontainers/miniprot:0.13", "image_digest": local_id})
+    option_a = md[md.index("## Option A"):md.index("## Option B")]
+    assert f"# image digest: {local_id}" in option_a
+    assert f"# registry manifest digest: {manifest}" in option_a and "of the build's inputs" not in option_a

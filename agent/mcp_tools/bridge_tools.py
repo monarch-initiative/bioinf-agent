@@ -90,9 +90,12 @@ def upload(project_name: str,
     Wire protocol: dispatched by the env's `data_transfer.type` —
     `scp_head_node` (default) or `globus` (when configured). The call
     BLOCKS until the bytes are verified. A globus transfer past the
-    sync-wait cap returns `globus_sync_wait_exceeded` WITH its task_id —
-    the transfer keeps running server-side; resolve it with
-    `globus_task_status`, do not assume it failed.
+    sync-wait cap returns `globus_sync_wait_exceeded` WITH its task_id, and
+    one whose end could not be seen (a status query that failed, a cancel
+    that did not take) `globus_task_unobserved` — the transfer may still be
+    running server-side; resolve it with `globus_task_status`, do not
+    assume it failed. Until then, an upload to the same path sends nothing
+    and returns `upload_in_flight` with the call that resolves it.
 
     Manifest: every call (success OR failure) writes a JSON record under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_upload_<hash>.json`
@@ -259,15 +262,26 @@ def globus_task_status(project_name: str,
 
     Every successful globus upload/download records its `globus_task_id`
     in the transfer manifest, so any transfer record is a valid input.
-    Pure-read — runs ONE `globus task show <id> --format json`
-    invocation; no submission.
+    Runs `globus task show <id> --format json`; no submission.
 
     Reach for this when `upload`/`download` returned
-    `globus_sync_wait_exceeded`: we stopped waiting, but Globus did not
-    stop transferring. This answers how the task actually ended. The
+    `globus_sync_wait_exceeded` or `globus_task_unobserved`: we stopped
+    watching, but Globus may not have stopped transferring. This answers how the task actually ended. The
     outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
     ACTIVE/INACTIVE -> loop (poll again). A directory task that SUCCEEDED
     but skipped files or left symlinks behind -> broke: not a whole copy.
+    An upload lands under a hidden partial name until it is verified; when
+    the task has SUCCEEDED, this call renames it into place (`renamed_to`)
+    and the upload's receipt says it finished; when it ended otherwise,
+    the receipt says it failed and an upload to that path may go again.
+    The rename is made only on the env the upload went to (another env is
+    refused, `task_other_env`, naming the call). When the rename does not
+    answer as made, what is at each name decides: the partial still there
+    and the destination free, or either name unreadable, keeps the hold
+    (call again); the destination written meanwhile is `task_rename_blocked`
+    (nothing replaced, the bytes stay at the partial); the partial gone and
+    the destination there is `task_rename_unconfirmed`; both gone clears the
+    way to upload again.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.
@@ -286,14 +300,13 @@ def globus_task_status(project_name: str,
     files_transferred, files_skipped, symlinks, fatal_error, type, captured_at}
     on success. `status` is one of ACTIVE, INACTIVE, SUCCEEDED, FAILED.
     {"error": "..."} on failure (cli missing, auth, network)."""
-    from agent.skills import compute_access, transfer, transfer_providers
+    from agent.skills import compute_access, transfer
     from agent.skills.outcomes import refused
     try:
         access = compute_access.load_access(None)
         # _ad_hoc-aware resolve so the poll companion accepts the same
         # project name the async upload/download accepted.
-        project = transfer._get_project_or_ad_hoc(project_name, access)  # auth check
-        _ = project
+        project = transfer._get_project_or_ad_hoc(project_name, access)
         env = compute_access.get_compute_env(compute_env_name, access)
     except KeyError as e:
         # unknown project / compute_env → a clean auth failure, not a crash (C4).
@@ -303,7 +316,12 @@ def globus_task_status(project_name: str,
             FileNotFoundError) as e:
         return refused("globus_task_status.access_denied",
                        error=f"{type(e).__name__}: {e}", success=False)
-    return transfer_providers.globus_task_status(env, task_id)
+    if not any(isinstance(b, dict) and b.get("compute_env") == compute_env_name
+               for b in (project.get("compute_env_access") or [])):
+        return refused("globus_task_status.access_denied", success=False,
+                       error=f"PermissionDenied: project {project_name!r} does not "
+                             f"list compute_env {compute_env_name!r}")
+    return transfer.resolve_globus_task(env, task_id)
 
 
 @mcp.tool()
@@ -320,18 +338,21 @@ def cluster_job_status(project_name: str,
     Does not submit, cancel, or modify anything.
 
     `run_dir`: a pipeline's launch directory (what `run_production_pipeline`
-    returned). The job is then its manager, and `pipeline` reports the work:
+    returned), in a zone or directory the project may `download` from — its log
+    and trace are read back. The job is then its manager, and `pipeline` reports the work:
     every finished task from the run's trace, every task submitted and not
     finished with the scheduler's state for it (PENDING and why, RUNNING where
-    and for how long), and a verdict over the tasks.
+    and for how long), and a verdict over the tasks: succeeded, failed, running,
+    not_started (the manager is queued) or unobserved (the manager ended and left no
+    task record in run_dir — check that run_dir is where it was launched).
 
     `wait_s`: block up to that many seconds (capped at 540) until something
     changes — the job's state, or a task starting or finishing — so ONE call
     replaces a poll loop. Prefer `wait_s=300` over calling this repeatedly.
 
     Authorization: the project's `compute_envs` must list
-    `compute_env_name`. No per-directory permission needed. SLURM's
-    own ACL keeps the visibility scoped to the user's own jobs.
+    `compute_env_name`; SLURM's own ACL keeps the visibility scoped to the
+    user's own jobs. A `run_dir` must be a path the project may `download`.
 
     `job_id` must be digits with an optional `_<task>` suffix for array
     tasks (e.g. `12345`, `12345_3`). Anything else is refused BEFORE

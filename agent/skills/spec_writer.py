@@ -1485,7 +1485,7 @@ def _check_lineage_integrity(spec: dict) -> list[dict]:
     violations. Lives in the I8 tier (composition-coherence sibling) so
     check_workflow_invariants picks it up without _WORKFLOW_INVARIANT_TIERS
     edits."""
-    import hashlib as _h
+    from agent.models.core_data import sha256_file
     violations: list[dict] = []
     steps = sorted(
         [s for s in spec.get("pipeline_steps", []) or [] if isinstance(s, dict)],
@@ -1532,11 +1532,7 @@ def _check_lineage_integrity(spec: dict) -> list[dict]:
                 })
                 continue
             try:
-                h = _h.sha256()
-                with p.open("rb") as fh:
-                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                        h.update(chunk)
-                disk_sha = h.hexdigest()
+                disk_sha = sha256_file(p)
             except Exception as e:
                 violations.append({
                     "invariant": "I8.lineage_unreadable",

@@ -27,7 +27,8 @@ ENV = {"name": "cluster", "type": "ssh", "host": "h", "user": "u",
        "slurm": {"account": "acct_demo", "partition": "cpu_part"},
        "container_upload_target": {"path": "/cluster/CLAUDE_CONTAINERS/",
                                    "permissions": ["file_name_only", "upload", "download"]}}
-CACHED_ENV = {"name": "rnaseq_cli", "content_digest": "sha256:48ac8c5b25d2b66beb9e2b61cccab60c43e3072301ca6728b8a746e1751b131b"}
+CACHED_ENV = {"name": "rnaseq_cli", "content_digest": "sha256:48ac8c5b25d2b66beb9e2b61cccab60c43e3072301ca6728b8a746e1751b131b",
+              "image_digest": DIGEST}
 #: The directory, locked.
 FILES = [".pipeline/MANIFEST.sha256", ".pipeline/pipeline.yaml", "launcher.sh", "main.nf",
          "nextflow.config", "params.yaml", "pipeline.html", "samples.csv"]
@@ -98,7 +99,7 @@ class TestProven:
     def test_env_reaches_the_launcher_and_the_slurm_profiles_container(self, sealed, monkeypatch):
         """With a cluster named, the launcher carries its policy and modules, and the
         slurm profile's container is the .sif stage_apptainer_image writes: the env's
-        container zone, the cached env's name, the first 12 hex of its content digest.
+        container zone, the cached env's name, the first 12 hex of its image digest.
         params.yaml never says where the pipeline runs."""
         from agent import mcp_server as ms
         monkeypatch.setattr(compute_access, "load_access", lambda path=None: {"compute_envs": [ENV]})
@@ -106,7 +107,7 @@ class TestProven:
         monkeypatch.setattr(ms._env_cache, "lookup", lambda key: dict(CACHED_ENV))
         out = _tool(sealed_workflow=sealed, env="cluster")
         assert out["outcome"] == "proven", out
-        sif = "/cluster/CLAUDE_CONTAINERS/rnaseq_cli_48ac8c5b25d2.sif"
+        sif = f"/cluster/CLAUDE_CONTAINERS/rnaseq_cli_{DIGEST.split(':')[1][:12]}.sif"
         assert out["compute_env"] == "cluster" and out["sif"] == sif
         d = Path(out["dir"])
         launcher = (d / "launcher.sh").read_text()
@@ -116,6 +117,16 @@ class TestProven:
         assert f"container = '{sif}'" in config and f"container = '{DIGEST}'" in config
         assert "sif" not in (d / "params.yaml").read_text()
         assert sif in (d / "pipeline.html").read_text()
+
+    def test_a_cached_env_refrozen_since_the_seal_names_no_sif(self, sealed, monkeypatch):
+        """The cache holds the env's CURRENT image; when a re-freeze replaced the one the
+        seal pinned, its .sif is another image's and the slot stays empty."""
+        from agent import mcp_server as ms
+        monkeypatch.setattr(compute_access, "load_access", lambda path=None: {"compute_envs": [ENV]})
+        monkeypatch.setattr(compute_access, "get_compute_env", lambda name, access: ENV)
+        monkeypatch.setattr(ms._env_cache, "lookup", lambda key: {**CACHED_ENV, "image_digest": "sha256:" + "9" * 64})
+        out = _tool(sealed_workflow=sealed, env="cluster")
+        assert out["outcome"] == "proven" and out["sif"] is None
 
     def test_env_without_the_cached_env_leaves_the_sif_absent_not_guessed(self, sealed, monkeypatch):
         from agent import mcp_server as ms

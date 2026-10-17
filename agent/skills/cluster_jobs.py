@@ -22,8 +22,8 @@ change between SLURM versions.
 Authorization
 -------------
 project must have a `compute_env_access` entry for `compute_env_name`.
-No per-directory permission needed — we're not touching the
-filesystem. SLURM's own ACL limits visibility to the user's own jobs.
+SLURM's own ACL limits visibility to the user's own jobs. A `run_dir`, whose
+records are read, must be a path the project may `download`.
 
 Job-id input
 ------------
@@ -47,10 +47,11 @@ from agent.skills.outcomes import refused, broke, loop
 from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
 
-# Fields we ask sacct for, in order. Keep this fixed — the parser
-# depends on the column ordering matching this tuple exactly.
-_SACCT_FIELDS = ("JobID", "State", "Elapsed", "ExitCode",
-                 "NodeList", "Reason", "Start", "End")
+# The fields we ask sacct for, in order, each with the key its row dict reads it
+# under: the command and the parse both read this one map.
+_SACCT_KEYS = {"JobID": "job_id", "State": "state", "Elapsed": "elapsed", "ExitCode": "exit_code",
+               "NodeList": "nodelist", "Reason": "reason", "Start": "start", "End": "end"}
+_SACCT_FIELDS = tuple(_SACCT_KEYS)
 
 # A SLURM job_id token: digits, optionally `_<task>` for array tasks.
 # Bounded at 12 digits each (longer than any cluster's actual ids).
@@ -170,37 +171,23 @@ def _build_sacct_cmd(job_id: str) -> str:
     return f"bash -lc {shlex.quote(inner)}"
 
 
-def _parse_sacct_output(text: str) -> list[dict]:
-    """Parse pipe-delimited sacct output into a list of row-dicts.
-
-    sacct -P uses '|' as the column separator. With --noheader, each
-    non-empty line is one job (or array-task with -X) row. Empty
-    output → empty list (job not in slurmdbd yet, or never existed).
-
-    Defensively skips rows whose column count doesn't match
-    `_SACCT_FIELDS` — sacct on a misbehaving cluster could emit a
-    truncated row; we'd rather drop it than crash."""
+def _sacct_rows(text: str, keys: tuple[str, ...]) -> list[dict]:
+    """`sacct -P --noheader` output as row dicts, one per non-empty line, its `|`
+    columns named by `keys`. A row whose column count differs (a truncated line) is
+    dropped rather than misread. Empty output -> [] (job not in slurmdbd yet, or
+    never existed)."""
     rows: list[dict] = []
     for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = line.split("|")
-        if len(parts) != len(_SACCT_FIELDS):
-            continue
-        # Build a row dict with snake_case keys; sacct's exit_code is
-        # the `0:0` `<rc>:<signal>` shape — preserved verbatim.
-        rows.append({
-            "job_id":    parts[0],
-            "state":     parts[1],
-            "elapsed":   parts[2],
-            "exit_code": parts[3],
-            "nodelist":  parts[4],
-            "reason":    parts[5],
-            "start":     parts[6],
-            "end":       parts[7],
-        })
+        parts = line.strip().split("|")
+        if line.strip() and len(parts) == len(keys):
+            rows.append(dict(zip(keys, parts)))
     return rows
+
+
+def _parse_sacct_output(text: str) -> list[dict]:
+    """The status rows, keyed by `_SACCT_KEYS`; `exit_code` keeps sacct's
+    `<rc>:<signal>` shape verbatim."""
+    return _sacct_rows(text, tuple(_SACCT_KEYS.values()))
 
 
 #: The longest one call waits (under the client's ~600 s stream watchdog), and how
@@ -239,8 +226,8 @@ def cluster_job_status(project_name: str,
     per job, plus one per array-task for array jobs).
 
     Authorization: project must have a `compute_env_access` entry for
-    `compute_env_name`. No per-directory permission needed. SLURM's
-    own ACL keeps visibility scoped to the user's own jobs.
+    `compute_env_name`; SLURM's own ACL keeps visibility scoped to the
+    user's own jobs. A `run_dir` must be a path the project may `download`.
 
     Returns:
       {
@@ -282,18 +269,31 @@ def cluster_job_status(project_name: str,
         if run_dir and not _ABS_SAFE_PATH_RE.match(run_dir):
             return refused("cluster.unsafe_run_dir", error=
                 f"run_dir {run_dir!r} is not an absolute safe path (refused before ssh)")
+        if run_dir:
+            # reading a run's log and trace back is a download from that directory
+            from agent.skills import transfer
+            transfer._validate_remote_abs_path(run_dir)
+            transfer._classify_zone_and_authorize(project=project, env=env, remote_abs_path=run_dir,
+                                                  primitive_name="download")
 
         started = time.monotonic()
         out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout)
         look_s = time.monotonic() - started
         mark = _progress(out)
         deadline = started + min(max(int(wait_s or 0), 0), _WAIT_CAP_S)
-        # The next look starts only if one as long as the last still ends by the deadline.
+        # The next look starts only if one as long as the last still ends by the deadline,
+        # and each of its ssh hops is held to the time left, so a look that hangs ends by
+        # the deadline too. A hop the deadline cuts short leaves the last answer standing,
+        # as does a later look's own sacct row timing out; the run's records or its tasks
+        # in flight running out their own timeout are reported in the answer.
         while ("error" not in out and not _settled(out) and _progress(out) == mark
                and time.monotonic() + _POLL_S + look_s <= deadline):
             time.sleep(_POLL_S)
             looked = time.monotonic()
-            out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout)
+            try:
+                out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout, deadline=deadline)
+            except subprocess.TimeoutExpired:
+                break
             look_s = time.monotonic() - looked
         if wait_s and "error" not in out:
             out["waited_s"] = round(time.monotonic() - started)
@@ -302,16 +302,27 @@ def cluster_job_status(project_name: str,
     except (ValueError, compute_access.PermissionDenied,
             compute_access.ConfigError, FileNotFoundError, KeyError) as e:
         return refused("cluster.status_bad_arg", error=f"{type(e).__name__}: {e}")
-    except subprocess.TimeoutExpired as e:
-        return broke("cluster.status_timeout", error=f"sacct timed out after {e.timeout}s")
+    except subprocess.TimeoutExpired:
+        # only a first look's own sacct row reaches here, and it had its whole timeout
+        return broke("cluster.status_timeout", error=f"sacct timed out after {timeout}s")
+
+
+def _hop_s(timeout: int, deadline: Optional[float]) -> int:
+    """One ssh hop's timeout: the call's own, held to the time left before a wait's
+    deadline when there is one. A hop held to less than its own `timeout` that
+    times out was cut short by the wait, not by the cluster: it raises, and the
+    wait keeps its last answer, setting aside what this look had read so far."""
+    if deadline is None:
+        return timeout
+    return max(1, min(timeout, int(deadline - time.monotonic())))
 
 
 def _observe(env: dict, compute_env_name: str, job_id: str, run_dir: str, *,
-             timeout: int) -> dict:
+             timeout: int, deadline: Optional[float] = None) -> dict:
     """One look: the job's sacct rows, each with its verdict, and the pipeline
     run when `run_dir` is given."""
     res = subprocess.run(_ssh_argv(env, _build_sacct_cmd(job_id)),
-                         capture_output=True, text=True, timeout=timeout)
+                         capture_output=True, text=True, timeout=_hop_s(timeout, deadline))
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
         return broke("cluster.status_ssh_failed", error=
@@ -337,15 +348,19 @@ def _observe(env: dict, compute_env_name: str, job_id: str, run_dir: str, *,
         "captured_at": datetime.now(timezone.utc).isoformat(),
     }
     if run_dir:
-        out["pipeline"] = _read_pipeline_run(env, run_dir, job_id, jobs, timeout=timeout)
+        out["pipeline"] = _read_pipeline_run(env, run_dir, job_id, jobs, timeout=timeout, deadline=deadline)
     return out
+
+
+def _over(rows: list[dict]) -> bool:
+    """There are rows, and none is still running."""
+    return bool(rows) and all(r.get("verdict") != RUNNING for r in rows)
 
 
 def _settled(status: dict) -> bool:
     """Nothing more will change: every job row is over (a pipeline's manager has
     written its records by the time its job ends)."""
-    jobs = status.get("jobs") or []
-    return bool(jobs) and all(r.get("verdict") != RUNNING for r in jobs)
+    return _over(status.get("jobs") or [])
 
 
 def _progress(status: dict) -> tuple:
@@ -380,9 +395,14 @@ def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
     script = (_SEEN_FN + f'out=$(ls -1 {q(run_dir)}/*-{job_id}.out 2>/dev/null | head -n 1); '
               f'if [ -z "$out" ]; then echo NOOUT; exit 0; fi; '
               f'echo "OUT=$out"; '
-              f'stamp=$(grep -o -m1 "runs/[0-9_]*" "$out" | head -n 1); echo "STAMP=$stamp"; '
+              # the stamp from the last line main.nf opens with `run records:` (a requeued
+              # manager appends its next run to the same log); a task's command echoed
+              # into the log may name other runs/ paths, never at the start of that line
+              f"stamp=$(sed -n 's|^run records: \\(runs/[0-9_][0-9_]*\\).*|\\1|p' \"$out\" | tail -n 1); "
+              f'echo "STAMP=$stamp"; '
+              # `echo` ends a trace whose last line is still being written
               f'if [ -n "$stamp" ] && seen {q(run_dir)}/"$stamp"/trace.txt; then '
-              f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo TRACE_END; fi; '
+              f'echo TRACE_BEGIN; cat {q(run_dir)}/"$stamp"/trace.txt; echo; echo TRACE_END; fi; '
               f'if [ -n "$stamp" ] && seen {q(run_dir)}/"$stamp"/nextflow.log; then '
               f'echo SUBMITTED_BEGIN; grep -o "submitted process .* > jobId: [0-9]*; workDir: [^ ]*" '
               f'{q(run_dir)}/"$stamp"/nextflow.log; echo SUBMITTED_END; fi; exit 0')
@@ -395,7 +415,7 @@ _SUBMITTED_RE = re.compile(
 
 
 def _in_flight(env: dict, submitted: list[str], finished: set, *,
-               timeout: int) -> tuple[list[dict], str]:
+               timeout: int, deadline: Optional[float] = None) -> tuple[list[dict], str]:
     """The tasks submitted and not in the trace yet (it lists a task once it
     finishes), and why the scheduler could not be asked about them, if it could
     not. A task is PENDING (with why) or RUNNING (where, how long) as the scheduler
@@ -408,15 +428,18 @@ def _in_flight(env: dict, submitted: list[str], finished: set, *,
         return [], ""
     rows: dict = {}
     unread = ""
+    hop = _hop_s(timeout, deadline)
     try:
         res = subprocess.run(_ssh_argv(env, _build_sacct_cmd(",".join(live))),
-                             capture_output=True, text=True, timeout=timeout)
+                             capture_output=True, text=True, timeout=hop)
         if res.returncode == 0:
             rows = {r["job_id"]: r for r in _parse_sacct_output(res.stdout)}
         else:
             unread = f"sacct for the tasks in flight failed (rc={res.returncode}): {(res.stderr or '').strip()[:200]}"
-    except subprocess.TimeoutExpired as e:
-        unread = f"sacct for the tasks in flight timed out after {e.timeout}s"
+    except subprocess.TimeoutExpired:
+        if hop < timeout:
+            raise
+        unread = f"sacct for the tasks in flight timed out after {timeout}s"
     tasks = []
     for jid, task in live.items():
         row = rows.get(jid, {})
@@ -440,16 +463,18 @@ _TRACE_RECORD_RE = re.compile(r"^\d+\t")      # a record opens with its task_id
 
 
 def _parse_trace(text: str) -> list[dict]:
-    """Nextflow's tab-separated trace, by its header line. A record is the line that
-    opens with a task_id; a line that does not continues the record before it (a field
-    written over several lines), and belongs to that record's last column."""
+    """Nextflow's tab-separated trace, by its header line. When task_id is the first
+    column (the rendered config's), a record is the line that opens with a task_id and
+    a line that does not continues the record before it (a field written over several
+    lines), in its last column; under any other first column each line is a record."""
     lines = [ln for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
         return []
     header = lines[0].split("\t")
+    by_task_id = header[0] == "task_id"           # else every line is a record of its own
     records: list[str] = []
     for ln in lines[1:]:
-        if _TRACE_RECORD_RE.match(ln):
+        if not by_task_id or _TRACE_RECORD_RE.match(ln):
             records.append(ln)
         elif records:
             records[-1] += "\n" + ln.strip()
@@ -471,18 +496,27 @@ def _task_view(row: dict) -> dict:
 
 
 def _pipeline_verdict(tasks: list[dict], manager_rows: list[dict]) -> str:
-    """succeeded | failed | running | not_started — over the TASKS, with the manager
-    consulted to tell a finished run from one still submitting, and a manager that
-    died (it can no longer submit what is left) from one that finished."""
+    """succeeded | failed | running | not_started | unobserved — over the TASKS, with
+    the manager consulted to tell a finished run from one still submitting, a manager
+    that died (it can no longer submit what is left) from one that finished, and a
+    queued manager from one at work. `unobserved`: the manager ended and no task of
+    it is on record in the run directory, so nothing says what the run did; or the
+    scheduler holds no row for the manager and no task is in flight, so nothing says
+    whether the run is over."""
     statuses = [t.get("status") for t in tasks]
     if any(s == TASK_FAILED for s in statuses):
         return "failed"
-    manager_over = bool(manager_rows) and all(r.get("verdict") != RUNNING for r in manager_rows)
+    if not manager_rows:
+        return "running" if any(s not in TASK_DONE for s in statuses) else "unobserved"
+    manager_over = _over(manager_rows)
     if manager_over and any(r.get("verdict") == DIED for r in manager_rows):
         return "failed"
     if tasks and all(s in TASK_DONE for s in statuses) and manager_over:
         return "succeeded"
-    return "running" if (tasks or not manager_over) else "not_started"
+    if manager_over:
+        return "running" if tasks else "unobserved"
+    queued = all(str(r.get("state", "")).startswith("PENDING") for r in manager_rows)
+    return "not_started" if queued and not tasks else "running"
 
 
 def _block(lines: list[str], tag: str) -> list[str]:
@@ -493,15 +527,19 @@ def _block(lines: list[str], tag: str) -> list[str]:
 
 
 def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[dict], *,
-                       timeout: int) -> dict:
-    """What the run's own records say. Never raises: an unreadable run directory is
-    reported as such beside the manager's SLURM row."""
+                       timeout: int, deadline: Optional[float] = None) -> dict:
+    """What the run's own records say. An unreadable run directory is reported as
+    such beside the manager's SLURM row; only a hop a wait's deadline cut short
+    raises (`_hop_s`)."""
     argv = _ssh_argv(env, _build_pipeline_run_cmd(run_dir, job_id))
+    hop = _hop_s(timeout, deadline)
     try:
-        res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired as e:
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=hop)
+    except subprocess.TimeoutExpired:
+        if hop < timeout:
+            raise
         return broke("cluster.run_records_timeout", run_dir=run_dir,
-                     error=f"reading the run records timed out after {e.timeout}s")
+                     error=f"reading the run records timed out after {timeout}s")
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
         return broke("cluster.run_records_ssh_failed", run_dir=run_dir,
@@ -510,20 +548,57 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
                      **({"hint": hint} if hint else {}))
     lines = (res.stdout or "").splitlines()
     if "NOOUT" in lines:
-        return {"run_dir": run_dir, "verdict": "not_started", "tasks": [], "task_summary": {},
-                "note": f"no manager log (<pipeline>-{job_id}.out) in {run_dir} yet: the job has not started"}
+        verdict = _pipeline_verdict([], manager_rows)
+        note = {
+            "not_started": "the job has not started",
+            "running": "the manager job is running; its log is not visible here yet",
+            "failed": "the manager job ended without writing it: it died before Nextflow started, "
+                      "or run_dir is not the directory it was launched in",
+        }.get(verdict, "the manager job ended and left no log here: check that run_dir is "
+                       "the directory it was launched in" if manager_rows else
+                       "the scheduler holds no record of the job either: check the job id and run_dir")
+        return {"run_dir": run_dir, "verdict": verdict, "tasks": [], "task_summary": {},
+                "note": f"no manager log (<pipeline>-{job_id}.out) in {run_dir}: {note}"}
     stamp = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("STAMP=")), "")
     out_log = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("OUT=")), "")
     trace_rows = _parse_trace("\n".join(_block(lines, "TRACE")))
     in_flight, unread = _in_flight(env, _block(lines, "SUBMITTED"),
-                                   {r.get("native_id") for r in trace_rows}, timeout=timeout)
+                                   {r.get("native_id") for r in trace_rows}, timeout=timeout,
+                                   deadline=deadline)
     tasks = [_task_view(r) for r in trace_rows] + in_flight
     summary = dict(Counter(t.get("status", "") for t in tasks))
-    return {"run_dir": run_dir, "manager_log": out_log, "stamp": stamp,
+    # the verdict and the summary lead: the task list is as long as the run
+    return {"run_dir": run_dir, "verdict": _pipeline_verdict(tasks, manager_rows),
+            "task_summary": summary, "manager_log": out_log, "stamp": stamp,
             "run_records": f"{run_dir}/{stamp}" if stamp else None,
-            "task_summary": summary, "tasks": tasks,
-            "verdict": _pipeline_verdict(tasks, manager_rows),
-            **({"scheduler_unread": unread} if unread else {})}
+            **({"scheduler_unread": unread} if unread else {}), "tasks": tasks}
+
+
+# ---------------------------------------------------------------------------
+# jobs_in_dir — which of the user's jobs the scheduler still holds in a directory
+# ---------------------------------------------------------------------------
+
+def jobs_in_dir_sh(d: str) -> str:
+    """Shell that prints `LIVE=<job id> <state>` for each job of this user the
+    scheduler still holds that runs in `d` or under it, by the path as given or as
+    resolved (a link); a scheduler that cannot answer prints SQUEUE_FAILED and up to
+    three SQUEUE_ERR lines, never nothing."""
+    q = shlex.quote
+    return (f"p=$(cd {q(d)} 2>/dev/null && pwd -P); "
+            f"held=$(squeue -h -u \"$USER\" -o '%i %T %Z' 2>&1) || {{ echo SQUEUE_FAILED; "
+            f"printf '%s\\n' \"$held\" | tail -n 3 | sed 's/^/SQUEUE_ERR /'; held=; }}; "
+            f"printf '%s\\n' \"$held\" | awk -v d={q(d)} -v p=\"$p\" "
+            f"'$3 == d || index($3, d \"/\") == 1 || (p != \"\" && ($3 == p || index($3, p \"/\") == 1)) "
+            f"{{print \"LIVE=\" $1 \" \" $2}}'")
+
+
+def jobs_in_dir(lines: list[str]) -> tuple[list[str], Optional[str]]:
+    """What `jobs_in_dir_sh` printed: (the live jobs as `<id> <state>`, None), or
+    ([], what squeue said) when the scheduler could not answer."""
+    if "SQUEUE_FAILED" in lines:
+        said = " | ".join(ln[len("SQUEUE_ERR "):] for ln in lines if ln.startswith("SQUEUE_ERR "))
+        return [], said or "no message"
+    return [ln[len("LIVE="):] for ln in lines if ln.startswith("LIVE=")], None
 
 
 # ---------------------------------------------------------------------------
@@ -534,7 +609,7 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
 # stage input DATA (unlike run_step_in_container, which bind-mounts local
 # paths). So a declared input that isn't already on the cluster fails DEEP
 # inside the Nextflow run — an opaque, wasted SLURM submission. This does a
-# single ssh `test -e` batch BEFORE sbatch so the caller gets the offending
+# single ssh `seen` batch BEFORE sbatch so the caller gets the offending
 # path immediately instead. Fail-loud, no auto-staging (the user's rails say
 # where data may go; we don't invent an upload).
 
@@ -602,7 +677,9 @@ def remote_paths_exist(env: dict, paths: list[str], *,
 # run_pipeline_step's psutil-monitor output.
 
 
-_RES_FIELDS = ("JobID", "Elapsed", "MaxRSS", "AveCPU", "TotalCPU")
+_RES_KEYS = {"JobID": "job_id", "Elapsed": "elapsed", "MaxRSS": "max_rss", "AveCPU": "ave_cpu",
+             "TotalCPU": "total_cpu"}
+_RES_FIELDS = tuple(_RES_KEYS)
 
 
 def _build_sacct_resource_cmd(job_id: str) -> str:
@@ -719,21 +796,7 @@ def cluster_job_resources(project_name: str,
                 f"{(res.stderr or '').strip()[:500]}",
                 **({"hint": hint} if hint else {}))
 
-        rows = []
-        for line in (res.stdout or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split("|")
-            if len(parts) != len(_RES_FIELDS):
-                continue
-            rows.append({
-                "job_id":   parts[0],
-                "elapsed":  parts[1],
-                "max_rss":  parts[2],
-                "ave_cpu":  parts[3],
-                "total_cpu": parts[4],
-            })
+        rows = _sacct_rows(res.stdout or "", tuple(_RES_KEYS.values()))
 
         if not rows:
             return loop("cluster.res_no_rows_retry", error=

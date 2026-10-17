@@ -82,14 +82,14 @@ def _validate_workflow_dir(workflow_dir: str) -> str:
 
 
 def _parse_sbatch_parsable(stdout: str) -> Optional[str]:
-    """sbatch --parsable returns `<job_id>` or `<job_id>;<cluster_name>`
-    on stdout, nothing else. Strip whitespace, take what's before `;`,
-    validate as digits. Returns None if the shape doesn't match — the
-    caller surfaces it as an error with the raw stdout for debugging.
+    """sbatch --parsable prints `<job_id>` or `<job_id>;<cluster_name>`; a login
+    shell may print its banner above it, so the id is the LAST line. Take what is
+    before `;` and validate it as digits. Returns None if the shape doesn't match —
+    the caller surfaces it as an error with the raw stdout for debugging.
     """
     if not isinstance(stdout, str):
         return None
-    head = stdout.strip().splitlines()[0] if stdout.strip() else ""
+    head = stdout.strip().splitlines()[-1] if stdout.strip() else ""
     if not head:
         return None
     token = head.split(";", 1)[0].strip()

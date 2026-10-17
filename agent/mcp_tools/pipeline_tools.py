@@ -65,22 +65,47 @@ def _samplesheet_files(spec: Any) -> dict[str, str]:
     return out
 
 
+def _index_files(spec: Any) -> dict[str, list[str]]:
+    """`{path: [index files beside it]}` for every absolute path the sealed trials
+    bound whose directory is on this machine — read here so the derivation stays pure."""
+    from agent.models import core_data
+    from agent.skills.pipeline_record import index_candidates
+    spec_d = spec.model_dump() if hasattr(spec, "model_dump") else dict(spec)
+    trials = list(((spec_d.get("usage") or {}).get("trials")) or []) + list(core_data.usage_proven_trials(spec_d))
+    out: dict[str, list[str]] = {}
+    for t in trials:
+        for v in ((t.get("substitutions") or {}).values() if isinstance(t, dict) else []):
+            if isinstance(v, str) and v.startswith("/") and v not in out and Path(v).parent.is_dir():
+                out[v] = [sp for _, sp in index_candidates(v) if Path(sp).is_file()]
+    return out
+
+
 def _cluster_hints(env_block: dict, spec: Any) -> dict:
     """What the cluster files need from the env block and the EnvCache: the module
-    names, and — when the env has a container zone and the sealed env is in the cache —
-    the .sif path `stage_apptainer_image` writes: `<container zone>/<env name>_<12 hex
-    of the content digest>.sif`. Absent pieces stay absent; nothing is guessed."""
+    names, and — for every env the seal pins, when the env has a container zone and the
+    cache still holds that very image — the .sif path `stage_apptainer_image` writes:
+    `<container zone>/<env name>_<12 hex of the image digest>.sif`. Absent pieces stay
+    absent; nothing is guessed."""
     from agent.skills.stage_apptainer import sif_remote_path
     mods = compute_access.get_container_modules(env_block)
     modules = [v for k in ("apptainer_module", "nextflow_module") for v in [mods.get(k)] if v]
     sif_paths: dict[str, str] = {}
     env_names: dict[str, str] = {}
-    key = str(getattr(spec, "env_request_key", "") or "")
-    cached = _ms._env_cache.lookup(key) if key else None
     target = compute_access.get_container_upload_target(env_block)
-    if cached and cached.get("name"):
+    pinned = {str(e["request_key"]): e.get("image_digest") for e in (getattr(spec, "envs", None) or [])
+              if isinstance(e, dict) and e.get("request_key")}
+    main_key = str(getattr(spec, "env_request_key", "") or "")
+    if main_key:
+        pinned.setdefault(main_key, None)
+    for key, digest in pinned.items():
+        cached = _ms._env_cache.lookup(key)
+        if not (cached and cached.get("name")):
+            continue
         env_names[key] = str(cached["name"])
-        if target and target.get("path") and (cached.get("content_digest") or cached.get("image_digest")):
+        # a re-freeze since the seal is another image: its .sif is not this pipeline's
+        if digest and cached.get("image_digest") != digest:
+            continue
+        if target and target.get("path") and (cached.get("image_digest") or cached.get("content_digest")):
             sif_paths[key] = sif_remote_path(env_block, cached, key)
     return {"modules": modules, "sif_paths": sif_paths, "env_names": env_names}
 
@@ -140,7 +165,7 @@ def render_pipeline(sealed_workflow: str,
     ``shared`` as above.
 
     **Refuses** (``refused``, with a remedy) when the seal cannot support the render: no
-    how-to, no proven trial, a placeholder no trial binds, an artifact no sealed step was
+    how-to, no trial, a placeholder no trial binds, an artifact no sealed step was
     observed writing, a stage cut that mixes images, a fan-in not declared or naming an
     artifact no per-sample stage writes, a placeholder both how-tos use; and when the
     target directory holds files edited since they were rendered (``pipeline.dir_edited``;
@@ -208,6 +233,7 @@ def render_pipeline(sealed_workflow: str,
                            remedy="pass env= a compute_envs[].name from projects_access.yaml, or omit it")
 
     sheet_files = _samplesheet_files(spec)
+    index_files = _index_files(spec)
     requests: list[CohortRequest] = []
     for i, entry in enumerate(cohort or []):
         if not isinstance(entry, dict) or not entry.get("sealed_workflow") or not isinstance(entry.get("collect"), dict):
@@ -226,6 +252,7 @@ def render_pipeline(sealed_workflow: str,
             hints["sif_paths"].update(h["sif_paths"])
             hints["env_names"].update(h["env_names"])
         sheet_files.update(_samplesheet_files(cspec))
+        index_files.update(_index_files(cspec))
         requests.append(CohortRequest(
             spec=cspec, spec_path=str(cpath), spec_sha256=sha256_of(cpath),
             collect={str(k): str(v) for k, v in entry["collect"].items()},
@@ -244,7 +271,7 @@ def render_pipeline(sealed_workflow: str,
             resources=resources, env_names=hints["env_names"], sif_paths=hints["sif_paths"],
             compute_env=env or None, modules=hints["modules"],
             local_runtime=LocalRuntime(**runtime) if runtime else None,
-            samplesheet_files=sheet_files, cohort=requests or None)
+            samplesheet_files=sheet_files, index_files=index_files, cohort=requests or None)
         written = render_pipeline_dir(record, out_dir, env=env_block, overwrite=overwrite)
     except PipelineDerivationError as e:
         return refused(e.code, success=False, error=e.error, remedy=e.remedy,

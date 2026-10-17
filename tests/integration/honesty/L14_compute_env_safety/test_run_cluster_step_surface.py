@@ -1025,3 +1025,82 @@ class TestJobDeath:
             "/work/u/CLAUDE_SCRATCH/phase_b_samtools_demo/w1/out.bam"]
         # and they are NOT confused with the local copies
         assert all(p.startswith(str(tmp_path)) for p in step["detected_outputs"])
+
+
+# ---------------------------------------------------------------------------
+# A recorded output is this job's: a file an earlier attempt left where the
+# outputs land is refused before anything runs, and a declared output that never
+# arrived fails its check, so the seal refuses the step.
+# ---------------------------------------------------------------------------
+
+class TestOutputsAreThisJobs:
+
+    @staticmethod
+    def _drive(monkeypatch, tmp_path, *, download, outputs, command="samtools sort ${i} -o ${o}"):
+        from agent.skills import (cluster_jobs as _cj, transfer as _tr,
+                                   stage_apptainer as _sa, submit_workflow as _sw)
+        monkeypatch.setattr(_cj, "remote_paths_exist",
+                            lambda env, paths, **kw: {"ok": True, "checked": list(paths)})
+        monkeypatch.setattr(_sa, "stage_apptainer_image",
+                            lambda **kw: {"success": True, "sif_path": "/x.sif",
+                                          "image_digest": "sha256:x"})
+        monkeypatch.setattr(_sa, "inspect_staged_sif",
+                            lambda env, sif, **kw: {"sif_sha256": "f"*64, "inspect": {"data": {}},
+                                                    "apptainer_inspect_ok": True, "raw": ""})
+        monkeypatch.setattr(_tr, "upload", lambda **kw: {"success": True, "zone": "scratch"})
+        monkeypatch.setattr(_sw, "sbatch_via_ssh",
+                            lambda env, dir, timeout=300: {"job_id": "58025583"})
+        monkeypatch.setattr(_cj, "cluster_job_status",
+                            lambda **kw: {"jobs": [{"job_id": "58025583", "state": "COMPLETED",
+                                                    "elapsed": "00:01:00", "exit_code": "0:0",
+                                                    "nodelist": "c1", "reason": "None",
+                                                    "start": "t", "end": "t"}]})
+        monkeypatch.setattr(_tr, "download", download)
+        monkeypatch.setattr(_cj, "cluster_job_resources",
+                            lambda **kw: {"wall_seconds": 60.0, "peak_rss_mb": 1.0,
+                                          "max_cpu_percent": 1.0, "locus": "cluster"})
+        ps = _FakePipelineState()
+        r = run_cluster_step.run_step_on_cluster(
+            pipeline_id="P1", freeze_request_key="x",
+            project_name="phase_b_samtools_demo", compute_env_name="fakehpc",
+            workflow_name="w2", tool_name="samtools", command=command,
+            inputs={"i": "/work/u/p/in.bam"}, outputs=outputs,
+            download_local_dir=str(tmp_path / "downloads"),
+            apptainer_module="apptainer/1", nextflow_module="nextflow/2",
+            slurm={"time": "00:30:00", "mem": "4G", "cpus": 2},
+            poll_interval=0, max_polls=3, access_path=str(_good_access(tmp_path)),
+            _pipeline_state=ps, _validator=_FakeValidator(), _env_mgr=_FakeEnvMgr())
+        return r, ps
+
+    @staticmethod
+    def _lands(**kw):
+        Path(kw["local_path"]).write_bytes(b"made by this job")
+        return {"success": True, "local_path": kw["local_path"]}
+
+    @pytest.mark.integration
+    def test_an_earlier_attempts_file_is_refused_before_anything_runs(self, monkeypatch, tmp_path):
+        (tmp_path / "downloads").mkdir()
+        (tmp_path / "downloads" / "out.bam").write_bytes(b"from attempt 1")
+        ran = []
+        r, ps = self._drive(monkeypatch, tmp_path, outputs={"o": "out.bam"},
+                            download=lambda **kw: ran.append(kw) or self._lands(**kw))
+        assert (r["outcome"], r["code"]) == ("refused", "run_cluster.download_dir_not_fresh"), r
+        assert "out.bam" in r["error"] and ps.steps == [] and ran == []
+
+    @pytest.mark.integration
+    def test_a_declared_output_that_never_arrived_fails_its_check(self, monkeypatch, tmp_path):
+        def download(**kw):
+            if kw["local_path"].endswith("missing.txt"):
+                return {"outcome": "broke", "code": "transfer.provider_failed",
+                        "error": "remote sha256sum failed: No such file or directory"}
+            return self._lands(**kw)
+        r, ps = self._drive(monkeypatch, tmp_path, download=download,
+                            outputs={"o": "out.bam", "m": "missing.txt"},
+                            command="samtools sort ${i} -o ${o} && samtools idxstats ${o} > ${m}")
+        assert r["success"] is False and r["download_errors"], r
+        _, step = ps.steps[0]
+        assert [p.rsplit("/", 1)[1] for p in step["remote_outputs"]] == ["out.bam"], \
+            "an output nobody fetched is not known to exist at the locus"
+        failed = [v for (_, _, path, v) in ps.validations if path.endswith("missing.txt")]
+        assert failed and failed[0]["passed"] is False, "the seal (I3) must refuse this step"
+        assert failed[0]["code"] == "run_cluster.output_not_fetched"

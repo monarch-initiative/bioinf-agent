@@ -306,6 +306,15 @@ def registry_manifest_digest(ref: str) -> str:
         registry_manifest_digest(x) → "what would anyone else pull?"    (we ADOPTED it)
     Conflating them under one name is the same disease as duplicating a definition:
     one name, two meanings, and the wrong one silently in the load path."""
+    pull = registry_pull_ref(ref)
+    return pull.split("@", 1)[1] if pull else ""
+
+
+def registry_pull_ref(ref: str) -> str:
+    """The `<repo>@sha256:…` anyone can pull for the local image `ref`: the entry
+    for the repo `ref` names when it carries one, else the repo the bytes were
+    pulled from (a local retag of a pulled image is pullable only under the
+    registry's name). "" when the image carries no repo digest."""
     if not ref:
         return ""
     p = subprocess.run(
@@ -314,15 +323,11 @@ def registry_manifest_digest(ref: str) -> str:
         capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
         return ""
-    repo = ref.split("@", 1)[0].split(":")[0] if "@" in ref else ref.split(":")[0]
-    digests = [ln.strip() for ln in (p.stdout or "").splitlines() if "@sha256:" in ln]
-    # Prefer the entry for the repo we asked about; an image can carry repo digests
-    # for several repos (same bytes, mirrored), and picking another repo's digest
-    # would be a different pullable reference.
-    for d in digests:
-        if d.split("@", 1)[0] == repo:
-            return d.split("@", 1)[1]
-    return digests[0].split("@", 1)[1] if digests else ""
+    name = ref.split("@", 1)[0]
+    # a tag follows the last `:` only after the last `/`; before it, the `:` is a registry port
+    repo = name.rsplit(":", 1)[0] if name.rfind(":") > name.rfind("/") else name
+    pulls = [ln.strip() for ln in (p.stdout or "").splitlines() if "@sha256:" in ln]
+    return next((d for d in pulls if d.split("@", 1)[0] == repo), pulls[0] if pulls else "")
 
 
 # ---------------------------------------------------------------------------

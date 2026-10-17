@@ -101,6 +101,20 @@ class PipelineDerivationError(ValueError):
 # ── the record ──────────────────────────────────────────────────────────────
 
 
+class IndexFile(BaseModel):
+    """A file a tool finds beside its input by name (an index): the input's path with
+    the extension `strip` removed (or nothing removed) and `add` appended."""
+    model_config = ConfigDict(extra="forbid")
+    strip: str                                 # "" for x.bam.bai; ".bam" for x.bai
+    add: str
+
+    def beside(self, path: str) -> Optional[str]:
+        """This index's path beside `path`; None when `path` lacks the extension it replaces."""
+        if not self.strip:
+            return path + self.add
+        return path[:-len(self.strip)] + self.add if path.endswith(self.strip) else None
+
+
 class PipelineParam(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str                                  # placeholder, e.g. STRANDED
@@ -114,6 +128,7 @@ class PipelineParam(BaseModel):
     description: Optional[str]
     used_by: list[str]                         # stage names
     reason: str                                # why it was classified as it was
+    index_files: list[IndexFile]               # staged beside a path input: found beside every value the sealed run read
 
 
 class StageInput(BaseModel):
@@ -128,7 +143,7 @@ class StageInput(BaseModel):
 
 class StageOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    artifact: str                              # templated basename, or a glob when rows disagree
+    artifact: str                              # templated basename, or a glob over the input's stem
     observed: Optional[str]                    # basename observed in the sealed run (row 0), None if never observed
     directory: bool                            # the artifact is a directory the stage writes a tree into
     consumed_by: list[str]
@@ -181,12 +196,14 @@ class SamplesheetColumn(BaseModel):
     format: Optional[str]
     description: Optional[str]
     read_by: list[str]                         # stages that read the column THROUGH the samplesheet slot; [] for a bound input
+    index_files: list[IndexFile]               # staged beside every row's file (a path column)
 
 
 class Samplesheet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     columns: list[SamplesheetColumn]           # `sample` first, always
     rows: list[dict[str, str]]                 # the seal's trials — the worked example
+    rows_from: Literal["proven", "declared"]   # proven: the I4 self-test ran them; declared: it did not (a multi-env how-to)
 
 
 class PipelineDefault(BaseModel):
@@ -220,7 +237,7 @@ class CollectedInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     placeholder: str                           # the cohort how-to's input
     artifact: str                              # the per-sample artifact (templated basename), every row's copy
-    from_stage: str                            # the per-sample stage that writes it
+    from_stage: str                            # the last per-sample stage that writes it
     stage: str                                 # the cohort stage that receives them
 
 
@@ -322,7 +339,8 @@ def _template_regex(template: str, subs: Mapping[str, str], out_slots: set[str])
         text += template[pos:m.start()]
         name = m.group(1)
         if name in out_slots:
-            parts.append(re.escape(_collapse(text)))
+            # the command is matched trimmed (`_ws`), so the template's leading edge is too
+            parts.append(re.escape(_collapse(text).lstrip() if not parts else _collapse(text)))
             text = ""
             if name in groups:
                 parts.append(f"(?P={groups[name]})")
@@ -334,7 +352,8 @@ def _template_regex(template: str, subs: Mapping[str, str], out_slots: set[str])
                 raise KeyError(name)
             text += _ws(subs[name])
         pos = m.end()
-    parts.append(re.escape(_collapse(text + template[pos:])))
+    tail = _collapse(text + template[pos:])
+    parts.append(re.escape((tail.lstrip() if not parts else tail).rstrip()))
     return re.compile("".join(parts))
 
 
@@ -371,23 +390,29 @@ def _templatize(basename: str, row_subs: Mapping[str, str], value_params: list[s
     return out
 
 
-def _common_suffix_glob(names: list[str]) -> str:
-    if not names:
-        return "*"
-    suffix = names[0]
-    for n in names[1:]:
-        i = 0
-        while i < min(len(suffix), len(n)) and suffix[-1 - i] == n[-1 - i]:
-            i += 1
-        suffix = suffix[len(suffix) - i:] if i else ""
-    return "*" + suffix if suffix else "*"
+def _input_stem_glob(name: str, row_subs: Mapping[str, str], path_params: list[str],
+                     value_params: list[str]) -> Optional[str]:
+    """A file a tool names after its per-sample input (`s1_R1.fastq.gz` →
+    `s1_R1_fastqc.html`) is one artifact across rows: the longest stem of the input
+    (its name cut at a dot, `HG002.novaseq.R1` before `HG002`) that starts the file's
+    name becomes `*` (`*_fastqc.html`). None when no stem does, or when the stem is a
+    per-sample value itself: `{SAMPLE}` then names the file exactly."""
+    stems = set()
+    for ph in path_params:
+        parts = Path(str(row_subs.get(ph) or "")).name.split(".")
+        stems |= {".".join(parts[:k]) for k in range(1, len(parts))}
+    values = {str(row_subs.get(ph) or "") for ph in value_params}
+    for stem in sorted(stems, key=len, reverse=True):
+        if len(stem) >= 2 and name.startswith(stem) and name != stem:
+            return None if stem in values else "*" + name[len(stem):]
+    return None
 
 
 #: An index that replaces its file's extension rather than adding to it (GATK, Picard).
 _REPLACING_SIDECARS = {".bai": (".bam",), ".crai": (".cram",), ".dict": (".fa", ".fasta", ".fna")}
 
 
-def _sidecar_of(name: str, produced: Mapping[str, int]) -> Optional[str]:
+def _sidecar_of(name: str, produced: Mapping[str, object]) -> Optional[str]:
     """`x.bam.bai` — or `x.bai` — is a sidecar of `x.bam` when `x.bam` is a known artifact."""
     low = name.lower()
     for suf in _SIDECAR_SUFFIXES:
@@ -397,6 +422,29 @@ def _sidecar_of(name: str, produced: Mapping[str, int]) -> Optional[str]:
         if low.endswith(suf):
             return next((name[: -len(suf)] + e for e in exts if name[: -len(suf)] + e in produced), None)
     return None
+
+
+#: Index files a tool looks for beside its input, by the name it derives from it.
+_INDEX_SUFFIXES = (".bai", ".crai", ".csi", ".tbi", ".fai", ".gzi", ".idx")
+
+
+def index_candidates(path: str) -> list[tuple[IndexFile, str]]:
+    """Every index file a tool could look for beside `path`, with the path it would be at."""
+    out = [(IndexFile(strip="", add=suf), path + suf) for suf in _INDEX_SUFFIXES]
+    for suf, exts in _REPLACING_SIDECARS.items():
+        out += [(IndexFile(strip=e, add=suf), path[: -len(e)] + suf) for e in exts if path.endswith(e)]
+    return out
+
+
+def _index_files_for(values: list[str], found: Mapping[str, list[str]]) -> list[IndexFile]:
+    """The index files that sat beside EVERY value the sealed run read."""
+    if not values:
+        return []
+    keep = []
+    for ix, _ in index_candidates(values[0]):
+        if all(any(c == ix and sp in (found.get(v) or []) for c, sp in index_candidates(v)) for v in values):
+            keep.append(ix)
+    return keep
 
 
 def _observed_files(step: Mapping, out_dirs: list[str], name: str) -> list[str]:
@@ -441,13 +489,13 @@ def _thread_slot(ph: str, values: list[str], declared: Mapping, caller_named: se
     """A placeholder declared `format: threads`, as a `cpus` param: every trial must
     bind one and the same positive whole number — the stage's CPU request needs ONE
     count, and a count is what a thread flag takes. Refuses, naming the remedy, when
-    the caller tried to make it a column or a params.yaml value instead."""
+    the caller tried to make it a column, a params.yaml value or a collected input."""
     if ph in caller_named:
         raise PipelineDerivationError(
             "pipeline.threads_kind",
             f"{ph} is declared `format: {THREADS_FORMAT}`, which binds it to the stage's CPU request; "
-            f"it cannot be a samplesheet column or a params.yaml value",
-            "drop it from per_sample= / shared=, or change the how-to input's format")
+            f"it cannot be a samplesheet column, a params.yaml value or a collected input",
+            "drop it from per_sample= / shared= / collect=, or change the how-to input's format")
     bad = sorted({v for v in values if not _COUNT_RE.match(v)})
     if bad:
         raise PipelineDerivationError(
@@ -464,30 +512,32 @@ def _thread_slot(ph: str, values: list[str], declared: Mapping, caller_named: se
     return PipelineParam(
         name=ph, kind="cpus", value_kind="value", default=values[0], source="literal",
         format=declared.get("format"), description=declared.get("description"), used_by=[],
-        reason=f"declared format {THREADS_FORMAT!r}: the stage's CPU request, {values[0]} in the sealed run")
+        reason=f"declared format {THREADS_FORMAT!r}: the stage's CPU request, {values[0]} in the sealed run",
+        index_files=[])
 
 
 def _sheet_slot(ph: str, values: list[str], declared: Mapping, caller_named: set[str]) -> PipelineParam:
     """A placeholder declared `format: samplesheet`: the pipeline's own samples.csv,
     handed to the stage as a file. Every trial binds the sheet it was proven with;
     the render binds `params.samplesheet` instead. Refuses a caller who tried to make
-    it a column or a params.yaml value."""
+    it a column, a params.yaml value or a collected input."""
     if ph in caller_named:
         raise PipelineDerivationError(
             "pipeline.samplesheet_kind",
             f"{ph} is declared `format: {SAMPLESHEET_FORMAT}`, which binds it to the pipeline's own "
-            f"samplesheet; it cannot be a samplesheet column or a params.yaml value",
-            "drop it from per_sample= / shared=, or change the how-to input's format")
+            f"samplesheet; it cannot be a samplesheet column, a params.yaml value or a collected input",
+            "drop it from per_sample= / shared= / collect=, or change the how-to input's format")
     return PipelineParam(
         name=ph, kind="samplesheet", value_kind="path", default=values[0], source="usage_input",
         format=declared.get("format"), description=declared.get("description"), used_by=[],
-        reason=f"declared format {SAMPLESHEET_FORMAT!r}: the pipeline's samples.csv; the sealed run read {values[0]}")
+        reason=f"declared format {SAMPLESHEET_FORMAT!r}: the pipeline's samples.csv; the sealed run read {values[0]}",
+        index_files=[])
 
 
 def _parse_csv(text: str) -> tuple[list[str], list[dict[str, str]]]:
     import csv
     import io
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(text.removeprefix("\ufeff")))   # a byte-order mark is not a column name
     cols = [c.strip() for c in (reader.fieldnames or [])]
     rows = [{(k or "").strip(): (v or "").strip() for k, v in r.items()} for r in reader]
     return cols, rows
@@ -517,7 +567,7 @@ def _extend_sheet(sheet: Samplesheet, ph: str, csv_text: str, stage_names: list[
             continue
         sheet.columns.append(SamplesheetColumn(
             name=c, placeholder=c, value_kind="value", format=None,
-            description=None, read_by=list(stage_names)))
+            description=None, read_by=list(stage_names), index_files=[]))
         for row in sheet.rows:
             row[c] = by_sample.get(row.get("sample", ""), {}).get(c, "")
         notes.append(f"samples.csv column `{c}`: read by {', '.join(stage_names)} through {ph}; "
@@ -555,6 +605,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                            modules: Optional[list[str]] = None,
                            local_runtime: Optional[LocalRuntime] = None,
                            samplesheet_files: Optional[Mapping[str, str]] = None,
+                           index_files: Optional[Mapping[str, list[str]]] = None,
                            cohort: Optional[list[CohortRequest]] = None,
                            _collected: Optional[Mapping[str, str]] = None) -> PipelineRecord:
     """Derive the pipeline record from a sealed WorkflowSpec. Raises
@@ -562,7 +613,9 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     the render; every derivation the caller did not dictate is stated in `notes`.
 
     `samplesheet_files` is `{path: csv text}` for every samplesheet the sealed trials
-    bound to a `format: samplesheet` input — the caller reads them, this stays pure.
+    bound to a `format: samplesheet` input, and `index_files` `{path: [index files
+    found beside it]}` for the paths they bound that are on the caller's machine (see
+    `index_candidates`) — the caller reads the disk, this stays pure.
     `cohort` attaches further sealed workflows as cohort stages (see the vocabulary).
     `_collected` is the attachment's own: the cohort how-to's fan-in placeholders."""
     notes: list[str] = []
@@ -616,6 +669,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     # ── params: shared vs per-sample ───────────────────────────────────────
     per_sample_set = set(per_sample or [])
     shared_set = set(shared or [])
+    caller_named = per_sample_set | shared_set | set(collected_set)
     unknown = (per_sample_set | shared_set) - set(in_placeholders)
     if unknown:
         raise PipelineDerivationError(
@@ -650,17 +704,20 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 return "per_sample", f"bound to test_data.{key} (reads)"
         return "shared", "one trial, not a reads input"
 
+    # an index file the how-to binds as an input of its own is staged through that input
+    bound_values = {str(v) for r in rows for v in (r.get("substitutions") or {}).values()}
+    beside = {p: [f for f in fs if f not in bound_values] for p, fs in (index_files or {}).items()}
     params: list[PipelineParam] = []
     for ph in in_placeholders:
         values = [str((r.get("substitutions") or {})[ph]) for r in rows]
         v0 = values[0]
         fmt_declared = str((declared_inputs.get(ph) or {}).get("format") or "").lower()
         if fmt_declared == THREADS_FORMAT:
-            params.append(_thread_slot(ph, values, declared_inputs.get(ph) or {}, per_sample_set | shared_set))
+            params.append(_thread_slot(ph, values, declared_inputs.get(ph) or {}, caller_named))
             notes.append(f"{ph}: cpus ({params[-1].reason})")
             continue
         if fmt_declared == SAMPLESHEET_FORMAT:
-            params.append(_sheet_slot(ph, values, declared_inputs.get(ph) or {}, per_sample_set | shared_set))
+            params.append(_sheet_slot(ph, values, declared_inputs.get(ph) or {}, caller_named))
             notes.append(f"{ph}: samplesheet ({params[-1].reason})")
             continue
         if ph in collected_set:
@@ -675,7 +732,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 name=ph, kind="collected", value_kind="path", default=None, source=f"collect:{collected_set[ph]}",
                 format=di.get("format"), description=di.get("description"), used_by=[],
                 reason=f"declared collect=: every sample's {collected_set[ph]}, staged into one directory; "
-                       f"the sealed run read {v0}"))
+                       f"the sealed run read {v0}", index_files=[]))
             notes.append(f"{ph}: collected ({params[-1].reason})")
             continue
         kind, why = classify(ph)
@@ -702,11 +759,22 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                         source = f"test_data:{key}"
                         break
         di = declared_inputs.get(ph) or {}
+        indexes = _index_files_for(given, beside) if value_kind == "path" else []
+        if value_kind == "path" and index_files is not None and any(v not in index_files for v in given):
+            notes.append(f"{ph}: the sealed run's files are not on this machine, so no index file beside "
+                         f"them was looked for; a tool that finds one by name will not see it in the task")
         params.append(PipelineParam(
             name=ph, kind=kind, value_kind=value_kind,
             default=v0 if kind == "shared" else None,     # a per-sample value is a samplesheet cell
             source=source, format=di.get("format"), description=di.get("description"),
-            used_by=[], reason=why))
+            used_by=[], reason=why, index_files=indexes))
+        if value_kind == "path" and not indexes and any(beside.get(v) for v in given):
+            notes.append(f"{ph}: index files sit beside its files, but not under one name for every "
+                         f"row, so none is staged; name them alike (e.g. <file>.bai) to have them staged")
+        if indexes:
+            notes.append(f"{ph}: staged with its index file(s) "
+                         f"{', '.join(f'{ix.add} in place of {ix.strip}' if ix.strip else ix.add for ix in indexes)}, "
+                         f"found beside every file the sealed run read")
         proven = (f"; the self-test ran it with {sorted(set(values))} only"
                   if row_source == "proven" and value_kind == "value" and ph not in _SAMPLE_NAMES else "")
         notes.append(f"{ph}: {kind} ({why}){proven}")
@@ -753,8 +821,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         p.default = f"{SCRIPT_DIR}/{bn}"
         p.reason += f"; an authored script, rendered into {SCRIPT_DIR}/"
         notes.append(f"{p.name}: an authored script ({bn}), carried into {SCRIPT_DIR}/{bn}")
-    per_sample_names = [p.name for p in params if p.kind == "per_sample"]
     value_per_sample = [p.name for p in params if p.kind == "per_sample" and p.value_kind == "value"]
+    path_per_sample = [p.name for p in params if p.kind == "per_sample" and p.value_kind != "value"]
     cpus_of = {p.name: int(p.default or 0) for p in params if p.kind == "cpus"}
 
     # ── match sealed steps to (template, row) ──────────────────────────────
@@ -807,7 +875,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         notes.append(f"sealed steps {unmatched_steps} match no how-to command and produce no "
                      f"how-to input; they are not part of the pipeline")
 
-    # ── artifacts: producers, consumers, observed names ────────────────────
+    # ── artifacts: who wrote each, and the names it was observed under ─────
     env_map: dict[str, dict] = {}
     for e in (spec_d.get("envs") or []):
         if isinstance(e, dict) and e.get("image_digest"):
@@ -824,21 +892,20 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             "run each how-to command with run_step_in_container (not run_pipeline_step), "
             "then re-seal: the pipeline executes inside the images the seal pins")
 
-    produced_by: dict[str, int] = {}           # artifact -> its latest producer so far (the forward scan)
-    history: dict[str, list[int]] = {}         # artifact -> every template that wrote it, in order
+    history: dict[str, list[int]] = {}         # artifact -> every template that wrote it so far, in order
     observed: dict[tuple[int, str], list[Optional[str]]] = {}   # (template, artifact) -> per-row observed name
     directories: set[str] = set()              # artifacts observed as directories (a tree written under them)
     template_tokens: list[list[str]] = []
     template_bare: list[bool] = []
-    consumers: dict[str, list[int]] = {}
     rewrites: dict[int, list[str]] = {i: [] for i in range(len(templates))}
     template_outputs: list[list[str]] = []   # named tokens + observed-but-unnamed artifacts
 
+    def _written_before(tok: str, ti: int) -> bool:
+        return bool(history.get(tok)) and history[tok][-1] < ti
+
     def _produce(tok: str, ti: int) -> None:
-        if tok in produced_by and produced_by[tok] < ti:
+        if _written_before(tok, ti):
             rewrites[ti].append(tok)          # consumed and re-written: stage_in_copy
-            consumers.setdefault(tok, []).append(ti)
-        produced_by[tok] = ti
         if not history.get(tok) or history[tok][-1] != ti:
             history.setdefault(tok, []).append(ti)
 
@@ -866,18 +933,15 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             if wrote_it:
                 _produce(tok, ti)
                 observed[(ti, tok)] = per_row
-            elif tok in produced_by and produced_by[tok] < ti:
-                consumers.setdefault(tok, []).append(ti)
+            elif _written_before(tok, ti):
+                pass                          # consumed from an earlier command
             elif not steps_here:
                 # no sealed step to observe: a redirect / -o target is the producer, else a consumer
                 if re.search(r"(>\s*|-o\s+|--out\S*[= ]\s*)\{[A-Z0-9_]+\}/" + re.escape(tok), tmpl):
-                    if tok not in produced_by:
-                        _produce(tok, ti)
+                    _produce(tok, ti)
                     observed[(ti, tok)] = []
                     notes.append(f"{tok}: producer inferred from the command text of how-to "
                                  f"command {ti + 1} (no sealed step to confirm it)")
-                elif tok in produced_by:
-                    consumers.setdefault(tok, []).append(ti)
                 else:
                     head = tmpl if len(tmpl) <= 90 else tmpl[:87] + "..."
                     raise PipelineDerivationError(
@@ -892,10 +956,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                         "is read off the command text; or, if an earlier command writes it, name it after "
                         "that command")
             else:
-                parent = _sidecar_of(tok, produced_by)
-                if parent is not None:
-                    consumers.setdefault(tok, []).append(ti)
-                    continue
+                if _sidecar_of(tok, history) is not None:
+                    continue                  # an index beside an artifact an earlier command wrote
                 raise PipelineDerivationError(
                     "pipeline.orphan_artifact",
                     f"how-to command {ti + 1} names `{tok}` inside an output slot, but the sealed "
@@ -904,8 +966,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                     "creates it, so the next command's input has a producer")
 
         # Files the sealed run OBSERVED this command writing that the command text never
-        # names (`samtools index x.bam` writes x.bam.bai): outputs all the same, keyed by
-        # their templated basename when every row agrees on it.
+        # names (`samtools index x.bam` writes x.bam.bai, `fastqc` writes <reads>_fastqc.html):
+        # outputs all the same, keyed by their templated basename when every row agrees on it.
         if steps_here:
             named_literals: dict[int, set[str]] = {}
             for ri, s in steps_here:
@@ -923,11 +985,16 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 for obs_name, is_dir in keys_here[ri].items():
                     if obs_name in named_literals.get(ri, set()):
                         continue
-                    key = _templatize(obs_name, subs, value_per_sample)
+                    key = (_input_stem_glob(obs_name, subs, path_per_sample, value_per_sample)
+                           or _templatize(obs_name, subs, value_per_sample))
                     per_row_extra.setdefault(key, [None] * len(steps_here))
                     per_row_extra[key][[r for r, _ in steps_here].index(ri)] = obs_name
                     if is_dir:
                         directories.add(key)
+            partial = sorted(n for per_row in per_row_extra.values() if not all(per_row) for n in per_row if n)
+            if partial:
+                notes.append(f"command {ti + 1} wrote {partial[:4]}{' …' if len(partial) > 4 else ''}, which "
+                             f"not every row wrote under one name: not carried to a later stage, not published")
             for key, per_row in per_row_extra.items():
                 if not all(per_row):
                     continue                       # not every row wrote it: not an artifact
@@ -1105,18 +1172,12 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 if i in history.get(tok, []) and tok not in out_toks:
                     out_toks.append(tok)
         for tok in out_toks:
+            # The artifact is the token: as the command names it, or as every row's
+            # observed file templated to one name.
             last_i = max(i for i in st.templates if i in history[tok])
             per_row = observed.get((last_i, tok), [])
             obs0 = per_row[0] if per_row else None
-            templated = [_templatize(o, rows[ri].get("substitutions") or {}, value_per_sample)
-                         for ri, o in enumerate(per_row) if o]
-            if templated and len(set(templated)) == 1:
-                art = templated[0]
-            elif templated:
-                art = _common_suffix_glob(templated)
-                notes.append(f"{st.name}: `{tok}` is named differently per row; declared as {art!r}")
-            else:
-                art = tok
+            art = tok
             is_dir = tok in directories
             # declared when a pattern, read as the self-test reads it, names one of the files
             # the first row's step wrote as this artifact — or, unobserved, the artifact itself
@@ -1139,24 +1200,28 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                                       or _sidecar_of(kw["artifact"], declared) is not None))
     for glob in sorted({g for g, _ in declared_forms} - {kw["declared_pattern"] for _st, kw in pending}):
         notes.append(f"usage.outputs pattern {glob!r} names no output a stage writes; "
-                     + ("nothing is published for it" if declared else "every output is published"))
+                     + ("every output is published" if pending and not declared
+                        else "nothing is published for it"))
 
     # ── samplesheet: always — `sample` (the row key) first, one row per trial ──
     # The key's placeholder is the how-to's own sample identifier when it has one, so
     # the renderer binds that placeholder to the `sample` column; a how-to with no
     # identifier still gets the column (the trial's name), because every task is
     # tagged by it and every result directory named after it.
-    id_ph = next((p.name for p in params if p.kind == "per_sample" and p.name in _SAMPLE_NAMES), None)
+    # One identifier is the row key (SAMPLE when the how-to has it, so no other column
+    # can be named `sample`); any other per-sample identifier is a column of its own.
+    ids = [p.name for p in params if p.kind == "per_sample" and p.name in _SAMPLE_NAMES]
+    id_ph = "SAMPLE" if "SAMPLE" in ids else (ids[0] if ids else None)
     cols = [SamplesheetColumn(name="sample", placeholder=id_ph or "SAMPLE", value_kind="value",
                               format=None,
                               description="the row key: it tags every task and names results/<sample>/",
-                              read_by=[])]
+                              read_by=[], index_files=[])]
     for p in params:
-        if p.kind != "per_sample" or p.name in _SAMPLE_NAMES:
+        if p.kind != "per_sample" or p.name == id_ph:
             continue
         cols.append(SamplesheetColumn(name=p.name.lower(), placeholder=p.name,
                                       value_kind=p.value_kind, format=p.format,
-                                      description=p.description, read_by=[]))
+                                      description=p.description, read_by=[], index_files=p.index_files))
     srows: list[dict[str, str]] = []
     for r in rows:
         subs = r.get("substitutions") or {}
@@ -1164,7 +1229,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         for c in cols[1:]:
             row[c.name] = str(subs.get(c.placeholder, ""))
         srows.append(row)
-    sheet = Samplesheet(columns=cols, rows=srows)
+    sheet = Samplesheet(columns=cols, rows=srows, rows_from=row_source)
     for p in params:
         if p.kind != "samplesheet" or _collected is not None:
             continue                     # an attached workflow extends the PIPELINE's sheet, in _attach_cohort
@@ -1215,8 +1280,35 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         defaults=defaults, notes=notes)
     for req in (cohort or []):
         _attach_cohort(record, req, resources=resources, env_names=env_names, sif_paths=sif_paths,
-                       samplesheet_files=samplesheet_files)
+                       samplesheet_files=samplesheet_files, index_files=index_files)
+    if _collected is None:
+        _check_sheet_cells(record.samplesheet)
+        unknown = sorted(set(resources or {}) - {s.name for s in record.stages})
+        if unknown:
+            raise PipelineDerivationError(
+                "pipeline.resources_unknown_stage",
+                f"resources= names {unknown}, which no stage of this pipeline is called",
+                f"size the stages by their names: {[s.name for s in record.stages]}")
     return record
+
+
+#: What Nextflow's `splitCsv(header: true)` reads as structure, or keeps as part of a
+#: cell, in samples.csv: it does not unquote and does not trim.
+SHEET_CELL_BREAKERS = re.compile(r'[,"\r\n]|^\s|\s$')
+
+
+def _check_sheet_cells(sheet: Samplesheet) -> None:
+    """Refuse a column name or worked-example cell samples.csv cannot carry as written."""
+    for row in [{c.name: c.name for c in sheet.columns}, *sheet.rows]:
+        for col, cell in row.items():
+            if SHEET_CELL_BREAKERS.search(cell or ""):
+                raise PipelineDerivationError(
+                    "pipeline.sheet_cell_unwritable",
+                    f"samples.csv column {col!r} would hold {cell!r}; a comma, quote, line break or "
+                    f"leading/trailing space shifts or alters what Nextflow reads (it reads the "
+                    f"sheet unquoted and untrimmed)",
+                    "bind a value without them in the trials, or make the input a params.yaml "
+                    "value (shared=) when every sample uses the same one")
 
 
 # ── cohort stages: a second sealed workflow, attached ───────────────────────
@@ -1225,11 +1317,12 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
 def _attach_cohort(record: PipelineRecord, req: CohortRequest, *,
                    resources: Optional[Mapping[str, Mapping[str, Any]]],
                    env_names: Optional[Mapping[str, str]], sif_paths: Optional[Mapping[str, str]],
-                   samplesheet_files: Optional[Mapping[str, str]]) -> None:
+                   samplesheet_files: Optional[Mapping[str, str]],
+                   index_files: Optional[Mapping[str, list[str]]]) -> None:
     """Attach `req.spec` as cohort stages of `record`, in place. The cohort how-to is
     derived like any other (its own sealed steps, images, measurements, scripts), then
     composed: every stage runs once over the cohort; each `collect` input is wired to
-    the per-sample stage that writes the artifact, every row's copy; a samplesheet
+    the last per-sample stage that writes the artifact, every row's copy; a samplesheet
     slot reads the pipeline's own sheet; its params join params.yaml. Refuses, naming
     the remedy, on an undeclared fan-in, an artifact no per-sample stage writes, one
     not named after the sample (the copies would collide), or a placeholder both
@@ -1237,10 +1330,10 @@ def _attach_cohort(record: PipelineRecord, req: CohortRequest, *,
     spec = req.spec
     wf = str(spec.workflow_name)
     per_sample_stages = [s for s in record.stages if s.scope == "per_sample"]
-    produced: dict[str, str] = {}                       # templated artifact -> per-sample stage
-    for s in per_sample_stages:
+    produced: dict[str, str] = {}                       # templated artifact -> its LAST per-sample writer
+    for s in per_sample_stages:                         # in execution order: a later stage's copy wins
         for o in s.outputs:
-            produced.setdefault(o.artifact, s.name)
+            produced[o.artifact] = s.name
     value_cols = {c.placeholder for c in record.samplesheet.columns if c.value_kind == "value"}
     for ph, art in req.collect.items():
         if art not in produced:
@@ -1261,9 +1354,7 @@ def _attach_cohort(record: PipelineRecord, req: CohortRequest, *,
         stages=req.stages, stage_names=req.stage_names, shared=req.shared,
         resources=resources, env_names=env_names, sif_paths=sif_paths,
         compute_env=record.compute_env, modules=record.modules, local_runtime=None,
-        samplesheet_files=samplesheet_files, _collected=req.collect)
-    undeclared = [i.name for i in sub.params if i.name in req.collect and i.kind != "collected"]
-    assert not undeclared
+        samplesheet_files=samplesheet_files, index_files=index_files, _collected=req.collect)
     missing = sorted(set(req.collect) - {p.name for p in sub.params})
     if missing:
         raise PipelineDerivationError(
@@ -1303,6 +1394,12 @@ def _attach_cohort(record: PipelineRecord, req: CohortRequest, *,
         nm, k = s.name, 2
         while nm in used:
             nm, k = f"{s.name}_{k}", k + 1
+        if nm != s.name and ({s.name, nm} & set(resources or {})):
+            raise PipelineDerivationError(
+                "pipeline.resources_ambiguous",
+                f"stage {s.name} names a stage of both {record.sealed_workflow} and {wf}, and the "
+                f"cohort's is renamed {nm}, so resources= cannot size either by those names",
+                f"name the cohort stages apart with its stage_names=, then size each by its name")
         used.add(nm)
         rename[s.name] = nm
     cohort_names = [rename[s.name] for s in sub.stages]

@@ -144,6 +144,14 @@ def extract_recipe(draft: Optional[dict], *, name: str, conda_deps: list[str],
     }
 
 
+def requested_ref(dockerfile_source: dict) -> str:
+    """The ref an authors build was asked for (`dockerfile_source.tag`: a tag, a branch
+    or a commit), when it says more than the commit it resolved to; "" otherwise."""
+    ref = str(dockerfile_source.get("tag") or "")
+    commit = str(dockerfile_source.get("commit") or dockerfile_source.get("commit_sha") or "")
+    return "" if not ref or (commit and commit.startswith(ref)) else ref
+
+
 def rebuild_from_recipe(recipe: dict, *, engine=None,
                         build_fn: Optional[Callable[..., dict]] = None) -> dict[str, Any]:
     """Rebuild an env from its recipe ALONE (no draft/agent) and compare content_digest

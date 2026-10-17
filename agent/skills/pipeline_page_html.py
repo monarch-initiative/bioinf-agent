@@ -786,7 +786,11 @@ def _header(record: PipelineRecord) -> str:
         ("Created", _e(_created_line(record.created_at))),   # as the ENV and RUN reports print theirs
         ("Image", digests),
         ("Stages", f"{n_st} in execution order: " + " → ".join(stage_word(s) for s in _ordered(record))),
-        ("Samples", f"{rows_word} in <code>samples.csv</code> — the sealed run's own; replace them with yours"),
+        ("Samples", f"{rows_word} in <code>samples.csv</code> — "
+                    + ("the sealed run's own" if record.samplesheet.rows_from == "proven" else
+                       '<span class="warn">the values the how-to was declared with; its self-test did '
+                       'not run on them</span>')
+                    + "; replace them with yours"),
     ]
     if record.scripts:
         rows.append(("Scripts", ", ".join(f"<code>{_e(SCRIPT_DIR)}/{_e(sc.name)}</code>" for sc in record.scripts)
@@ -911,14 +915,15 @@ def _run_hpc_section(record: PipelineRecord) -> str:
         ask = f"ask the agent to convert {docker} to a <code>.sif</code> and ship it to {on}."
         if st.sif_path:
             # line one is the fact; line two is its standing — staged, with the staged file's
-            # sha256, or not yet, with the one thing to do about it
+            # sha256, or no staging on record, with the one thing to do about it
             notes.append(f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs '
                          f'the <code>.sif</code>{which} at <code>{_e(st.sif_path)}</code>.</p>')
             if st.sif_sha256:
                 notes.append(f'<p class="note">Staged there by <code>stage_apptainer_image</code> — sha256 '
                              f'<code>{_e(st.sif_sha256)}</code>.</p>')
             else:
-                notes.append(f'<p class="warn-note">It has not been staged yet: {ask}</p>')
+                notes.append(f'<p class="warn-note">No staging of it is recorded with the seal; if it is '
+                             f'not on the cluster yet, {ask}</p>')
         else:
             notes.append(f'<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
                          f'<code>nextflow.config</code> is empty{which}; the workflow refuses to start until it '

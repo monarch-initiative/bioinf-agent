@@ -249,8 +249,8 @@ def _key_sheet(*samples: str) -> pr.Samplesheet:
     return pr.Samplesheet(
         columns=[pr.SamplesheetColumn(name="sample", placeholder="SAMPLE", value_kind="value", format=None,
                                       description="the row key: it tags every task and names results/<sample>/",
-                                      read_by=[])],
-        rows=[{"sample": s} for s in samples])
+                                      read_by=[], index_files=[])],
+        rows=[{"sample": s} for s in samples], rows_from="proven")
 
 
 def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
@@ -264,7 +264,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
              10: [9], 11: [10, 0]}
     params = {p: pr.PipelineParam(name=p, kind="shared", value_kind="path", default=f"/data/{p.lower()}",
                                   source="literal", format=None, description=None, used_by=[],
-                                  reason="synthetic") for p in P}
+                                  reason="synthetic", index_files=[]) for p in P}
     stages = []
     for i, name in enumerate(S):
         uses = sorted({P[i % n_params], P[(i * 5 + 1) % n_params], P[(i * 7 + 3) % n_params]})
@@ -893,13 +893,15 @@ class TestRunOnTheCluster:
     def test_a_predicted_sif_path_is_a_warning_that_names_the_staging_call_not_a_claim_it_was_staged(self):
         """`render_pipeline(env=…)` computes the .sif path from the env block and the
         local cache; nothing on the cluster was looked at. Until the record carries
-        the staged file's sha256 the page must say the file is NOT there yet and how
-        to put it there — never "where stage_apptainer_image put it"."""
+        the staged file's sha256 the page says no staging is on record and how to put
+        the file there — never "where stage_apptainer_image put it", and never that it
+        is absent, which nothing observed."""
         sec = _section(_page(_cluster(local_runtime=RUNTIME)), "run-hpc")
         assert (f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs the '
                 f"<code>.sif</code> at <code>{SIF}</code>.</p>"
-                '<p class="warn-note">It has not been staged yet: ask the agent to convert the docker image '
-                "<code>bioinf_rnaseq_cli:latest</code> to a <code>.sif</code> and ship it to <b>hpc</b>.</p>") in sec
+                '<p class="warn-note">No staging of it is recorded with the seal; if it is not on the cluster '
+                "yet, ask the agent to convert the docker image <code>bioinf_rnaseq_cli:latest</code> to a "
+                "<code>.sif</code> and ship it to <b>hpc</b>.</p>") in sec
         assert "put it on" not in sec and "sha256" not in sec and "writes on" not in sec and "Staged there" not in sec
         assert sec.count('class="warn-note"') == 1 and sec.count('class="note">The <code>slurm</code>') == 1
         assert "stage_apptainer_image" not in sec                          # the agent is the way; no call to paste
@@ -934,7 +936,7 @@ class TestRunOnTheCluster:
         sec = _section(_page(_staged_but_one()), "run-hpc")
         assert (f'<p class="note">The <code>slurm</code> profile in <code>nextflow.config</code> runs the '
                 f"<code>.sif</code> for image <code>aaaa1111aaaa</code> at <code>{SIF}</code>.</p>"
-                '<p class="warn-note">It has not been staged yet') in sec
+                '<p class="warn-note">No staging of it is recorded with the seal') in sec
         assert ('<p class="warn-note">The <code>slurm</code> profile\'s <code>container</code> in '
                 "<code>nextflow.config</code> is empty for image <code>cccccccccccc</code>; the workflow refuses") in sec
         assert sec.count('class="warn-note"') == 2 and sec.count('class="note">The <code>slurm</code>') == 1
@@ -1179,6 +1181,24 @@ _RECORDS = {"three_rows": _record, "one_row": _one_row, "wide": _wide_record, "c
             "cohort": _cohort, "threads": _threads}
 
 
+class TestRowsSayWhereTheyCameFrom:
+    def test_rows_the_self_test_ran_read_as_the_sealed_runs_own(self):
+        rec = _record()
+        assert rec.samplesheet.rows_from == "proven"
+        page = _page(rec)
+        assert "the sealed run's own" in page and "its self-test did not run on them" not in page
+
+    def test_rows_a_multi_image_how_to_only_declared_say_so(self):
+        """A how-to that spans two images cannot be self-tested (the self-test runs in
+        one), so its rows are what it was declared with. The render goes ahead, as it
+        must for a multi-env chain, and the page says which kind of rows these are."""
+        rec = pr.derive_pipeline_record(sealed_rnaseq_spec(proven=False), name="rnaseq_counts",
+                                        spec_path=SPEC_PATH)
+        assert rec.samplesheet.rows_from == "declared"
+        page = _page(rec)
+        assert "its self-test did not run on them" in page and "the sealed run's own" not in page
+
+
 class TestPageShape:
     def test_the_footer_sentence_is_verbatim(self):
         assert FOOTER == ("This page shows a pipeline derived from a sealed run; it proves the render is "
@@ -1292,7 +1312,7 @@ class TestPageShape:
         assert "<b>&lt;script&gt;e&lt;/script&gt;</b> — module load <code>&lt;script&gt;m&lt;/script&gt;</code>" in _banner(html)
         local = _section(html, "run-local")
         assert "<pre>source /ck/&lt;script&gt;a&lt;/script&gt;/activate.sh</pre>" in local
-        assert "<code>/sif/&lt;script&gt;s.sif</code>.</p>" in hpc and "It has not been staged yet: ask the agent" in hpc
+        assert "<code>/sif/&lt;script&gt;s.sif</code>.</p>" in hpc and "No staging of it is recorded with the seal; if it is not on the cluster yet, ask the agent" in hpc
         assert "<script>" not in _section(html, "directory") and "script&gt;" not in _section(html, "directory")
         assert "script&gt;k" not in html and "script&gt;d" not in html     # the defaults table is gone, not escaped
         assert html.count("<script>") == _page().count("<script>")          # the shell's and the hover JS only

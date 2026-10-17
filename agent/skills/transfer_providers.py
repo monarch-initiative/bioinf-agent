@@ -18,13 +18,13 @@ Two providers live here today:
 
   ScpHeadNodeProvider — the legacy default. scp over ssh + sha256sum
     round-trip on the remote side; we compare hashes ourselves. Its
-    no-overwrite check is `ssh test -e`; its parent-dir prep is
-    `ssh mkdir -p`. Fine for small files; pisses off head-node policy
+    no-overwrite check is the login-node `seen` over ssh; its parent-dir
+    prep is `ssh mkdir -p`. Fine for small files; pisses off head-node policy
     when used for the GB-scale .sif images that stage_apptainer_image
     ships.
 
   GlobusProvider — `globus transfer` end-to-end, fully off the head
-    node. Its no-overwrite check is `globus ls` on the parent dir (a
+    node. Its no-overwrite check is `globus stat` on the path (a
     read-only op that doesn't even need data_access consent); its
     parent-dir prep is a NO-OP because the Globus Transfer service
     auto-creates the destination directory tree. Net effect: a Globus
@@ -88,8 +88,8 @@ class TransferProvider:
     def remote_exists(self, *, env: dict, abs_remote_path: str,
                       timeout: int) -> dict:
         """No-overwrite pre-check: does `abs_remote_path` already exist
-        on the remote? Transport-specific (ssh `test -e` vs `globus
-        ls`). Returns {exists: bool} or {error: ...}. The PRIMITIVE owns
+        on the remote? Transport-specific (ssh `seen` vs `globus
+        stat`). Returns {exists: bool} or {error: ...}. The PRIMITIVE owns
         the policy (refuse when exists); the PROVIDER owns the mechanism
         so the check doesn't assume ssh on a Globus data plane."""
         raise NotImplementedError
@@ -126,6 +126,38 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _ssh_run(env: dict, cmd: str, timeout: int) -> subprocess.CompletedProcess:
+    """One command on the env's login node; raises TimeoutExpired."""
+    from agent.skills.snapshot import _ssh_argv
+    return subprocess.run(_ssh_argv(env, cmd), capture_output=True, text=True,
+                          timeout=timeout)
+
+
+def _ssh_quietly(env: dict, cmd: str, timeout: int) -> None:
+    """Best effort, for clearing a partial: the next attempt clears it anyway."""
+    try:
+        _ssh_run(env, cmd, min(timeout, 60))
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _hint(hint: Optional[str]) -> dict:
+    return {"hint": hint} if hint else {}
+
+
+def _discard_local(p: Path) -> None:
+    """Remove what a failed download left. The primitive refused an existing
+    destination before the transfer began, so whatever is there is this attempt's."""
+    import shutil
+    try:
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        elif p.exists() or p.is_symlink():
+            p.unlink()
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # ScpHeadNodeProvider
 #
@@ -146,7 +178,7 @@ class ScpHeadNodeProvider(TransferProvider):
 
     def remote_exists(self, *, env: dict, abs_remote_path: str,
                       timeout: int) -> dict:
-        """ssh `test -e` no-overwrite check. Delegates to the shared
+        """ssh `seen` no-overwrite check. Delegates to the shared
         helper in transfer.py (which carries the ControlMaster-aware
         failure hint). Needs a live ssh session."""
         from agent.skills.transfer import _remote_existence_check
@@ -169,96 +201,107 @@ class ScpHeadNodeProvider(TransferProvider):
         # provider when threading the flag through.
         from agent.skills.transfer import (
             _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
-            _remote_tree_cmd, _parse_tree_listing, _tree_mismatch)
-        from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+            _remote_tree_cmd, _parse_tree_listing, _tree_mismatch, partial_path)
+        from agent.skills.snapshot import _SEEN_FN, _ssh_failure_hint
 
-        # Build the scp dst (user@host:abs_remote_path), with shell-safety
-        # already enforced upstream.
+        # The bytes go to the partial name and are renamed into place only once
+        # they match, so an interrupted upload never leaves a file that looks done.
         host = env["host"]
         user = env.get("user")
         target_host = f"{user}@{host}" if user else host
-        scp_target = f"{target_host}:{abs_remote_path}"
+        part = partial_path(abs_remote_path)
+        q_part, q_dest = shlex.quote(part), shlex.quote(abs_remote_path)
 
         started = time.perf_counter()
 
+        def failed(code: str, error: str, **extra) -> dict:
+            _ssh_quietly(env, f"rm -rf -- {q_part}", timeout)
+            return broke(code, error=error, provider=self.name, **extra)
+
+        # 0) A partial an earlier attempt left would take a directory copy inside it.
+        try:
+            clear = _ssh_run(env, f"rm -rf -- {q_part}", timeout)
+        except subprocess.TimeoutExpired as e:
+            return broke("transfer.scp_upload_timeout", provider=self.name,
+                         error=f"clearing {part} timed out after {e.timeout}s")
+        if clear.returncode != 0:
+            return broke("transfer.scp_upload_failed", provider=self.name,
+                         error=f"could not clear {part} (rc={clear.returncode}): "
+                               f"{(clear.stderr or '').strip()[:300]}",
+                         **_hint(_ssh_failure_hint(clear.stderr or "", host)))
+
         # 1) scp the file, or the directory.
-        argv = _scp_argv(env, str(local_path), scp_target, tree=tree is not None)
+        argv = _scp_argv(env, str(local_path), f"{target_host}:{part}",
+                         tree=tree is not None)
         try:
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except subprocess.TimeoutExpired as e:
-            return broke("transfer.scp_upload_timeout",
-                    error=f"scp timed out after {e.timeout}s",
-                    provider=self.name)
+            return failed("transfer.scp_upload_timeout",
+                          f"scp timed out after {e.timeout}s")
         if res.returncode != 0:
-            hint = _ssh_failure_hint(res.stderr or "", host)
-            out = {
-                "error": (
-                    f"scp failed (rc={res.returncode}): "
-                    f"{(res.stderr or '').strip()[:500]}"),
-                "provider": self.name,
-            }
-            if hint:
-                out["hint"] = hint
-            return broke("transfer.scp_upload_failed", **out)
+            return failed("transfer.scp_upload_failed",
+                          f"scp failed (rc={res.returncode}): "
+                          f"{(res.stderr or '').strip()[:500]}",
+                          **_hint(_ssh_failure_hint(res.stderr or "", host)))
 
         # 2) Verify via remote sha256sum: of the file, or of every file (in bash,
         # whatever the login shell is).
-        sha_cmd = (_remote_sha256_cmd(abs_remote_path) if tree is None
-                   else f"bash -c {shlex.quote(_remote_tree_cmd(abs_remote_path))}")
-        sh_argv = _ssh_argv(env, sha_cmd)
+        sha_cmd = (_remote_sha256_cmd(part) if tree is None
+                   else f"bash -c {shlex.quote(_remote_tree_cmd(part))}")
         try:
-            sh_res = subprocess.run(sh_argv, capture_output=True, text=True,
-                                    timeout=timeout)
+            sh_res = _ssh_run(env, sha_cmd, timeout)
         except subprocess.TimeoutExpired as e:
-            return broke("transfer.scp_upload_verify_timeout", error=
-                f"remote sha256sum timed out after {e.timeout}s",
-                provider=self.name)
+            return failed("transfer.scp_upload_verify_timeout",
+                          f"remote sha256sum timed out after {e.timeout}s")
         if sh_res.returncode != 0:
-            return broke("transfer.scp_upload_verify_failed", error=
-                f"remote sha256sum failed (rc={sh_res.returncode}): "
-                f"{(sh_res.stderr or '').strip()[:500]}",
-                provider=self.name)
-
+            return failed("transfer.scp_upload_verify_failed",
+                          f"remote sha256sum failed (rc={sh_res.returncode}): "
+                          f"{(sh_res.stderr or '').strip()[:500]}")
+        remote_sha = None
         if tree is not None:
             mismatch = _tree_mismatch(tree, _parse_tree_listing(sh_res.stdout or "")[0])
             if mismatch:
-                return broke("transfer.scp_upload_tree_mismatch", error=
-                    f"the directory at {abs_remote_path} differs from "
-                    f"{local_path}: {mismatch}", provider=self.name)
-            return proven("transfer.scp_uploaded_tree",
-                success=          True,
-                provider=         self.name,
-                command=          _display_cmd(argv),
-                duration_s=       round(time.perf_counter() - started, 3),
-                transferred_at=   _now_iso(),
-                checksums=        tree,
-                verified_method=  "sha256_round_trip",
-            )
+                return failed("transfer.scp_upload_tree_mismatch",
+                              f"the directory sent to {part} differs from "
+                              f"{local_path}: {mismatch}")
+        else:
+            remote_sha = _parse_sha256sum_output(sh_res.stdout or "")
+            if not remote_sha:
+                return failed("transfer.scp_upload_verify_unparseable",
+                              f"remote sha256sum stdout unparseable: "
+                              f"{(sh_res.stdout or '').strip()[:500]!r}")
+            if remote_sha != local_sha256:
+                return failed("transfer.scp_upload_sha_mismatch",
+                              f"sha256 mismatch on upload: local={local_sha256} "
+                              f"remote={remote_sha}")
 
-        remote_sha = _parse_sha256sum_output(sh_res.stdout or "")
-        if not remote_sha:
-            return broke("transfer.scp_upload_verify_unparseable", error=
-                f"remote sha256sum stdout unparseable: "
-                f"{(sh_res.stdout or '').strip()[:500]!r}",
-                provider=self.name)
-        if remote_sha != local_sha256:
-            return broke("transfer.scp_upload_sha_mismatch", error=
-                f"sha256 mismatch on upload: local={local_sha256} "
-                f"remote={remote_sha}",
-                provider=self.name)
+        # 3) Into place — unless something arrived at the destination meanwhile.
+        rename = (_SEEN_FN + f"if seen {q_dest}; then echo EXISTS; "
+                  f"else mv -- {q_part} {q_dest} && echo MOVED; fi")
+        try:
+            mv = _ssh_run(env, f"bash -c {shlex.quote(rename)}", timeout)
+        except subprocess.TimeoutExpired as e:
+            return failed("transfer.scp_upload_rename_failed",
+                          f"renaming {part} into place timed out after {e.timeout}s")
+        said = (mv.stdout or "").splitlines()
+        if "EXISTS" in said:
+            _ssh_quietly(env, f"rm -rf -- {q_part}", timeout)
+            return refused("transfer.remote_exists", provider=self.name,
+                           error=f"{abs_remote_path} appeared while the transfer ran; "
+                                 f"upload refuses overwrites, so the copy was discarded")
+        if mv.returncode != 0 or "MOVED" not in said:
+            return failed("transfer.scp_upload_rename_failed",
+                          f"renaming {part} to {abs_remote_path} failed "
+                          f"(rc={mv.returncode}): {(mv.stderr or '').strip()[:300]}")
 
-        duration = time.perf_counter() - started
-        return proven("transfer.scp_uploaded",
-            success=          True,
-            provider=         self.name,
-            command=          _display_cmd(argv),
-            bytes=            local_path.stat().st_size,
-            duration_s=       round(duration, 3),
-            transferred_at=   _now_iso(),
-            remote_sha256=    remote_sha,
-            verified_method=  "sha256_round_trip",
-        )
+        common = dict(success=True, provider=self.name, command=_display_cmd(argv),
+                      duration_s=round(time.perf_counter() - started, 3),
+                      transferred_at=_now_iso(), verified_method="sha256_round_trip")
+        if tree is not None:
+            return proven("transfer.scp_uploaded_tree", checksums=tree, **common)
+        return proven("transfer.scp_uploaded", bytes=local_path.stat().st_size,
+                      remote_sha256=remote_sha, **common)
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
@@ -268,7 +311,7 @@ class ScpHeadNodeProvider(TransferProvider):
             TransferError, _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
             _compute_local_sha256, _remote_tree_cmd, _parse_tree_listing,
             _scan_tree, _tree_mismatch)
-        from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+        from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
         host = env["host"]
         user = env.get("user")
@@ -280,7 +323,9 @@ class ScpHeadNodeProvider(TransferProvider):
         # 1) Pre-anchor: compute the remote sha BEFORE transfer so we have
         # the expected hash to compare against once the file lands locally;
         # for a directory, every file's. In bash, whatever the login shell is.
-        probe = (f"if [ -d {shlex.quote(abs_remote_path)} ]; then echo TREE; "
+        # `seen` first: a path another node just wrote can read as missing.
+        probe = (_SEEN_FN + f"seen {shlex.quote(abs_remote_path)}; "
+                 f"if [ -d {shlex.quote(abs_remote_path)} ]; then echo TREE; "
                  f"{_remote_tree_cmd(abs_remote_path)}; "
                  f"else {_remote_sha256_cmd(abs_remote_path)}; fi")
         sh_argv = _ssh_argv(env, f"bash -c {shlex.quote(probe)}")
@@ -325,34 +370,32 @@ class ScpHeadNodeProvider(TransferProvider):
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except subprocess.TimeoutExpired as e:
+            _discard_local(local_path)
             return broke("transfer.scp_download_timeout",
-                    error=f"scp timed out after {e.timeout}s",
+                    error=f"scp timed out after {e.timeout}s; what had arrived was removed",
                     provider=self.name)
         if res.returncode != 0:
-            hint = _ssh_failure_hint(res.stderr or "", host)
-            out = {
-                "error":
-                    f"scp failed (rc={res.returncode}): "
-                    f"{(res.stderr or '').strip()[:500]}",
-                "provider": self.name,
-            }
-            if hint:
-                out["hint"] = hint
-            return broke("transfer.scp_download_failed", **out)
+            _discard_local(local_path)
+            return broke("transfer.scp_download_failed", provider=self.name,
+                         error=f"scp failed (rc={res.returncode}): "
+                               f"{(res.stderr or '').strip()[:500]}",
+                         **_hint(_ssh_failure_hint(res.stderr or "", host)))
 
         # 3) Compute local sha + compare.
         if tree:
             try:
                 landed, nbytes = _scan_tree(local_path)
             except (OSError, TransferError) as e:
+                _discard_local(local_path)
                 return broke("transfer.scp_download_tree_unreadable", error=
                     f"the directory scp wrote at {local_path} can't be read "
-                    f"back: {e}", provider=self.name)
+                    f"back: {e}; it was removed", provider=self.name)
             mismatch = _tree_mismatch(source, landed)
             if mismatch:
+                _discard_local(local_path)
                 return broke("transfer.scp_download_tree_mismatch", error=
-                    f"the directory at {local_path} differs from "
-                    f"{abs_remote_path}: {mismatch}; what arrived is left there",
+                    f"the directory scp wrote at {local_path} differs from "
+                    f"{abs_remote_path}: {mismatch}; it was removed",
                     provider=self.name)
             return proven("transfer.scp_downloaded_tree",
                 success=          True,
@@ -366,13 +409,7 @@ class ScpHeadNodeProvider(TransferProvider):
             )
         local_sha = _compute_local_sha256(local_path)
         if local_sha != remote_sha:
-            # The fetched bytes don't match what was on the remote. Remove
-            # the corrupt local copy so a retry isn't refused as already-
-            # existing.
-            try:
-                local_path.unlink()
-            except OSError:
-                pass
+            _discard_local(local_path)
             return broke("transfer.scp_download_sha_mismatch", error=
                 f"sha256 mismatch on download: remote={remote_sha} "
                 f"local={local_sha}",
@@ -472,9 +509,7 @@ _PERMISSION_DENIED_TOKEN = "PERMISSION_DENIED"
 # context.path. The classifier uses these patterns to decide which
 # root cause to surface.
 import re as _re
-_UUID_RE = _re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-    _re.IGNORECASE)
+_UUID_RE = _re.compile(compute_access.UUID_PATTERN, _re.IGNORECASE)      # found inside an event's text
 # GCP refuses to scan paths outside its Accessible Folders config with
 # this exact FTP-style body. Distinctive enough to key off of.
 _GCP_PATH_BLOCK_BODY_RE = _re.compile(r"path not allowed", _re.IGNORECASE)
@@ -508,40 +543,48 @@ class GlobusProvider(TransferProvider):
                    timeout: int,
                    label: Optional[str] = None,
                    tree: Optional[dict] = None) -> dict:
-        return self._run_transfer(
+        """To the partial name, renamed into place once Globus reports the task
+        SUCCEEDED (its own end-to-end checksum), so a final name is never a
+        file still arriving or one a failed task left behind."""
+        from agent.skills.transfer import partial_path
+        part = partial_path(abs_remote_path)
+        pr = self._run_transfer(
             src_ep=self._local_ep, src_path=str(local_path),
-            dst_ep=self._remote_ep, dst_path=abs_remote_path,
+            dst_ep=self._remote_ep, dst_path=part,
             direction="upload",
             local_path=local_path, local_sha256=local_sha256,
             timeout=timeout, label=label, tree=tree)
+        if pr.get("outcome") == "loop":             # the task may still run: its end is unobserved
+            pr["partial_path"] = part
+            pr["error"] += (f" The bytes are landing at {part}; globus_task_status renames "
+                            f"them to {abs_remote_path} once the task has SUCCEEDED.")
+            return pr
+        if "error" in pr:
+            return pr
+        moved = self.rename(part, abs_remote_path)
+        return moved if "error" in moved else pr
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
                      label: Optional[str] = None) -> dict:
-        return self._run_transfer(
+        pr = self._run_transfer(
             src_ep=self._remote_ep, src_path=abs_remote_path,
             dst_ep=self._local_ep, dst_path=str(local_path),
             direction="download",
             local_path=local_path, local_sha256="",
             timeout=timeout, label=label)
+        if "error" in pr and pr.get("outcome") != "loop":
+            _discard_local(local_path)    # the task is over or stopped; nothing still writes
+        return pr
 
     def remote_exists(self, *, env: dict, abs_remote_path: str,
                       timeout: int) -> dict:
-        """Globus-native no-overwrite check — NO ssh. Lists the parent
-        directory via `globus ls` (read-only; doesn't even require
-        data_access consent) and checks whether the basename is present.
-
-        A missing parent dir means the target can't exist yet →
-        {exists: False} (Globus auto-creates the tree on transfer). Any
-        OTHER non-zero exit (auth, consent, perms) is surfaced as an
-        error rather than guessed-as-absent — we never silently treat a
-        real failure as "safe to write"."""
+        """Globus-native no-overwrite check — NO ssh. `globus stat` on the path
+        itself: it sees hidden names a listing leaves out, and it says "not
+        found" (code NotFound, exit 0) only when nothing is there. Any other
+        failure (auth, consent, permissions) is surfaced, never read as absent."""
         import json as _json
-        import posixpath
-        parent = posixpath.dirname(abs_remote_path)
-        base = posixpath.basename(abs_remote_path)
-        # Trailing slash makes the directory-listing intent explicit.
-        argv = ["globus", "ls", f"{self._remote_ep}:{parent}/",
+        argv = ["globus", "stat", f"{self._remote_ep}:{abs_remote_path}",
                 "--format", "json"]
         try:
             res = subprocess.run(argv, capture_output=True, text=True,
@@ -555,22 +598,12 @@ class GlobusProvider(TransferProvider):
                 provider=self.name)
         except subprocess.TimeoutExpired as e:
             return broke("transfer.globus_ls_timeout", error=
-                f"`globus ls` (no-overwrite check) timed out after "
+                f"`globus stat` (no-overwrite check) timed out after "
                 f"{e.timeout}s",
                 provider=self.name)
         if res.returncode != 0:
-            body = ((res.stderr or "") + " " + (res.stdout or "")).lower()
-            # Parent dir doesn't exist yet → target can't either → not an
-            # overwrite. Globus will create the tree during the transfer.
-            if any(tok in body for tok in (
-                    "not found", "notfound", "no such",
-                    "could not be found", "does not exist",
-                    "dirlistingfailed")):
-                return {"exists": False}
-            # Real failure (consent/auth/perms) — surface it; do NOT
-            # fall through to "safe to write".
             return broke("transfer.globus_ls_failed", error=
-                f"`globus ls` no-overwrite check failed "
+                f"`globus stat` no-overwrite check failed "
                 f"(rc={res.returncode}): "
                 f"{(res.stderr or '').strip()[:300]}",
                 provider=self.name)
@@ -578,12 +611,16 @@ class GlobusProvider(TransferProvider):
             payload = _json.loads(res.stdout or "{}")
         except _json.JSONDecodeError as e:
             return broke("transfer.globus_ls_bad_json", error=
-                f"`globus ls` returned 0 but stdout was not valid JSON: "
+                f"`globus stat` returned 0 but stdout was not valid JSON: "
                 f"{e}. raw: {(res.stdout or '').strip()[:200]!r}",
                 provider=self.name)
-        names = {entry.get("name")
-                 for entry in (payload.get("DATA") or [])}
-        return {"exists": base in names}
+        if payload.get("code") == "NotFound":
+            return {"exists": False}
+        if payload.get("type") or payload.get("name"):
+            return {"exists": True}
+        return broke("transfer.globus_ls_bad_json", error=
+            f"`globus stat` answered neither a path nor NotFound: "
+            f"{(res.stdout or '').strip()[:200]!r}", provider=self.name)
 
     def ensure_parent_dir(self, *, env: dict, abs_remote_path: str,
                           timeout: int) -> Optional[dict]:
@@ -592,6 +629,44 @@ class GlobusProvider(TransferProvider):
         there's nothing to do here — and crucially, nothing that needs
         an ssh hop. Returns None (success)."""
         return None
+
+    def rename(self, src: str, dst: str, *, timeout: int = 60) -> dict:
+        """Move a verified partial into place. Globus refuses when `dst`
+        already exists, so this never overwrites."""
+        argv = ["globus", "rename", self._remote_ep, src, dst]
+        try:
+            res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return broke("transfer.globus_rename_failed", provider=self.name,
+                         partial_path=src,
+                         error=f"`globus rename` to {dst} did not run ({e}); the "
+                               f"verified bytes are at {src}")
+        if res.returncode != 0:
+            return broke("transfer.globus_rename_failed", provider=self.name,
+                         partial_path=src,
+                         error=f"`globus rename` to {dst} failed (rc={res.returncode}): "
+                               f"{(res.stderr or '').strip()[:300]}; the verified bytes "
+                               f"are at {src}")
+        return {"renamed_to": dst}
+
+    def _stopped(self, out: dict, task_id: str) -> dict:
+        """`out`, for a task that cannot finish without someone acting (expired
+        credentials, a denied path), once the task is cancelled: left alive it
+        resumes when that is fixed, and a retry would race it. When the cancel
+        fails, the task's end is unobserved and the result says so."""
+        try:
+            res = subprocess.run(["globus", "task", "cancel", task_id],
+                                 capture_output=True, text=True,
+                                 timeout=self._SUBMIT_TIMEOUT_S)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            res = None
+        if res is not None and res.returncode == 0:
+            out["error"] += " The task was cancelled, so a retry cannot race it."
+            return out
+        fields = {k: v for k, v in out.items() if k not in ("outcome", "code", "error")}
+        return loop("transfer.globus_task_unobserved", **fields, error=(
+            f"{out['error']} Cancelling the task failed, so it may resume once that is fixed: "
+            f"globus_task_status with task_id '{task_id}' says how it ended; retry only after it does."))
 
     # ─── internals ─────────────────────────────────────────────────────
 
@@ -608,7 +683,8 @@ class GlobusProvider(TransferProvider):
             src_ep=src_ep, src_path=src_path,
             dst_ep=dst_ep, dst_path=dst_path,
             label=label or f"bioinf-agent {direction}",
-            timeout=self._SUBMIT_TIMEOUT_S)
+            timeout=self._SUBMIT_TIMEOUT_S,
+            mirror=tree is not None)
         if "error" in sub:
             return sub
         task_id = sub["task_id"]
@@ -623,20 +699,24 @@ class GlobusProvider(TransferProvider):
         while True:
             status = self._task_show(task_id, timeout=self._SUBMIT_TIMEOUT_S)
             if "error" in status:
-                return {**status, "task_id": task_id}
+                fields = {k: v for k, v in status.items() if k not in ("outcome", "code", "error")}
+                return loop("transfer.globus_task_unobserved", **fields, task_id=task_id, error=(
+                    f"{status['error']}. Globus task {task_id} was submitted and its end was "
+                    f"not observed: globus_task_status with task_id '{task_id}' says how it "
+                    f"ended; do not re-run the transfer before it does."))
             last_status = status
             # PERMISSION_DENIED while ACTIVE — task will hang indefinitely
             # (Globus keeps retrying the doomed operation). Classify the
             # event-list immediately and surface the right fix rather
             # than burning the sync-wait cap on a task that can't recover.
             if self._is_permission_denied(status):
-                return self._permission_denied_error(task_id, status)
+                return self._stopped(self._permission_denied_error(task_id, status), task_id)
             if status.get("status") in _GLOBUS_TERMINAL_STATUSES:
                 break
             if status.get("status") == "INACTIVE":
                 # Don't spin on a task that's stuck waiting for activation —
                 # surface with the nice_status (Creds Expired, etc.)
-                return broke("transfer.globus_task_inactive",
+                return self._stopped(broke("transfer.globus_task_inactive",
                     error=
                         f"Globus task {task_id} is INACTIVE: "
                         f"{status.get('nice_status') or 'unknown reason'}. "
@@ -646,17 +726,17 @@ class GlobusProvider(TransferProvider):
                     provider=self.name,
                     task_id= task_id,
                     hint=    "globus credential / activation expired",
-                )
+                ), task_id)
             if (time.perf_counter() - wait_started) > wait_cap:
-                return broke("transfer.globus_sync_wait_exceeded",
+                return loop("transfer.globus_sync_wait_exceeded",
                     error=
                         f"Globus task {task_id} did not reach a terminal "
                         f"state within the {wait_cap}s sync-wait cap. The "
                         f"task is still {status.get('status')!r} — WE stopped "
                         f"waiting; Globus did NOT stop transferring. It keeps "
                         f"running server-side, so the bytes may well land. "
-                        f"Poll it with globus_task_status(task_id="
-                        f"'{task_id}') until SUCCEEDED/FAILED (or "
+                        f"Poll it with globus_task_status with task_id "
+                        f"'{task_id}' until SUCCEEDED/FAILED (or "
                         f"`globus task wait {task_id}` by hand). Do NOT assume "
                         f"the transfer failed, and do NOT re-run it blind — a "
                         f"second transfer of the same bytes races the first. "
@@ -666,7 +746,7 @@ class GlobusProvider(TransferProvider):
                     provider=self.name,
                     task_id= task_id,
                     hint=    f"still running server-side — poll "
-                             f"globus_task_status(task_id='{task_id}')",
+                             f"globus_task_status with task_id '{task_id}'",
                 )
             time.sleep(self._POLL_INTERVAL_S)
 
@@ -748,8 +828,10 @@ class GlobusProvider(TransferProvider):
 
     def _submit_transfer(self, *, src_ep: str, src_path: str,
                          dst_ep: str, dst_path: str, label: str,
-                         timeout: int) -> dict:
-        """Run `globus transfer ... --format json`, parse task_id."""
+                         timeout: int, mirror: bool = False) -> dict:
+        """Run `globus transfer ... --format json`, parse task_id. `mirror`: a
+        directory upload, whose partial copy must hold exactly the source's
+        files even when an earlier attempt left some there."""
         import json as _json
         argv = [
             "globus", "transfer",
@@ -757,6 +839,7 @@ class GlobusProvider(TransferProvider):
             f"{dst_ep}:{dst_path}",
             "--label", label,
             "--encrypt-data",
+            *(["--recursive", "--delete-destination-extra"] if mirror else []),
             "--format", "json",
         ]
         try:
@@ -1181,10 +1264,7 @@ def globus_task_status(env: dict, task_id: str, *, timeout: int = 30) -> dict:
     # Validate the task_id shape BEFORE shelling out — Globus task IDs
     # are UUIDs. Defense against any caller smuggling a metacharacter
     # into the argv.
-    import re as _re
-    if not _re.match(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-            task_id):
+    if not compute_access.is_uuid(task_id):
         return refused("transfer.task_status_bad_uuid", error=
             f"task_id {task_id!r} is not a canonical UUID — refused "
             f"before any subprocess")
