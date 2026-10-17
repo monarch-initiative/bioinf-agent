@@ -676,15 +676,15 @@ def _probe_cluster_path(env: dict, path: str, *,
     (file OR directory). size via `du -sb`; sha256 read from a `<path>.source.sha256`
     sidecar if present (the reproducibility anchor written by the download job).
     Returns {"error": ...} if the ssh itself fails (session down / unreachable)."""
-    from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+    from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
     q = shlex.quote(path)
     q_side = shlex.quote(f"{path}.source.sha256")
     # Emit three tagged lines so a MOTD banner can't confuse the parse.
     body = (
-        f"if [ -e {q} ]; then echo EXISTS=1; else echo EXISTS=0; fi; "
+        _SEEN_FN + f"if seen {q}; then echo EXISTS=1; else echo EXISTS=0; fi; "
         f"if [ -e {q} ]; then du -sb {q} 2>/dev/null | cut -f1 | "
         f"sed \"s/^/SIZE=/\"; fi; "
-        f"if [ -f {q_side} ]; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi"
+        f"if seen {q_side}; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi"
     )
     probe = f"bash -lc {shlex.quote(body)}"
     argv = _ssh_argv(env, probe)

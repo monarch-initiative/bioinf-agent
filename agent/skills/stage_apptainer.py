@@ -86,7 +86,7 @@ from agent.skills import compute_access, transfer, workspace
 from agent.models.core_data import frozen_image_ref, record_is_gated as _record_is_gated, sha256_file
 from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke
-from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
 
 def _short_digest(content_digest: str) -> str:
@@ -114,7 +114,7 @@ def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) ->
     False as the cluster answered; None when it could not be asked (falsy, so a
     stage builds and ships, and the ship then names the ssh failure). Used for
     idempotency (skip a re-stage) WITHOUT any build/pull on the head node."""
-    body = f"test -f {shlex.quote(sif_remote_abs)} && echo EXISTS || echo MISSING"
+    body = _SEEN_FN + f"seen {shlex.quote(sif_remote_abs)} && echo EXISTS || echo MISSING"
     cmd = f"bash -lc {shlex.quote(body)}"
     try:
         res = subprocess.run(_ssh_argv(env, cmd), capture_output=True,
@@ -243,7 +243,7 @@ def _record_digests(files: list[Path]) -> set[str]:
 def _remote_record(env: dict, remote: str, *, timeout: int) -> Optional[dict]:
     """{file name: sha256} of the record directory at `remote`, or None when there is
     none. One ssh hop, in bash whatever the login shell."""
-    probe = (f"if [ -d {shlex.quote(remote)} ]; then echo PRESENT; "
+    probe = (_SEEN_FN + f"if seen {shlex.quote(remote)}; then echo PRESENT; "
              f"cd {shlex.quote(remote)} && sha256sum -- *; fi")
     res = subprocess.run(_ssh_argv(env, f"bash -c {shlex.quote(probe)}"),
                          capture_output=True, text=True, timeout=timeout)
@@ -332,8 +332,8 @@ def _build_inspect_cmd(sif_remote_abs: str) -> str:
     # `sha256sum` prints `<hash>  <file>`; the first whitespace token is extracted
     # in Python (below) rather than by a nested awk/cut in the remote body.
     body = (
-        "module load apptainer >/dev/null 2>&1 || true; "
-        f"if [ ! -f {q} ]; then echo SIF_MISSING; exit 3; fi; "
+        "module load apptainer >/dev/null 2>&1 || true; " + _SEEN_FN +
+        f"if ! seen {q}; then echo SIF_MISSING; exit 3; fi; "
         f"sha256sum {q} 2>/dev/null; "
         "echo ---INSPECT---; "
         f"apptainer inspect --json {q} 2>/dev/null || echo INSPECT_FAILED"

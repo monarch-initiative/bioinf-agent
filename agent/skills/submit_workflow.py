@@ -33,7 +33,7 @@ from typing import Mapping, Optional
 
 from agent.skills import compute_access, transfer, workflow_render
 from agent.skills.outcomes import broke
-from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
 
 # A SLURM job_id as parsed from `sbatch --parsable`: digits, length-capped.
@@ -244,7 +244,7 @@ def sbatch_via_ssh(env: dict, workflow_dir: str, *,
     landed for forensics)."""
     launcher = f"{workflow_dir}/launcher.sh"
     parts = ["sbatch", "--parsable", *[str(a) for a in sbatch_args], "launcher.sh"]
-    body = (f"cd {shlex.quote(workflow_dir)} && "
+    body = (_SEEN_FN + f"seen {shlex.quote(workflow_dir)}; cd {shlex.quote(workflow_dir)} && "
             f"{' '.join(shlex.quote(x) for x in parts)}")
     sbatch_cmd = f"bash -lc {shlex.quote(body)}"
     argv = _ssh_argv(env, sbatch_cmd)
