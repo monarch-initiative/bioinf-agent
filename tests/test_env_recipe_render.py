@@ -524,3 +524,14 @@ def test_an_image_whose_content_digest_is_its_own_digest_names_it_once():
     option_a = md[md.index("## Option A"):md.index("## Option B")]
     assert f"# image digest: sha256:{'45' * 32}" in option_a
     assert "of the build's inputs" not in option_a, "an image addressed by its own digest has no separate inputs digest"
+
+
+def test_an_adopted_image_whose_local_id_is_not_its_manifest_digest_names_each_for_what_it_is():
+    manifest, local_id = "sha256:" + "2e" * 32, "sha256:" + "65" * 32
+    r = er.extract_recipe(None, name="miniprot", version="0.13", conda_deps=[], primary_tools=["miniprot"],
+                          content_digest=manifest, build_method="adopt",
+                          adopt_image=f"quay.io/biocontainers/miniprot@{manifest}")
+    md = R.render_recipe_markdown(r, {"image": "quay.io/biocontainers/miniprot:0.13", "image_digest": local_id})
+    option_a = md[md.index("## Option A"):md.index("## Option B")]
+    assert f"# image digest: {local_id}" in option_a
+    assert f"# registry manifest digest: {manifest}" in option_a and "of the build's inputs" not in option_a

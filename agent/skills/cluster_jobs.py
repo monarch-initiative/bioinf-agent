@@ -194,8 +194,6 @@ def _parse_sacct_output(text: str) -> list[dict]:
 #: often it looks again while it does.
 _WAIT_CAP_S = 540
 _POLL_S = 30
-#: ssh hops in one look: the manager's sacct row, the run's records, its tasks in flight.
-_HOPS_PER_LOOK = 3
 
 
 def cluster_job_status(project_name: str,
@@ -284,23 +282,17 @@ def cluster_job_status(project_name: str,
         mark = _progress(out)
         deadline = started + min(max(int(wait_s or 0), 0), _WAIT_CAP_S)
         # The next look starts only if one as long as the last still ends by the deadline,
-        # and each of its ssh hops is held to an equal share of the time left, so a look
-        # that hangs ends by the deadline too. The last answer then stands, as it does
-        # when a later look reads less than it did.
+        # and each of its ssh hops is held to the time left, so a look that hangs ends by
+        # the deadline too: when the job's own row is the read that runs out of time the
+        # last answer stands, and when a later read does the answer says which.
         while ("error" not in out and not _settled(out) and _progress(out) == mark
                and time.monotonic() + _POLL_S + look_s <= deadline):
             time.sleep(_POLL_S)
             looked = time.monotonic()
-            hop_s = int((deadline - looked) / _HOPS_PER_LOOK)
-            if hop_s < 1:
-                break
             try:
-                look = _observe(env, compute_env_name, norm_id, run_dir, timeout=min(timeout, hop_s))
+                out = _observe(env, compute_env_name, norm_id, run_dir, timeout=timeout, deadline=deadline)
             except subprocess.TimeoutExpired:
                 break
-            if _read_less(look, out):
-                break
-            out = look
             look_s = time.monotonic() - looked
         if wait_s and "error" not in out:
             out["waited_s"] = round(time.monotonic() - started)
@@ -313,12 +305,20 @@ def cluster_job_status(project_name: str,
         return broke("cluster.status_timeout", error=f"sacct timed out after {e.timeout}s")
 
 
+def _hop_s(timeout: int, deadline: Optional[float]) -> int:
+    """One ssh hop's timeout: the call's own, held to the time left before a wait's
+    deadline when there is one."""
+    if deadline is None:
+        return timeout
+    return max(1, min(timeout, int(deadline - time.monotonic())))
+
+
 def _observe(env: dict, compute_env_name: str, job_id: str, run_dir: str, *,
-             timeout: int) -> dict:
+             timeout: int, deadline: Optional[float] = None) -> dict:
     """One look: the job's sacct rows, each with its verdict, and the pipeline
     run when `run_dir` is given."""
     res = subprocess.run(_ssh_argv(env, _build_sacct_cmd(job_id)),
-                         capture_output=True, text=True, timeout=timeout)
+                         capture_output=True, text=True, timeout=_hop_s(timeout, deadline))
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
         return broke("cluster.status_ssh_failed", error=
@@ -344,7 +344,7 @@ def _observe(env: dict, compute_env_name: str, job_id: str, run_dir: str, *,
         "captured_at": datetime.now(timezone.utc).isoformat(),
     }
     if run_dir:
-        out["pipeline"] = _read_pipeline_run(env, run_dir, job_id, jobs, timeout=timeout)
+        out["pipeline"] = _read_pipeline_run(env, run_dir, job_id, jobs, timeout=timeout, deadline=deadline)
     return out
 
 
@@ -357,15 +357,6 @@ def _settled(status: dict) -> bool:
     """Nothing more will change: every job row is over (a pipeline's manager has
     written its records by the time its job ends)."""
     return _over(status.get("jobs") or [])
-
-
-def _read_less(look: dict, last: dict) -> bool:
-    """`look` failed to read something `last` read: the job's row, the run's records,
-    or the scheduler's state for its tasks in flight."""
-    def gaps(status: dict) -> tuple:
-        run = status.get("pipeline") or {}
-        return "error" in status, "error" in run, "scheduler_unread" in run
-    return any(now and not before for now, before in zip(gaps(look), gaps(last)))
 
 
 def _progress(status: dict) -> tuple:
@@ -420,7 +411,7 @@ _SUBMITTED_RE = re.compile(
 
 
 def _in_flight(env: dict, submitted: list[str], finished: set, *,
-               timeout: int) -> tuple[list[dict], str]:
+               timeout: int, deadline: Optional[float] = None) -> tuple[list[dict], str]:
     """The tasks submitted and not in the trace yet (it lists a task once it
     finishes), and why the scheduler could not be asked about them, if it could
     not. A task is PENDING (with why) or RUNNING (where, how long) as the scheduler
@@ -435,7 +426,7 @@ def _in_flight(env: dict, submitted: list[str], finished: set, *,
     unread = ""
     try:
         res = subprocess.run(_ssh_argv(env, _build_sacct_cmd(",".join(live))),
-                             capture_output=True, text=True, timeout=timeout)
+                             capture_output=True, text=True, timeout=_hop_s(timeout, deadline))
         if res.returncode == 0:
             rows = {r["job_id"]: r for r in _parse_sacct_output(res.stdout)}
         else:
@@ -529,12 +520,12 @@ def _block(lines: list[str], tag: str) -> list[str]:
 
 
 def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[dict], *,
-                       timeout: int) -> dict:
+                       timeout: int, deadline: Optional[float] = None) -> dict:
     """What the run's own records say. Never raises: an unreadable run directory is
     reported as such beside the manager's SLURM row."""
     argv = _ssh_argv(env, _build_pipeline_run_cmd(run_dir, job_id))
     try:
-        res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        res = subprocess.run(argv, capture_output=True, text=True, timeout=_hop_s(timeout, deadline))
     except subprocess.TimeoutExpired as e:
         return broke("cluster.run_records_timeout", run_dir=run_dir,
                      error=f"reading the run records timed out after {e.timeout}s")
@@ -561,7 +552,8 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
     out_log = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("OUT=")), "")
     trace_rows = _parse_trace("\n".join(_block(lines, "TRACE")))
     in_flight, unread = _in_flight(env, _block(lines, "SUBMITTED"),
-                                   {r.get("native_id") for r in trace_rows}, timeout=timeout)
+                                   {r.get("native_id") for r in trace_rows}, timeout=timeout,
+                                   deadline=deadline)
     tasks = [_task_view(r) for r in trace_rows] + in_flight
     summary = dict(Counter(t.get("status", "") for t in tasks))
     # the verdict and the summary lead: the task list is as long as the run

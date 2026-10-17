@@ -328,9 +328,12 @@ def test_run_in_image_double_failure_returns_the_natural_error(monkeypatch):
 # adopt_image block in the same function already used registry_manifest_digest. The fix
 # had landed on the reader and on the sibling field, never on this producer.
 
-def _mock_registry_digest(monkeypatch, manifest_digest):
+def _mock_registry_digest(monkeypatch, manifest_digest, *, pulled_as=None):
+    """The image carries `manifest_digest` as a repo digest, under the repo it names, or
+    under `pulled_as` (a local retag of an image pulled under another name)."""
     import agent.skills.container_build as CB
-    monkeypatch.setattr(CB, "registry_manifest_digest", lambda ref: manifest_digest)
+    monkeypatch.setattr(CB, "registry_pull_ref", lambda ref: (
+        f"{pulled_as or ref.split('@', 1)[0].split(':')[0]}@{manifest_digest}" if manifest_digest else ""))
 
 
 def test_an_adopt_record_anchors_on_the_registry_manifest_not_the_local_id(tmp_path, monkeypatch):
@@ -372,6 +375,21 @@ def test_a_daemon_whose_local_id_is_the_manifest_digest_still_pins_the_image(tmp
     rec = list(cache.registered.values())[0]
     assert rec["image_by_digest"] == f"quay.io/biocontainers/miniprot@{manifest}"
     assert "adopt_pin_error" not in rec
+
+
+def test_a_local_retag_of_a_pulled_image_is_pinned_under_the_name_the_registry_serves(tmp_path, monkeypatch):
+    manifest = "sha256:" + "2e" * 32
+    _mock_docker(monkeypatch, digest="sha256:" + "65" * 32)
+    _mock_registry_digest(monkeypatch, manifest, pulled_as="quay.io/biocontainers/miniprot")
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="lab/miniprot:dev", name="miniprot_lab", version="0.13",
+        tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    rec = list(cache.registered.values())[0]
+    assert rec["image_by_digest"] == f"quay.io/biocontainers/miniprot@{manifest}", \
+        "lab/miniprot@<digest> is a reference no registry serves"
 
 
 def test_an_unpullable_adopt_image_keeps_the_local_id_and_says_it_is_unpinnable(tmp_path, monkeypatch):
@@ -935,3 +953,14 @@ def test_the_known_repo_is_tied_to_the_primary_tool_only(tmp_path, monkeypatch):
     assert ids["talos"]["collision"] is not None and ids["talos"]["self_description"] is None
     assert ids["bcftools"]["collision"] is None
     assert ids["bcftools"]["self_description"] == "PYPI::bcftools"
+
+
+def test_the_pull_ref_is_the_repo_asked_about_else_the_one_the_bytes_came_from(monkeypatch):
+    import subprocess
+    from unittest.mock import MagicMock
+    import agent.skills.container_build as CB
+    held = "quay.io/biocontainers/miniprot@sha256:" + "2e" * 32 + "\nmirror.example/miniprot@sha256:" + "2f" * 32 + "\n"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: MagicMock(returncode=0, stdout=held, stderr=""))
+    assert CB.registry_pull_ref("mirror.example/miniprot:0.13") == "mirror.example/miniprot@sha256:" + "2f" * 32
+    assert CB.registry_pull_ref("lab/miniprot:dev") == "quay.io/biocontainers/miniprot@sha256:" + "2e" * 32
+    assert CB.registry_manifest_digest("mirror.example/miniprot:0.13") == "sha256:" + "2f" * 32

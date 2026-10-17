@@ -1294,7 +1294,7 @@ def _unrenamed(provider, env: dict, task_id: str, path: Path, rec: dict, pending
         (True, True): (f"the task succeeded, but {pending['to']} was written while it ran; "
                        f"this upload's bytes stay at {pending['from']} and nothing was replaced"),
     }[(part, dest)]
-    rec["outcome"] = {(False, True): "unconfirmed", (True, True): "refused"}.get((part, dest), "failed")
+    rec["outcome"] = "unconfirmed" if (part, dest) == (False, True) else "failed"
     rec["summary"] = f"Upload of {rec.get('file', '')} to {env.get('name', '?')}: {rec['reason']}."
     _rewrite_receipt(path, rec)
     if not part and dest:
@@ -1303,7 +1303,7 @@ def _unrenamed(provider, env: dict, task_id: str, path: Path, rec: dict, pending
                         remedy=(f"download {pending['to']} and compare it with the file uploaded, "
                                 f"if it must be this upload's bytes"))
     if part and dest:
-        return refused("transfer.task_rename_blocked", success=False, partial_path=pending["from"],
+        return broke("transfer.task_rename_blocked", success=False, partial_path=pending["from"],
                        manifest=str(path), **fields, error=f"{why}; {rec['reason']}",
                        remedy=(f"upload to another path; {pending['from']} holds this upload's "
                                f"verified bytes, left for you to keep or remove"))

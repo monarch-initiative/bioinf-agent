@@ -610,11 +610,13 @@ def render_recipe_markdown(recipe: dict, record: Optional[dict] = None) -> str:
           + "and run it — byte-identical, nothing to install:", ""]
     img = record.get("image") or (recipe.get("adopt_image") or f"{name}:{ver or 'latest'}")
     image_digest = record.get("image_digest")
-    # an adopted or authors' image is addressed by its own digest; a build here also by its inputs'
+    # the content digest is what a pull by digest fetches for an adopted image and the
+    # build's inputs for a build here; it is printed when it is not the image digest itself
+    named = "registry manifest digest" if method == "adopt" else "content digest (of the build's inputs)"
     L += _fence([f"apptainer exec --cleanenv {name}.sif <command>",
                  f"# image: {img}",
                  f"# image digest: {image_digest or '(not recorded)'}"]
-                + ([f"# content digest (of the build's inputs): {content_digest}"]
+                + ([f"# {named}: {content_digest}"]
                    if content_digest and content_digest != image_digest else []))
 
     # Option B — rebuild from scratch (method-specific)

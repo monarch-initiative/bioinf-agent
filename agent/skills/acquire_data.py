@@ -63,7 +63,9 @@ _DEFAULT_DL_SLURM = {"time": "1-00:00:00", "mem": "4g"}
 _PROBE_TIMEOUT = 120
 
 
-#: Markers around a file's text at the end of a probe's output.
+#: Where a probe's own output starts (on a line of its own, whatever the login profile
+#: printed before it), and the markers around a file's text at its end.
+_PROBE_BEGIN = "BIOINF_PROBE_BEGIN"
 _FILE_BEGIN, _FILE_END = "BIOINF_FILE_BEGIN", "BIOINF_FILE_END"
 _SBATCH_LINE_RE = re.compile(r"(?m)^#SBATCH .*(?:\n|\Z)")
 
@@ -81,7 +83,7 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
         from agent.skills.snapshot import _ssh_argv
         q = shlex.quote(remote)
         # the file's text comes last, so no line of it is read as the scheduler's or the hash
-        script = (cluster_jobs.jobs_in_dir_sh(acq_dir) + "; "
+        script = (f"echo; echo {_PROBE_BEGIN}; " + cluster_jobs.jobs_in_dir_sh(acq_dir) + "; "
                   f"echo SHA=$( (sha256sum {q} 2>/dev/null || shasum -a 256 {q}) | cut -d' ' -f1); "
                   f"echo {_FILE_BEGIN}; cat {q}; echo; echo {_FILE_END}")
         try:
@@ -94,6 +96,7 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
                         if res.returncode != 0 else "")
         except subprocess.TimeoutExpired:
             lines, said_ssh = [], "ssh timed out"
+        lines = lines[lines.index(_PROBE_BEGIN) + 1:] if _PROBE_BEGIN in lines else []
         if said_ssh or _FILE_BEGIN not in lines or _FILE_END not in lines:
             return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
                 error=f"could not read {remote} and the scheduler's jobs in {acq_dir} "
@@ -116,7 +119,8 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
         if not sha:
             return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
                 error=f"could not hash {remote} on the cluster; a re-submit is not sent unchecked",
-                remedy="submit again once sha256sum answers on the login node")
+                remedy=(f"submit again: if {remote} is gone the re-submit uploads it, and if it is "
+                        f"there it is compared once sha256sum answers on the login node"))
         if sha == sha256_file(src):
             return None
         mine = src.read_bytes().decode("utf-8", "replace")

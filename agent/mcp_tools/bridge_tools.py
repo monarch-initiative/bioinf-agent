@@ -277,10 +277,11 @@ def globus_task_status(project_name: str,
     The rename is made only on the env the upload went to (another env is
     refused, `task_other_env`, naming the call). When the rename does not
     answer as made, what is at each name decides: the partial still there
-    and the destination free keeps the hold (call again); the destination
-    written meanwhile is `task_rename_blocked` (nothing replaced, the bytes
-    stay at the partial); the partial gone and the destination there is
-    `task_rename_unconfirmed`; both gone clears the way to upload again.
+    and the destination free, or either name unreadable, keeps the hold
+    (call again); the destination written meanwhile is `task_rename_blocked`
+    (nothing replaced, the bytes stay at the partial); the partial gone and
+    the destination there is `task_rename_unconfirmed`; both gone clears the
+    way to upload again.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.

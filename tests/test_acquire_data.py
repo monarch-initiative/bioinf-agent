@@ -172,7 +172,7 @@ class TestResubmit:
     and only when the script there is this acquisition's own."""
 
     def _resubmit(self, tmp_path, monkeypatch, *, squeue: str, there: str | bytes | None = None,
-                  second: dict | None = None, ssh_down: bool = False):
+                  second: dict | None = None, ssh_down: bool = False, profile: str = ""):
         import os
         import shlex
         import subprocess
@@ -206,7 +206,8 @@ class TestResubmit:
         def via_bash(argv, *a, **kw):
             if ssh_down:
                 return subprocess.CompletedProcess(argv, 255, stdout=b"", stderr=b"Connection refused")
-            return real(["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=kw.get("text"),
+            # `profile`: what a login shell's profile prints before the probe runs
+            return real(["bash", "-c", profile + shlex.split(argv[-1])[-1]], capture_output=True, text=kw.get("text"),
                         env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "USER": "u"})
         monkeypatch.setattr(acquire_data.subprocess, "run", via_bash)
 
@@ -248,14 +249,21 @@ class TestResubmit:
         assert (again["outcome"], again["code"]) == ("refused", "acquire.acq_dir_holds_another"), again
 
     @pytest.mark.parametrize("there", [
-        b"#!/bin/bash\r\nset -euo pipefail\r\n",                     # another file's line endings
         b"#!/bin/bash\nBIOINF_FILE_END\nLIVE=12 RUNNING\nSHA=x\n",   # lines that look like the probe's own
         b"\xff\xfe\x00binary",                                        # not text at all
-    ], ids=["crlf", "probe_lines_inside", "not_utf8"])
+    ], ids=["probe_lines_inside", "not_utf8"])
     def test_a_file_is_the_same_only_byte_for_byte(self, tmp_path, monkeypatch, there):
         first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n", there=there)
         assert (again["outcome"], again["code"]) == ("refused", "acquire.acq_dir_holds_another"), again
         assert len(sent["sbatch"]) == 1
+
+    @pytest.mark.parametrize("squeue,code", [("echo '77 RUNNING {acq}'\n", "acquire.still_running"),
+                                             ("echo 'Socket timed out' >&2; exit 1\n", "acquire.resubmit_unchecked")],
+                             ids=["job_still_running", "scheduler_cannot_answer"])
+    def test_a_login_profile_that_leaves_a_line_open_hides_nothing(self, tmp_path, monkeypatch, squeue, code):
+        first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue=squeue,
+                                            profile="printf 'modules loaded. '; ")
+        assert again["code"] == code and len(sent["sbatch"]) == 1, again
 
     def test_this_script_with_its_line_endings_changed_is_another_file(self, tmp_path, monkeypatch):
         first, again, sent = self._resubmit(tmp_path, monkeypatch, squeue="true\n")

@@ -376,10 +376,10 @@ def test_a_failed_tasks_command_in_the_manager_log_never_moves_the_stamp(tmp_pat
     assert out["stamp"] == "runs/20261016_120000" and out["verdict"] == "failed"
 
 
-def test_a_look_that_reads_less_than_the_last_never_replaces_it(tmp_path, monkeypatch):
-    """The run records are the slow hop. Late in a wait each hop's share of the time
-    left is shorter than that hop takes, and the look comes back without them: the
-    answer is the last look that read them."""
+def test_a_slow_read_is_not_cut_short_while_the_wait_has_time_for_it(tmp_path, monkeypatch):
+    """The run records are the slow hop. Each hop is held to the time left before the
+    deadline, never to a share of it, so the slow read finishes and the last look is
+    a whole one."""
     import subprocess
     clock = _Clock()
     monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
@@ -401,22 +401,67 @@ def test_a_look_that_reads_less_than_the_last_never_replaces_it(tmp_path, monkey
     assert r["waited_s"] <= 540
 
 
-def test_a_look_that_hangs_still_ends_the_wait_by_its_cap(tmp_path, monkeypatch):
+class _Phased(_Cluster):
+    """The first look: task 501 done. Every later look: 502 failed too, and the sacct
+    for the tasks still in flight fails, or with `ssh_dies` the manager's row cannot
+    be read at all."""
+    def __init__(self, *, ssh_dies=False):
+        super().__init__([_DONE], [])
+        self.looks, self.ssh_dies = 0, ssh_dies
+
+    def __call__(self, argv, **kw):
+        cmd = argv[-1]
+        if "sacct -j 4242 " in cmd:
+            self.looks += 1
+            if self.ssh_dies and self.looks > 1:
+                class R: returncode = 255; stdout = ""; stderr = "ssh: connect to host h port 22: Connection refused"
+                return R()
+        if self.looks > 1:
+            self.trace_rows = [_DONE, _DONE.replace("\t501\tBUILD (a)\tCOMPLETED\t0", "\t502\tTRIALS (a)\tFAILED\t137")]
+            self.inflight_rc = 1
+        return super().__call__(argv, **kw)
+
+
+def _wait(tmp_path, monkeypatch, cluster):
     import subprocess
     clock = _Clock()
     monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
     monkeypatch.setattr(cj.time, "sleep", clock.sleep)
-    monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")]))
-    orig, hops = cj._observe, []
+    monkeypatch.setattr(subprocess, "run", cluster)
+    return cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                                 access_path=_access(tmp_path))
 
-    def hangs_near_the_deadline(*a, timeout, **kw):
-        hops.append(timeout)
-        if clock.now >= 1000 + 480:                           # late in the wait, the cluster stops answering
-            clock.now += cj._HOPS_PER_LOOK * timeout          # every hop runs out its time
-            raise subprocess.TimeoutExpired("ssh", timeout)
-        return orig(*a, timeout=timeout, **kw)
-    monkeypatch.setattr(cj, "_observe", hangs_near_the_deadline)
+
+def test_a_later_look_that_sees_a_task_fail_is_the_answer_though_one_of_its_reads_failed(tmp_path, monkeypatch):
+    r = _wait(tmp_path, monkeypatch, _Phased())
+    assert r["pipeline"]["verdict"] == "failed" and r["pipeline"]["task_summary"]["FAILED"] == 1
+    assert "sacct for the tasks in flight failed" in r["pipeline"]["scheduler_unread"]
+
+
+def test_ssh_that_dies_mid_wait_is_the_answer_not_the_look_before_it(tmp_path, monkeypatch):
+    r = _wait(tmp_path, monkeypatch, _Phased(ssh_dies=True))
+    assert r["code"] == "cluster.status_ssh_failed" and "Connection refused" in r["error"]
+
+
+def test_a_look_that_hangs_still_ends_the_wait_by_its_cap(tmp_path, monkeypatch):
+    """Late in the wait the cluster stops answering: every hop runs out its time. Each
+    hop's time is what is left before the deadline, so the wait ends by it, and the
+    hop that runs out is the job's own row, so the last answer stands."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+    hops = []
+
+    def hangs_near_the_deadline(argv, **kw):
+        hops.append((clock.now, kw["timeout"]))
+        if clock.now >= 1000 + 480:
+            clock.now += kw["timeout"]
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"])
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", hangs_near_the_deadline)
     r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
                               access_path=_access(tmp_path))
     assert r["waited_s"] <= 540 and r["pipeline"]["tasks"], "the last answer stands"
-    assert hops[-1] < 60, "the hanging look's hops were held to the time left"
+    assert all(at + t <= 1000 + 540 for at, t in hops[3:]), "every hop of a wait ends by its deadline"

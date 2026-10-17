@@ -423,7 +423,7 @@ class TestGlobus:
     @pytest.mark.parametrize("there,code,outcome,held", [
         ({"/w/common/.ref.partial"}, "transfer.task_rename_failed", "still running", True),
         ({"/w/common/ref"}, "transfer.task_rename_unconfirmed", "unconfirmed", False),
-        ({"/w/common/.ref.partial", "/w/common/ref"}, "transfer.task_rename_blocked", "refused", False),
+        ({"/w/common/.ref.partial", "/w/common/ref"}, "transfer.task_rename_blocked", "failed", False),
     ], ids=["partial_only_retries", "destination_only_unconfirmed", "both_nothing_replaced"])
     def test_a_rename_that_did_not_answer_holds_only_while_a_retry_can_make_it(
             self, tmp_path, monkeypatch, there, code, outcome, held):
