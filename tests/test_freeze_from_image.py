@@ -964,3 +964,8 @@ def test_the_pull_ref_is_the_repo_asked_about_else_the_one_the_bytes_came_from(m
     assert CB.registry_pull_ref("mirror.example/miniprot:0.13") == "mirror.example/miniprot@sha256:" + "2f" * 32
     assert CB.registry_pull_ref("lab/miniprot:dev") == "quay.io/biocontainers/miniprot@sha256:" + "2e" * 32
     assert CB.registry_manifest_digest("mirror.example/miniprot:0.13") == "sha256:" + "2f" * 32
+    ported = held + "registry.lab:5000/tools/miniprot@sha256:" + "30" * 32 + "\n"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: MagicMock(returncode=0, stdout=ported, stderr=""))
+    for ref in ("registry.lab:5000/tools/miniprot:0.13", "registry.lab:5000/tools/miniprot",
+                "registry.lab:5000/tools/miniprot@sha256:" + "30" * 32):
+        assert CB.registry_pull_ref(ref) == "registry.lab:5000/tools/miniprot@sha256:" + "30" * 32, ref

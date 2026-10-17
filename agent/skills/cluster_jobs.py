@@ -283,8 +283,8 @@ def cluster_job_status(project_name: str,
         deadline = started + min(max(int(wait_s or 0), 0), _WAIT_CAP_S)
         # The next look starts only if one as long as the last still ends by the deadline,
         # and each of its ssh hops is held to the time left, so a look that hangs ends by
-        # the deadline too: when the job's own row is the read that runs out of time the
-        # last answer stands, and when a later read does the answer says which.
+        # the deadline too. A hop the deadline cuts short leaves the last answer standing;
+        # a read that runs out its own timeout is reported in the answer.
         while ("error" not in out and not _settled(out) and _progress(out) == mark
                and time.monotonic() + _POLL_S + look_s <= deadline):
             time.sleep(_POLL_S)
@@ -307,7 +307,8 @@ def cluster_job_status(project_name: str,
 
 def _hop_s(timeout: int, deadline: Optional[float]) -> int:
     """One ssh hop's timeout: the call's own, held to the time left before a wait's
-    deadline when there is one."""
+    deadline when there is one. A hop that times out under less than its own
+    `timeout` was cut short by the wait, not by the cluster: it raises."""
     if deadline is None:
         return timeout
     return max(1, min(timeout, int(deadline - time.monotonic())))
@@ -432,6 +433,8 @@ def _in_flight(env: dict, submitted: list[str], finished: set, *,
         else:
             unread = f"sacct for the tasks in flight failed (rc={res.returncode}): {(res.stderr or '').strip()[:200]}"
     except subprocess.TimeoutExpired as e:
+        if e.timeout < timeout:
+            raise
         unread = f"sacct for the tasks in flight timed out after {e.timeout}s"
     tasks = []
     for jid, task in live.items():
@@ -521,12 +524,15 @@ def _block(lines: list[str], tag: str) -> list[str]:
 
 def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[dict], *,
                        timeout: int, deadline: Optional[float] = None) -> dict:
-    """What the run's own records say. Never raises: an unreadable run directory is
-    reported as such beside the manager's SLURM row."""
+    """What the run's own records say. An unreadable run directory is reported as
+    such beside the manager's SLURM row; only a hop a wait's deadline cut short
+    raises (`_hop_s`)."""
     argv = _ssh_argv(env, _build_pipeline_run_cmd(run_dir, job_id))
     try:
         res = subprocess.run(argv, capture_output=True, text=True, timeout=_hop_s(timeout, deadline))
     except subprocess.TimeoutExpired as e:
+        if e.timeout < timeout:
+            raise
         return broke("cluster.run_records_timeout", run_dir=run_dir,
                      error=f"reading the run records timed out after {e.timeout}s")
     if res.returncode != 0:

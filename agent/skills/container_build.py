@@ -323,7 +323,9 @@ def registry_pull_ref(ref: str) -> str:
         capture_output=True, text=True, timeout=60)
     if p.returncode != 0:
         return ""
-    repo = ref.split("@", 1)[0].split(":")[0] if "@" in ref else ref.split(":")[0]
+    name = ref.split("@", 1)[0]
+    # a tag follows the last `:` only after the last `/`; before it, the `:` is a registry port
+    repo = name.rsplit(":", 1)[0] if name.rfind(":") > name.rfind("/") else name
     pulls = [ln.strip() for ln in (p.stdout or "").splitlines() if "@sha256:" in ln]
     return next((d for d in pulls if d.split("@", 1)[0] == repo), pulls[0] if pulls else "")
 

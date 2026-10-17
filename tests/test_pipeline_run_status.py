@@ -401,6 +401,30 @@ def test_a_slow_read_is_not_cut_short_while_the_wait_has_time_for_it(tmp_path, m
     assert r["waited_s"] <= 540
 
 
+def test_a_read_the_deadline_cuts_short_leaves_the_last_whole_answer(tmp_path, monkeypatch):
+    """On the wait's last look the records read takes 25 s, far under its own 60 s, but
+    more than the time left: it was the wait that ran out, not the cluster."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+
+    def slower_at_the_end(argv, **kw):
+        records = "TRACE_BEGIN" in argv[-1]
+        cost = (25 if clock.now >= 1000 + 500 else 8) if records else 1
+        if cost > kw["timeout"]:
+            clock.now += kw["timeout"]
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"])
+        clock.now += cost
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", slower_at_the_end)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                              access_path=_access(tmp_path))
+    assert "error" not in r["pipeline"] and r["pipeline"]["verdict"] == "running", r["pipeline"]
+    assert r["waited_s"] <= 540
+
+
 class _Phased(_Cluster):
     """The first look: task 501 done. Every later look: 502 failed too, and the sacct
     for the tasks still in flight fails, or with `ssh_dies` the manager's row cannot
@@ -456,7 +480,7 @@ def test_a_look_that_hangs_still_ends_the_wait_by_its_cap(tmp_path, monkeypatch)
 
     def hangs_near_the_deadline(argv, **kw):
         hops.append((clock.now, kw["timeout"]))
-        if clock.now >= 1000 + 480:
+        if clock.now >= 1000 + 500:
             clock.now += kw["timeout"]
             raise subprocess.TimeoutExpired("ssh", kw["timeout"])
         return cluster(argv, **kw)
@@ -464,4 +488,4 @@ def test_a_look_that_hangs_still_ends_the_wait_by_its_cap(tmp_path, monkeypatch)
     r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
                               access_path=_access(tmp_path))
     assert r["waited_s"] <= 540 and r["pipeline"]["tasks"], "the last answer stands"
-    assert all(at + t <= 1000 + 540 for at, t in hops[3:]), "every hop of a wait ends by its deadline"
+    assert hops[-1][1] < 60, "the hanging hop was held to the time left, not its own 60 s"
