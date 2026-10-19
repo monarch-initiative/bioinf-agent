@@ -87,7 +87,7 @@ from agent.skills import compute_access, transfer, workspace
 from agent.models.core_data import frozen_image_ref, record_is_gated as _record_is_gated, sha256_file
 from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke, loop
-from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _SEEN_FN, _login_shell, _ssh_argv, _ssh_failure_hint
 
 
 def _short_digest(digest: str) -> str:
@@ -118,7 +118,7 @@ def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) ->
     stage builds and ships, and the ship then names the ssh failure). Used for
     idempotency (skip a re-stage) WITHOUT any build/pull on the head node."""
     body = _SEEN_FN + f"seen {shlex.quote(sif_remote_abs)} && echo EXISTS || echo MISSING"
-    cmd = f"bash -lc {shlex.quote(body)}"
+    cmd = _login_shell(body)
     try:
         res = subprocess.run(_ssh_argv(env, cmd), capture_output=True,
                              text=True, timeout=timeout)
@@ -368,7 +368,7 @@ def _build_inspect_cmd(sif_remote_abs: str) -> str:
         "echo ---INSPECT---; "
         f"apptainer inspect --json {q} 2>/dev/null || echo INSPECT_FAILED"
     )
-    return f"bash -lc {shlex.quote(body)}"
+    return _login_shell(body)
 
 
 def inspect_staged_sif(env: dict, sif_remote_abs: str,

@@ -57,7 +57,7 @@ from typing import Optional
 
 from agent.skills import compute_access
 from agent.skills.outcomes import refused, broke
-from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _login_shell, _ssh_argv, _ssh_failure_hint
 
 
 # A `module avail` pattern token is a boring subset: alnum + `_+.-/`.
@@ -97,7 +97,7 @@ def _build_module_avail_cmd(pattern: Optional[str]) -> str:
     # would lose everything. The trailing `|| true` keeps the rc=0 even
     # when `module avail` exits non-zero (some Lmod versions return 1
     # when the pattern matches nothing; that's not an error for us).
-    return f"bash -lc {shlex.quote(inner + ' 2>&1')} || true"
+    return _login_shell(inner + ' 2>&1') + " || true"
 
 
 def _parse_module_avail_output(text: str) -> list[str]:

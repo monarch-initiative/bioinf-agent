@@ -279,6 +279,14 @@ _SEEN_FN = ('fresh() { d=$1; until [ -d "$d" ]; do d=$(dirname "$d"); done; : 2>
             'seen() { [ -e "$1" ] || { fresh "$(dirname "$1")"; [ -e "$1" ]; }; }; ')
 
 
+def _login_shell(script: str) -> str:
+    """`script` as ssh runs it in a login shell, which reads the profile that puts the
+    cluster's tools (module, sacct, sbatch, apptainer) on PATH. Its output starts on a
+    line of its own: a profile that prints without a final newline would otherwise
+    glue its text onto the first line a check reads."""
+    return f"bash -lc {shlex.quote('echo; ' + script)}"
+
+
 def _ssh_failure_hint(stderr: str, host: str) -> Optional[str]:
     """Detect well-known ssh failure modes and return a user-facing hint.
 
