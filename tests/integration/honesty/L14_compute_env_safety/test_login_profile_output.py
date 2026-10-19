@@ -90,14 +90,34 @@ def test_a_profile_banner_is_never_listed_as_a_module(chatty_profile):
     assert out["modules"] == ["samtools/1.21", "nextflow/25.04.7"], out
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("profile,code", [
+    ("exec true\n", "modules.listing_unobserved"),
+    ("echo 'Welcome to the cluster'\n", "modules.module_command_missing"),
+], ids=["profile_replaces_the_shell", "no_module_command"])
+def test_a_listing_never_made_is_not_an_empty_one(chatty_profile, profile, code):
+    (chatty_profile / "home" / ".bash_profile").write_text(profile)
+    access = chatty_profile / "projects_access.yaml"
+    access.write_text(yaml.safe_dump({
+        "compute_envs": [_env()],
+        "projects": [{"name": "demo_project", "compute_envs": ["hpc"], "directories": []}]}))
+    out = cluster_modules.cluster_module_avail("demo_project", "hpc", access_path=str(access))
+    assert (out["outcome"], out["code"]) == ("broke", code), out
+
+
 #: A login shell however it is spelled: `bash -lc`, `/bin/bash -l -c`, `bash --login -c`.
 _LOGIN_SHELL = re.compile(r"\bbash\s+(?:-[A-Za-z]*l[A-Za-z]*|--login)\b")
 
 
 def _spells_login_shell(node: ast.AST) -> bool:
-    """A string in the code that starts a login shell, or an argv's own `-lc`."""
-    return (isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and (bool(_LOGIN_SHELL.search(node.value)) or node.value.strip() in ("-lc", "--login")))
+    """A string in the code that starts a login shell, or an argv list that does."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return bool(_LOGIN_SHELL.search(node.value))
+    if isinstance(node, (ast.List, ast.Tuple)):
+        words = [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        return (any(w.rsplit("/", 1)[-1] == "bash" for w in words)
+                and any(re.fullmatch(r"-[A-Za-z]*l[A-Za-z]*|--login", w) for w in words))
+    return False
 
 
 @pytest.mark.integration
@@ -121,6 +141,14 @@ def test_every_login_shell_check_goes_through_the_one_wrapper():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("spelling", ['f"bash -lc {q}"', '"/bin/bash -lc " + q', '"bash -l -c " + q',
-                                      '"bash --login -c " + q', '["bash", "-lc", q]'])
+                                      '"bash --login -c " + q', '["bash", "-lc", q]',
+                                      '["bash", "-l", "-c", q]', '["/bin/bash", "-cl", q]',
+                                      '("bash", "-il", "-c", q)'])
 def test_the_scan_sees_each_spelling(spelling):
     assert any(map(_spells_login_shell, ast.walk(ast.parse(f"def check(q):\n    return {spelling}\n"))))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("plain", ['["wc", "-l", q]', '["bash", "-c", q]', '"ls -la " + q'])
+def test_the_scan_passes_what_is_not_a_login_shell(plain):
+    assert not any(map(_spells_login_shell, ast.walk(ast.parse(f"def check(q):\n    return {plain}\n"))))

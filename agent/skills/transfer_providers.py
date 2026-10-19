@@ -153,8 +153,9 @@ def _hint(hint: Optional[str]) -> dict:
 
 
 def _discard_local(p: Path) -> None:
-    """Remove what a download attempt left at `p`, its partial name. No task still
-    writes there: the primitive refuses a destination an unended task holds."""
+    """Remove what a download attempt left at `p`, its partial name. A destination an
+    unended Globus task still lands at is held before this runs, while the env that
+    task ran on can resolve it."""
     import shutil
     try:
         if p.is_dir() and not p.is_symlink():
@@ -165,15 +166,22 @@ def _discard_local(p: Path) -> None:
         pass
 
 
-def _put_in_place(part: Path, dst: Path, done: dict) -> dict:
-    """`done`, once the verified download at `part` has `dst`'s name; refused when
-    something arrived at `dst` meanwhile (the copy is discarded, nothing replaced)."""
+def _put_in_place(part: Path, dst: Path, done: dict, *,
+                  appeared: str = "transfer.local_exists") -> dict:
+    """`done`, once the verified copy at `part` has `dst`'s name; refused as `appeared`
+    when something arrived at `dst` meanwhile (the copy is discarded, nothing replaced),
+    and broke when the rename itself fails (the copy is discarded)."""
     from agent.skills.transfer import TransferError, _into_place
+    said = {k: done[k] for k in ("provider", "task_id", "command") if k in done}
     try:
         _into_place(part, dst)
     except TransferError as e:
-        return refused("transfer.local_exists", error=str(e),
-                       **{k: done[k] for k in ("provider", "task_id", "command") if k in done})
+        return refused(appeared, error=str(e), **said)
+    except OSError as e:
+        _discard_local(part)
+        return broke("transfer.local_io_failed", error=(
+            f"renaming the verified copy to {dst} failed ({type(e).__name__}: {e}); "
+            f"the copy was removed"), **said)
     return done
 
 

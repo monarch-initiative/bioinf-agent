@@ -157,7 +157,7 @@ def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_na
 
     # An earlier upload of this .sif whose Globus task has not been seen to end may still
     # be reading the local .sif a rebuild would replace.
-    inflight = transfer.pending_transfer(env, "upload", sif_remote_abs)
+    inflight = transfer.pending_upload(env, sif_remote_abs)
     if inflight is not None:
         call = transfer.status_call(project_name, compute_env_name, inflight[1].get("globus_task_id"))
         return loop("stage.sif_upload_still_running", success=False, sif_path=sif_remote_abs,

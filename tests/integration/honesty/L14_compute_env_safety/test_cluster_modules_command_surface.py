@@ -2,13 +2,15 @@
 L14 cheat-guards — cluster_module_avail's refuse-to-emit + parsing surface.
 
 cluster_module_avail is pure-read: ONE ssh invocation that runs
-`bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail [pattern] 2>&1' || true`, parses what follows the marker,
+`bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail [pattern] 2>&1; echo BIOINF_MODULES_END=$?'`,
+parses what lies between the markers,
 returns a list. These tests pin:
 
   - pattern validation: pure-string token check fires BEFORE any ssh
     (so a smuggled `nextflow; rm -rf /` can never reach the cluster)
-  - remote-cmd shape: the literal `bash -lc '<inner>' || true` shape
-    that gets passed through `ssh ... '<...>'`
+  - remote-cmd shape: the literal `bash -lc '<inner>'` shape that gets
+    passed through `ssh ... '<...>'`; the listing between two markers, the
+    closing one carrying `module avail`'s exit status
   - output parsing: Lmod (D)/(L) annotations stripped; section headers
     dropped; multi-column rows split correctly
   - authorization gate: project must have compute_env_access for the
@@ -104,17 +106,17 @@ class TestPatternValidator:
 class TestRemoteCmdShape:
     @pytest.mark.integration
     def test_no_pattern_shape(self):
-        # The canonical shape: bash -lc 'module avail 2>&1' || true.
-        # `-l` forces a login shell so /etc/profile.d/lmod.sh loads.
-        # `|| true` absorbs `module avail`'s nonzero exits (some Lmod
-        # versions return 1 when pattern matches nothing).
+        # The canonical shape. `-l` forces a login shell so
+        # /etc/profile.d/lmod.sh loads; the listing sits between two markers,
+        # the closing one carrying `module avail`'s exit status (some Lmod
+        # versions return 1 when the pattern matches nothing).
         cmd = cluster_modules._build_module_avail_cmd(None)
-        assert cmd == "bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail 2>&1' || true"
+        assert cmd == "bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail 2>&1; echo BIOINF_MODULES_END=$?'"
 
     @pytest.mark.integration
     def test_with_pattern_shape(self):
         cmd = cluster_modules._build_module_avail_cmd("nextflow")
-        assert cmd == "bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail nextflow 2>&1' || true"
+        assert cmd == "bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail nextflow 2>&1; echo BIOINF_MODULES_END=$?'"
 
     @pytest.mark.integration
     def test_pattern_with_metachar_would_be_quoted(self):
@@ -286,6 +288,7 @@ class TestSshHappyPathMock:
 BIOINF_MODULES_BEGIN
 ------- /nas/hpc_cluster/apps-modulefiles -------
    nextflow/22.04.5    nextflow/25.04.7 (D)
+BIOINF_MODULES_END=0
 """
 
         def fake_run(*args, **kwargs):

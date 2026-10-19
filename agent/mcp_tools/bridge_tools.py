@@ -193,7 +193,10 @@ def cluster_module_avail(project_name: str,
 
     Returns {compute_env, pattern, modules, module_count, captured_at}
     on success; {"error": "...", "hint": ...} on failure (e.g. no
-    ControlMaster session)."""
+    ControlMaster session). Only what `module avail` printed is read, never
+    the login profile's own output; a listing the login shell never printed
+    is `listing_unobserved`, and a login shell with no `module` command is
+    `module_command_missing`, never an empty list."""
     from agent.skills import cluster_modules
     return cluster_modules.cluster_module_avail(
         project_name=project_name,
@@ -283,7 +286,10 @@ def globus_task_status(project_name: str,
     and the transfer's receipt says it finished; when it ended otherwise,
     the receipt says it failed and a transfer to that path may go again.
     A task is resolved only on the env it ran on (another env is refused,
-    `task_other_env`, naming the call).
+    `task_other_env`, naming the call), and only once the call that started
+    it has returned: while that call still waits (a `background=True`
+    transfer), it puts the bytes in place itself, and this call changes
+    nothing and says so (`task_call_waiting`).
     An upload's rename is made on the cluster. When it does not answer as
     made, what is at each name decides: the partial still there and the
     destination free, or either name unreadable, keeps the hold (call

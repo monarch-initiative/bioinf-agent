@@ -85,9 +85,10 @@ def validate_pattern(pattern: Optional[str]) -> Optional[str]:
     return pattern
 
 
-#: Where `module avail`'s own output starts, after whatever the login profile printed:
-#: the parser takes every safe word as a module, so a banner's words would be listed.
-_MODULES_BEGIN = "BIOINF_MODULES_BEGIN"
+#: Around `module avail`'s own output, after whatever the login profile printed: the
+#: parser takes every safe word as a module, so a banner's words would be listed. The
+#: closing line carries `module avail`'s exit status.
+_MODULES_BEGIN, _MODULES_END = "BIOINF_MODULES_BEGIN", "BIOINF_MODULES_END="
 
 
 def _build_module_avail_cmd(pattern: Optional[str]) -> str:
@@ -99,10 +100,10 @@ def _build_module_avail_cmd(pattern: Optional[str]) -> str:
     if pattern:
         inner = f"{inner} {shlex.quote(pattern)}"
     # 2>&1 because module avail writes to stderr — capturing only stdout
-    # would lose everything. The trailing `|| true` keeps the rc=0 even
-    # when `module avail` exits non-zero (some Lmod versions return 1
-    # when the pattern matches nothing; that's not an error for us).
-    return _login_shell(inner + ' 2>&1') + " || true"
+    # would lose everything. Its exit status is echoed rather than
+    # returned: some Lmod versions return 1 when the pattern matches
+    # nothing, which is not an error; 127 is no `module` at all.
+    return _login_shell(f"{inner} 2>&1; echo {_MODULES_END}$?")
 
 
 def _parse_module_avail_output(text: str) -> list[str]:
@@ -209,8 +210,7 @@ def cluster_module_avail(project_name: str,
         res = subprocess.run(argv, capture_output=True, text=True,
                              timeout=timeout)
         # rc captures ssh-layer failures (BatchMode, no session, etc.);
-        # `module avail`'s own non-zero exit is hidden by the `|| true`
-        # tail in our remote_cmd.
+        # `module avail`'s own exit status is echoed on its closing line.
         if res.returncode != 0:
             hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
             return broke("modules.ssh_failed", error=
@@ -219,8 +219,17 @@ def cluster_module_avail(project_name: str,
                 **({"hint": hint} if hint else {}))
 
         lines = (res.stdout or "").splitlines()
-        ours = lines[lines.index(_MODULES_BEGIN) + 1:] if _MODULES_BEGIN in lines else []
-        modules = _parse_module_avail_output("\n".join(ours))
+        end = next((i for i, ln in enumerate(lines) if ln.startswith(_MODULES_END)), None)
+        if _MODULES_BEGIN not in lines or end is None:
+            return broke("modules.listing_unobserved", error=(
+                f"the login shell on {compute_env_name!r} printed no module listing of ours "
+                f"(its profile may replace or end the shell): "
+                f"{(res.stdout or '').strip()[-300:]!r}"))
+        if lines[end][len(_MODULES_END):] == "127":
+            return broke("modules.module_command_missing", error=(
+                f"a login shell on {compute_env_name!r} has no `module` command, so there "
+                f"is no module listing to read"))
+        modules = _parse_module_avail_output("\n".join(lines[lines.index(_MODULES_BEGIN) + 1:end]))
         # Client-side pattern re-filter — defense in depth.
         if norm_pattern:
             modules = [m for m in modules if norm_pattern in m]
