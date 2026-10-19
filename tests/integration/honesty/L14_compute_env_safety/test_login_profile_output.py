@@ -97,7 +97,10 @@ def test_a_profile_banner_is_never_listed_as_a_module(chatty_profile):
     ("echo 'Welcome to the cluster'\n", "modules.module_command_missing"),
     ("module() { echo 'Lmod has detected the following error: no spider cache' >&2; return 2; }\n",
      "modules.module_avail_failed"),
-], ids=["profile_replaces_the_shell", "listing_never_ends", "no_module_command", "module_avail_failed"])
+    ("module() { echo 'Lmod has detected the following error: no spider cache' >&2; return 1; }\n",
+     "modules.module_avail_failed"),
+], ids=["profile_replaces_the_shell", "listing_never_ends", "no_module_command", "module_avail_failed",
+        "module_avail_failed_with_1"])
 def test_a_listing_never_made_is_not_an_empty_one(chatty_profile, profile, code):
     (chatty_profile / "home" / ".bash_profile").write_text(profile)
     access = chatty_profile / "projects_access.yaml"
@@ -160,7 +163,8 @@ def test_the_scan_passes_what_is_not_a_login_shell(plain):
 @pytest.mark.integration
 def test_a_pattern_that_matches_nothing_is_an_empty_listing(chatty_profile):
     """Some Lmod versions exit 1 when a pattern matches nothing: not an error."""
-    (chatty_profile / "home" / ".bash_profile").write_text("module() { return 1; }\n")
+    (chatty_profile / "home" / ".bash_profile").write_text(
+        "module() { echo 'No module(s) or extension(s) found!' >&2; return 1; }\n")
     access = chatty_profile / "projects_access.yaml"
     access.write_text(yaml.safe_dump({
         "compute_envs": [_env()],

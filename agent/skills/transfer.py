@@ -103,6 +103,7 @@ remote_abs_path) the operation ran with. The agent doesn't need to
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 from agent.skills import workspace
 import json
@@ -961,7 +962,7 @@ def _do_transfer(*, direction: str,
                 bytes_transferred=bytes_transferred,
                 duration_s=duration,
                 sha256=sha256,
-                task_id=task_id,
+                task_id=task_id or receipt.get("task_id"),
                 verified_method=verified_method,
                 error_msg=error_msg,
                 checksums=checksums,
@@ -1122,8 +1123,9 @@ def _do_transfer(*, direction: str,
                 # waits still leaves the hold and the rename for globus_task_status.
                 pending = {"env": compute_env_name, "to": dest,
                            "from": partial_path(normed_remote if direction == "upload" else str(lp))}
+                receipt["task_id"] = task_id
                 written = _journal(result="waiting", zone=zone, transport=provider.name,
-                                   task_id=task_id, pending_rename=pending)
+                                   pending_rename=pending)
                 if written.is_file():
                     receipt["path"] = written
                     try:
@@ -1160,12 +1162,19 @@ def _do_transfer(*, direction: str,
             return loop("transfer.globus_task_unobserved", **out, manifest=str(mpath))
         if "error" in pr:
             said_no = pr.get("outcome") == "refused"
+            # verified bytes left under the partial name by a task: the rename that did not
+            # answer stays with the receipt, for globus_task_status to make or account for
+            unrenamed = ({"env": compute_env_name, "from": pr["partial_path"], "to": dest}
+                         if pr.get("partial_path") and pr.get("task_id") else None)
             mpath = _journal(result="refused" if said_no else "error", zone=zone,
                 transport=pr.get("provider") or transport_name,
                 command=pr.get("command"),
                 task_id=pr.get("task_id"),
-                error_msg=pr["error"])
+                error_msg=pr["error"], pending_rename=unrenamed)
             out = dict(pr); out["manifest"] = str(mpath)
+            if unrenamed:
+                out["status_call"] = status_call(project_name, compute_env_name, pr["task_id"])
+                out["remedy"] = f"{out['status_call']}: it retries the rename and says what is at each name"
             if pr.get("code") in _APPEARED:                   # it appeared while this transfer ran
                 return refused(pr["code"], **out)
             if said_no:
@@ -1266,18 +1275,24 @@ def resolve_globus_task(env: dict, task_id: str) -> dict:
     resolved only on the env it ran on."""
     from agent.skills import transfer_providers
     status = transfer_providers.globus_task_status(env, task_id)
-    found = _task_receipt(task_id)
-    if found is None or status.get("code") not in ("transfer.task_status_ok", "transfer.task_failed",
-                                                     "transfer.task_incomplete"):
+    if status.get("code") not in ("transfer.task_status_ok", "transfer.task_failed",
+                                  "transfer.task_incomplete"):
         return status
-    path = found[0]
+    found = _task_receipt(task_id)
+    if found is None:
+        return status
+    path, rec = found
+    if not isinstance(rec.get("pending_rename"), dict):
+        return _as_receipt_says(status, path, rec)        # an ended receipt is never rewritten
     try:
         hold = _hold_receipt(path)
     except OSError as e:
         return broke("transfer.receipt_hold_failed", success=False, task_id=task_id, manifest=str(path),
                      error=f"the hold on {path} could not be taken ({e}); nothing was changed",
                      remedy=("put the workspace ($BIOINF_WORKSPACE) on a filesystem that takes file "
-                             "locks, then globus_task_status again"))
+                             "locks, then globus_task_status again"
+                             if e.errno in (errno.ENOLCK, errno.ENOTSUP, errno.EOPNOTSUPP) else
+                             f"make {path} readable and writable, then globus_task_status again"))
     if hold is None:
         return loop("transfer.task_call_waiting", success=False, task_id=task_id, manifest=str(path),
                     task_status=status.get("status"),
@@ -1346,7 +1361,8 @@ def _as_receipt_says(status: dict, path: Path, rec: dict) -> dict:
     """A task's status with how its transfer ended, as the transfer's receipt says: a
     task that succeeded is a transfer that did only when its bytes are in place."""
     said = {"transfer": rec.get("outcome"), "manifest": str(path)}
-    if status["code"] != "transfer.task_status_ok" or rec.get("outcome") in ("uploaded", "downloaded"):
+    if status["code"] != "transfer.task_status_ok" or rec.get("outcome") not in ("failed", "refused",
+                                                                                  "unconfirmed"):
         return {**status, **said}
     fields = {k: v for k, v in status.items() if k not in ("outcome", "code", "success", "error")}
     why = (f"Globus task {status.get('task_id')} succeeded, but the transfer is "
@@ -1499,36 +1515,32 @@ def _hold_receipt(path: Path) -> Optional[int]:
     return fd
 
 
-def _task_receipt(task_id: str) -> Optional[tuple[Path, dict]]:
-    """The newest receipt, under any project, of the transfer Globus task `task_id` ran."""
+def _receipts(needle: str):
+    """Every receipt, under any project, newest first, whose text holds `needle`."""
     root = _record_root() / "transfer_history"
     for p in sorted(root.glob("*/*/*.json"), key=lambda p: p.name, reverse=True):
         try:
             text = p.read_text()
-            rec = json.loads(text) if task_id in text else None
+            rec = json.loads(text) if needle in text else None
         except (OSError, ValueError):
             continue
-        if isinstance(rec, dict) and rec.get("globus_task_id") == task_id:
-            return p, rec
-    return None
+        if isinstance(rec, dict):
+            yield p, rec
+
+
+def _task_receipt(task_id: str) -> Optional[tuple[Path, dict]]:
+    """The receipt of the transfer Globus task `task_id` ran."""
+    return next(((p, rec) for p, rec in _receipts(task_id)
+                 if rec.get("globus_task_id") == task_id), None)
 
 
 def _pending_receipt(*, direction: str, to: str,
                      env: Optional[str] = None) -> Optional[tuple[Path, dict]]:
-    """The receipt, under any project, of a transfer in `direction` to `to` whose Globus
-    task has not been seen to end, and so still waits to be renamed into place; on `env`
-    when one is named."""
-    root = _record_root() / "transfer_history"
-    for p in sorted(root.glob("*/*/*.json"), key=lambda p: p.name, reverse=True):
-        try:
-            text = p.read_text()
-            rec = json.loads(text) if '"pending_rename"' in text else None
-        except (OSError, ValueError):
-            continue
-        pending = rec.get("pending_rename") if isinstance(rec, dict) else None
-        if not isinstance(pending, dict):
-            continue
-        if ((rec.get("direction"), pending.get("to")) == (direction, to)
+    """The newest receipt of a transfer in `direction` to `to` whose rename into place
+    is still to be made; on `env` when one is named."""
+    for p, rec in _receipts('"pending_rename"'):
+        pending = rec.get("pending_rename")
+        if (isinstance(pending, dict) and (rec.get("direction"), pending.get("to")) == (direction, to)
                 and env in (None, pending.get("env"))):
             return p, rec
     return None

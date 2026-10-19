@@ -101,7 +101,7 @@ def _build_module_avail_cmd(pattern: Optional[str]) -> str:
         inner = f"{inner} {shlex.quote(pattern)}"
     # 2>&1 because module avail writes to stderr — capturing only stdout
     # would lose everything. Its exit status is echoed rather than
-    # returned: some Lmod versions return 1 when the pattern matches
+    # returned: some Lmod versions return 1 when a pattern matches
     # nothing, which is not an error; 127 is no `module` at all.
     return _login_shell(f"{inner} 2>&1; echo {_MODULES_END}$?")
 
@@ -230,11 +230,14 @@ def cluster_module_avail(project_name: str,
             return broke("modules.module_command_missing", error=(
                 f"a login shell on {compute_env_name!r} has no `module` command, so there "
                 f"is no module listing to read"))
-        if rc not in ("0", "1"):
+        said = lines[lines.index(_MODULES_BEGIN) + 1:end]
+        if rc == "1" and norm_pattern:      # a pattern that matched nothing; its message is not modules
+            said = []
+        elif rc != "0":
             return broke("modules.module_avail_failed", error=(
                 f"`module avail` on {compute_env_name!r} exited {rc}: "
-                f"{chr(10).join(lines[lines.index(_MODULES_BEGIN) + 1:end]).strip()[-300:]!r}"))
-        modules = _parse_module_avail_output("\n".join(lines[lines.index(_MODULES_BEGIN) + 1:end]))
+                f"{chr(10).join(said).strip()[-300:]!r}"))
+        modules = _parse_module_avail_output("\n".join(said))
         # Client-side pattern re-filter — defense in depth.
         if norm_pattern:
             modules = [m for m in modules if norm_pattern in m]

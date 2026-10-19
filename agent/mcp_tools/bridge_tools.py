@@ -289,10 +289,12 @@ def globus_task_status(project_name: str,
     A task is resolved only on the env it ran on (another env is refused,
     `task_other_env`, naming the call), and only once the call that started
     it has returned: while that call still waits (a `background=True`
-    transfer), it puts the bytes in place itself, and this call changes
-    nothing and says so (`task_call_waiting`). Once the transfer has ended,
-    `transfer` and `manifest` say how, from its receipt; a task that
-    SUCCEEDED whose bytes were not put in place is `task_transfer_unplaced`.
+    transfer), or another globus_task_status is putting it in place, this
+    call changes nothing and says so (`task_call_waiting`); a hold on the
+    transfer's receipt that cannot be taken at all is `receipt_hold_failed`.
+    Once the transfer has ended, `transfer` and `manifest` say how, from its
+    receipt; a task that SUCCEEDED whose bytes were not put in place is
+    `task_transfer_unplaced`.
     An upload's rename is made on the cluster. When it does not answer as
     made, what is at each name decides: the partial still there and the
     destination free, or either name unreadable, keeps the hold (call
@@ -308,7 +310,8 @@ def globus_task_status(project_name: str,
     (nothing replaced, the copy removed); a copy short of the task, or
     nothing left under the partial name, is `task_rename_failed` (download
     it again), but `task_rename_unconfirmed` when the destination holds a
-    file.
+    file. A rename this machine's filesystem refused is `task_rename_failed`
+    with `partial_path`: the bytes stay there and a later call retries it.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.

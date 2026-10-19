@@ -598,7 +598,7 @@ class GlobusProvider(TransferProvider):
         if "error" in pr:
             return pr
         moved = self.rename(part, abs_remote_path)
-        return moved if "error" in moved else pr
+        return {**moved, "task_id": pr.get("task_id")} if "error" in moved else pr
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
