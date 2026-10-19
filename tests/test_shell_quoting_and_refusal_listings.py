@@ -346,7 +346,7 @@ def test_remote_sif_probe_body_is_one_quoted_argument(monkeypatch, tmp_path):
     assert stage_apptainer._remote_sif_exists({"host": "hpc.example.invalid"}, sif) is True
     from agent.skills.snapshot import _SEEN_FN
     body = _remote_argv(seen[0])[2]
-    assert body == _SEEN_FN + f"seen {shlex.quote(sif)} && echo EXISTS || echo MISSING"
+    assert body == "echo; " + _SEEN_FN + f"seen {shlex.quote(sif)} && echo EXISTS || echo MISSING"
     # the body itself runs: against a real file whose name carries the quote
     real = tmp_path / "it's a.sif"
     real.write_bytes(b"x")
@@ -358,7 +358,7 @@ def test_inspect_cmd_body_is_one_quoted_argument():
     sif = "/w/CLAUDE_CONTAINERS/it's a.sif"
     body = _remote_argv(stage_apptainer._build_inspect_cmd(sif))[2]
     q = shlex.quote(sif)
-    assert body.startswith("module load apptainer >/dev/null 2>&1 || true; ")
+    assert body.startswith("echo; module load apptainer >/dev/null 2>&1 || true; ")
     assert f"if ! seen {q}; then echo SIF_MISSING; exit 3; fi; sha256sum {q} 2>/dev/null; echo ---INSPECT---; " in body
     assert body.endswith(f"apptainer inspect --json {q} 2>/dev/null || echo INSPECT_FAILED")
 
@@ -378,7 +378,7 @@ def test_sbatch_via_ssh_body_is_one_quoted_argument(monkeypatch):
     assert r["job_id"] == "4242"
     from agent.skills.snapshot import _SEEN_FN
     assert _remote_argv(r["sbatch_command"])[2] == \
-        _SEEN_FN + "seen /work/u/run; cd /work/u/run && sbatch --parsable --dependency=afterok:41 launcher.sh"
+        "echo; " + _SEEN_FN + "seen /work/u/run; cd /work/u/run && sbatch --parsable --dependency=afterok:41 launcher.sh"
     assert seen == [r["sbatch_command"]]
 
 
@@ -398,7 +398,7 @@ def test_cluster_probe_body_is_one_quoted_argument(monkeypatch):
     from agent.skills.snapshot import _SEEN_FN
     body = _remote_argv(seen[0])[2]
     q, q_side = shlex.quote(path), shlex.quote(path + ".source.sha256")
-    assert body == _SEEN_FN + (f"if seen {q}; then echo EXISTS=1; else echo EXISTS=0; fi; "
+    assert body == "echo; " + _SEEN_FN + (f"if seen {q}; then echo EXISTS=1; else echo EXISTS=0; fi; "
                     f"if [ -e {q} ]; then du -sb {q} 2>/dev/null | cut -f1 | sed \"s/^/SIZE=/\"; fi; "
                     f"if seen {q_side}; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi")
 

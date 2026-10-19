@@ -136,13 +136,15 @@ class TestThroughThePrimitive:
 
 def _fake_ssh_and_scp(calls: list, *, drop: str = ""):
     """ssh runs its remote command through bash here; scp copies, with `user@host:`
-    stripped. `drop` names a relative path scp 'loses' on the way."""
+    stripped, a directory into one already there as `scp -r` does. `drop` names a
+    relative path scp 'loses' on the way."""
     def fake_run(argv, *a, **kw):
         calls.append(argv)
         if argv[0] == "ssh":
             return _REAL_RUN(["bash", "-c", argv[-1]], capture_output=True, text=True)
         src, dst = (s.split(":", 1)[1] if ":" in s else s for s in argv[-2:])
         if Path(src).is_dir():
+            dst = Path(dst) / Path(src).name if Path(dst).is_dir() else dst
             shutil.copytree(src, dst)
             if drop:
                 (Path(dst) / drop).unlink()
@@ -228,6 +230,36 @@ class TestScp:
         assert set(out["checksums"]) == {"a.txt", "sub/b.tsv", "sub/deeper/c.bin"}
 
     @pytest.mark.integration
+    def test_what_an_earlier_download_left_never_rides_into_place(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", _fake_ssh_and_scp([]))
+        far = _tree(tmp_path / "far" / "results")
+        (tmp_path / ".back.partial").mkdir()
+        (tmp_path / ".back.partial" / "stale.txt").write_text("from an attempt that died")
+        out = transfer_providers.ScpHeadNodeProvider().download_one(
+            env=_env_ssh(), abs_remote_path=str(far), local_path=tmp_path / "back", timeout=60)
+        assert out["outcome"] == "proven", out
+        assert _files(tmp_path / "back") == _files(far)
+
+    @pytest.mark.integration
+    def test_a_directory_that_appears_during_the_download_is_never_replaced(self, tmp_path, monkeypatch):
+        fake = _fake_ssh_and_scp([])
+        back = tmp_path / "back"
+
+        def another_arrives(argv, *a, **kw):
+            out = fake(argv, *a, **kw)
+            if argv[0] == "scp":
+                back.mkdir()
+                (back / "theirs.txt").write_text("someone else's")
+            return out
+        monkeypatch.setattr(subprocess, "run", another_arrives)
+        far = _tree(tmp_path / "far" / "results")
+        out = transfer_providers.ScpHeadNodeProvider().download_one(
+            env=_env_ssh(), abs_remote_path=str(far), local_path=back, timeout=60)
+        assert (out["outcome"], out["code"]) == ("refused", "transfer.local_exists"), out
+        assert [p.name for p in back.iterdir()] == ["theirs.txt"]
+        assert not (tmp_path / ".back.partial").exists()
+
+    @pytest.mark.integration
     def test_a_download_of_a_tree_holding_a_symlink_is_refused_before_scp(self, tmp_path, monkeypatch):
         calls: list = []
         monkeypatch.setattr(subprocess, "run", _fake_ssh_and_scp(calls))
@@ -261,13 +293,13 @@ class TestScp:
 # Globus: it checksums each file it moves; it must have moved every one
 # ===========================================================================
 
-def _fake_globus(task: dict, *, land: tuple[Path, Path] | None = None):
-    """`globus transfer` answers with a task id (and, for a download, lands the tree);
-    `globus task show` answers SUCCEEDED with the counters given."""
+def _fake_globus(task: dict, *, land: Path | None = None):
+    """`globus transfer` answers with a task id (and, for a download, lands the tree
+    `land` where it was sent); `globus task show` answers SUCCEEDED with the counters given."""
     def fake_run(argv, *a, **kw):
         if argv[:2] == ["globus", "transfer"]:
-            if land:
-                shutil.copytree(*land)
+            if land:                    # into what is there, as Globus writes
+                shutil.copytree(land, argv[3].split(":", 1)[1], dirs_exist_ok=True)
             return MagicMock(returncode=0, stderr="", stdout=json.dumps({"task_id": _TASK_ID}))
         return MagicMock(returncode=0, stderr="",
                          stdout=json.dumps({"status": "SUCCEEDED", "nice_status": None, **task}))
@@ -300,19 +332,31 @@ class TestGlobus:
     def test_a_download_records_what_landed_and_a_symlink_left_behind_is_not_a_whole_copy(
             self, tmp_path, monkeypatch):
         far = _tree(tmp_path / "far" / "results")
-        monkeypatch.setattr(subprocess, "run", _fake_globus(
-            {"files_transferred": 3}, land=(far, tmp_path / "back")))
+        monkeypatch.setattr(subprocess, "run", _fake_globus({"files_transferred": 3}, land=far))
         ok = _globus().download_one(env=_env_ssh(), abs_remote_path="/w/u/results",
                                     local_path=tmp_path / "back", timeout=60)
         assert ok["outcome"] == "proven", ok
         assert ok["checksums"] == transfer._scan_tree(far)[0]
+        assert _files(tmp_path / "back") == _files(far) and not (tmp_path / ".back.partial").exists()
 
         monkeypatch.setattr(subprocess, "run", _fake_globus(
-            {"files_transferred": 3, "symlinks": 1}, land=(far, tmp_path / "again")))
+            {"files_transferred": 3, "symlinks": 1}, land=far))
         short = _globus().download_one(env=_env_ssh(), abs_remote_path="/w/u/results",
                                        local_path=tmp_path / "again", timeout=60)
         assert short["code"] == "transfer.globus_tree_incomplete", short
-        assert "1 symlink(s)" in short["error"] and str(tmp_path / "again") in short["error"]
+        assert "1 symlink(s)" in short["error"] and "what arrived is at" not in short["error"]
+        assert not (tmp_path / "again").exists() and not (tmp_path / ".again.partial").exists()
+
+    @pytest.mark.integration
+    def test_what_an_earlier_download_left_is_cleared_before_the_task(self, tmp_path, monkeypatch):
+        far = _tree(tmp_path / "far" / "results")
+        (tmp_path / ".back.partial").mkdir()
+        (tmp_path / ".back.partial" / "stale.txt").write_text("from an attempt that died")
+        monkeypatch.setattr(subprocess, "run", _fake_globus({"files_transferred": 3}, land=far))
+        ok = _globus().download_one(env=_env_ssh(), abs_remote_path="/w/u/results",
+                                    local_path=tmp_path / "back", timeout=60)
+        assert ok["outcome"] == "proven", ok
+        assert _files(tmp_path / "back") == _files(far)
 
     @pytest.mark.integration
     def test_task_status_does_not_call_a_copy_with_a_symlink_left_behind_whole(self, monkeypatch):

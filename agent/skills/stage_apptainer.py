@@ -87,7 +87,7 @@ from agent.skills import compute_access, transfer, workspace
 from agent.models.core_data import frozen_image_ref, record_is_gated as _record_is_gated, sha256_file
 from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke, loop
-from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _SEEN_FN, _login_shell, _ssh_argv, _ssh_failure_hint
 
 
 def _short_digest(digest: str) -> str:
@@ -118,7 +118,7 @@ def _remote_sif_exists(env: dict, sif_remote_abs: str, *, timeout: int = 120) ->
     stage builds and ships, and the ship then names the ssh failure). Used for
     idempotency (skip a re-stage) WITHOUT any build/pull on the head node."""
     body = _SEEN_FN + f"seen {shlex.quote(sif_remote_abs)} && echo EXISTS || echo MISSING"
-    cmd = f"bash -lc {shlex.quote(body)}"
+    cmd = _login_shell(body)
     try:
         res = subprocess.run(_ssh_argv(env, cmd), capture_output=True,
                              text=True, timeout=timeout)
@@ -155,16 +155,16 @@ def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_na
             staged_at=datetime.now(timezone.utc).isoformat(),
             env_record=_stage_record(**record_kw))
 
-    # An earlier upload of this .sif whose Globus task has not been seen to end may still
-    # be reading the local .sif a rebuild would replace.
+    # An earlier upload of this .sif not yet in place holds its path: a rebuild and a
+    # second upload would race it.
     inflight = transfer.pending_upload(env, sif_remote_abs)
     if inflight is not None:
         call = transfer.status_call(project_name, compute_env_name, inflight[1].get("globus_task_id"))
         return loop("stage.sif_upload_still_running", success=False, sif_path=sif_remote_abs,
-            error=f"an earlier upload of {sif_remote_abs} has not been seen to end; rebuilding the "
-                  f"local .sif under it would change what that upload reads",
-            remedy=f"{call} until SUCCEEDED (it puts the .sif in place), then stage_apptainer_image "
-                   f"again: it finds the .sif and sends the record")
+            error=f"an earlier upload of {sif_remote_abs} is not yet in place; a rebuild and a "
+                  f"second upload would race it",
+            remedy=f"{call} (it puts the .sif in place, or says why it cannot), then "
+                   f"stage_apptainer_image again: it finds the .sif and sends the record")
 
     # 2. Resolve the LOCAL docker source (tarball or image tag). The archive's
     #    directory is the env's directory in the environments zone, read at call time.
@@ -227,9 +227,9 @@ def _stage_via_local_build(*, record: dict, env: dict, env_name: str, project_na
         return loop("stage.sif_upload_still_running", success=False,
             error=up["error"], task_id=up.get("task_id"), sif_path=sif_remote_abs,
             local_sif=str(local_sif_path),
-            remedy=f"{transfer.status_call(project_name, compute_env_name, up.get('task_id'))} until SUCCEEDED (it puts "
-                   f"the .sif in place), then stage_apptainer_image again: it finds the "
-                   f".sif and sends the record")
+            remedy=f"{transfer.status_call(project_name, compute_env_name, up.get('task_id'))} (it puts the "
+                   f".sif in place, or says why it cannot), then stage_apptainer_image again: it "
+                   f"finds the .sif and sends the record")
     if up.get("code") == "transfer.remote_exists":
         # An upload lands under its final name only once verified, so a .sif there
         # is a whole one: the same answer the probe at the top gives.
@@ -322,8 +322,11 @@ def _stage_record(*, env: dict, env_name: str, digest: str, project_name: str,
     up = transfer.upload(project_name=project_name, compute_env_name=compute_env_name,
                          local_path=str(tree), remote_abs_path=remote,
                          access_path=str(Path(access_path)) if access_path else None, timeout=timeout)
-    if "error" in up:
+    if up.get("outcome") == "loop":
         # The staged copy stays: a transfer that stopped waiting may still be reading it.
+        return {"status": "not_yet_in_place", "path": remote, "reason": up["error"],
+                "task_id": up.get("task_id"), "status_call": up.get("status_call"), "staged": str(tree)}
+    if "error" in up:
         return {"status": "not_sent", "path": remote, "reason": up["error"], "staged": str(tree)}
     shutil.rmtree(staged)
     return {"status": "sent", "path": remote, "files": [f.name for f in files]}
@@ -368,7 +371,7 @@ def _build_inspect_cmd(sif_remote_abs: str) -> str:
         "echo ---INSPECT---; "
         f"apptainer inspect --json {q} 2>/dev/null || echo INSPECT_FAILED"
     )
-    return f"bash -lc {shlex.quote(body)}"
+    return _login_shell(body)
 
 
 def inspect_staged_sif(env: dict, sif_remote_abs: str,
@@ -447,7 +450,8 @@ def stage_apptainer_image(
        env_record: {status, path?, ...}}
     The `skipped: True` flag means the .sif already existed at
     sif_path — a re-stage is a no-op, not an error. `env_record.status` is
-    sent / already_there / differs / not_this_image / not_sent / none_here.
+    sent / already_there / differs / not_this_image / not_yet_in_place (its
+    `status_call` puts it in place) / not_sent / none_here.
 
     Returns {"error": ..., ...} on any refusal/failure, with `hint` when
     the ssh hop itself failed (e.g. "open ssh hpc-agent in a side terminal").

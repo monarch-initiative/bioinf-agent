@@ -754,6 +754,7 @@ class TestClusterLaunch:
         assert (r["outcome"], r["code"]) == ("loop", "run_production.upload_still_running"), r
         assert (Path(r["staged"]) / "main.nf").is_file() and r["task_id"].startswith("3333")
         assert "same run_dir and no samplesheet" in r["remedy"] and remote.sbatch is None
+        assert "or says why it cannot" in r["remedy"] and "not yet in place" in r["error"]
 
     @pytest.mark.integration
     def test_an_upload_that_failed_is_a_failure_and_leaves_nothing_staged(self, tmp_path, monkeypatch):

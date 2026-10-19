@@ -50,7 +50,7 @@ from agent.skills.pipeline_record import _SAMPLE_NAMES, PipelineRecord, load_pip
 from agent.skills.pipeline_render import (MANIFEST_PATH, RECORD_PATH, SAMPLESHEET_FILENAME,
                                           _edited_since_render, parse_manifest)
 from agent.skills.pipeline_render_nextflow import OUTDIR_PARAM, RUN_LOCAL, SAMPLESHEET_PARAM, params_yaml_line
-from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _SEEN_FN, _login_shell, _ssh_argv, _ssh_failure_hint
 
 #: A params= value: a path, a word, a number. Nextflow pastes params into the pipeline's
 #: shell commands, so a value never carries a character a shell would act on.
@@ -432,7 +432,7 @@ def _remote_prefixes_exist(env: dict, prefixes: list[str], *, timeout: int) -> d
                       f"path(s) hold characters a remote check cannot carry: {bad[:5]}")
     checks = _SEEN_FN + "; ".join(f'fresh "$(dirname {shlex.quote(p)})"; compgen -G {shlex.quote(p + "*")} > /dev/null '
                                   f'|| echo MISSING:{shlex.quote(p)}' for p in clean)
-    argv = _ssh_argv(env, f"bash -lc {shlex.quote(checks)}")
+    argv = _ssh_argv(env, _login_shell(checks))
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
@@ -639,7 +639,7 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
                 f"2>/dev/null | sed 's/^/SUM /' ); "
               # the run's own jobs: the manager runs in run_dir, its tasks under run_dir/work
               + cluster_jobs.jobs_in_dir_sh(run_dir))
-    argv = _ssh_argv(env, f"bash -lc {q(script)}")
+    argv = _ssh_argv(env, _login_shell(script))
     res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     if res.returncode != 0:
         hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
@@ -694,7 +694,7 @@ def _write_remote(env: dict, run_dir: str, texts: Mapping[str, str], *, timeout:
         f"printf %s {base64.b64encode(text.encode()).decode()} | base64 -d > {q(path + '.tmp')} && "
         f"mv {q(path + '.tmp')} {q(path)} && echo {q('WROTE=' + rel)}"
         for rel, text in texts.items() for path in [f"{run_dir}/{rel}"])
-    res = subprocess.run(_ssh_argv(env, f"bash -lc {q(script)}"), capture_output=True, text=True, timeout=timeout)
+    res = subprocess.run(_ssh_argv(env, _login_shell(script)), capture_output=True, text=True, timeout=timeout)
     if res.returncode != 0:
         wrote = [ln[len("WROTE="):] for ln in (res.stdout or "").splitlines() if ln.startswith("WROTE=")]
         raise _Refusal(broke("run_production.config_write_failed",
@@ -780,11 +780,11 @@ def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir:
     if up.get("outcome") == "loop":
         # The staged copy stays: the transfer may still be reading it.
         raise _Refusal(loop("run_production.upload_still_running",
-                            error=f"the run directory may still be arriving, so nothing was launched: {up['error']}",
+                            error=f"the run directory is not yet in place, so nothing was launched: {up['error']}",
                             staged=str(tree), task_id=up.get("task_id"),
-                            remedy=f"{transfer.status_call(project_name, env_name, up.get('task_id'))}; once it has "
-                                   f"SUCCEEDED (it puts the directory in place), launch again with the "
-                                   f"same run_dir and no samplesheet"))
+                            remedy=f"{transfer.status_call(project_name, env_name, up.get('task_id'))} (it puts "
+                                   f"the directory in place, or says why it cannot), then launch again with "
+                                   f"the same run_dir and no samplesheet"))
     if "error" in up:
         shutil.rmtree(staged, ignore_errors=True)
         raise _Refusal(broke("run_production.upload_failed",

@@ -107,15 +107,16 @@ class TestJobIdValidator:
 class TestRemoteCmdShape:
     @pytest.mark.integration
     def test_canonical_shape(self):
-        # Pinned: bash -lc 'sacct -j 12345 -P --noheader -X -o <fields>'.
+        # Pinned: bash -lc 'echo; sacct -j 12345 -P --noheader -X -o <fields>'.
         # `-l` forces a login shell so sacct is on PATH on systems where
-        # it's added via /etc/profile.d/slurm.sh.
+        # it's added via /etc/profile.d/slurm.sh; `echo;` starts the rows on a
+        # line of their own, whatever the profile printed.
         # `-P` => pipe-delimited (the parser depends on this).
         # `--noheader` => one row per line, no column-header preamble.
         # `-X` => one row per job/array-task, not per batch/extern step.
         cmd = cluster_jobs._build_sacct_cmd("12345")
         assert cmd == (
-            "bash -lc 'sacct -j 12345 -P --noheader -X -o "
+            "bash -lc 'echo; sacct -j 12345 -P --noheader -X -o "
             "JobID,State,Elapsed,ExitCode,NodeList,Reason,Start,End'"
         )
 

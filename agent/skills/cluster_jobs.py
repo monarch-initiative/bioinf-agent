@@ -44,7 +44,7 @@ from typing import Optional
 
 from agent.skills import compute_access
 from agent.skills.outcomes import refused, broke, loop
-from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _SEEN_FN, _login_shell, _ssh_argv, _ssh_failure_hint
 
 
 # The fields we ask sacct for, in order, each with the key its row dict reads it
@@ -168,7 +168,7 @@ def _build_sacct_cmd(job_id: str) -> str:
     /etc/profile.d/slurm.sh. The field list is fixed; pinned by a test."""
     fields = ",".join(_SACCT_FIELDS)
     inner = f"sacct -j {shlex.quote(job_id)} -P --noheader -X -o {fields}"
-    return f"bash -lc {shlex.quote(inner)}"
+    return _login_shell(inner)
 
 
 def _sacct_rows(text: str, keys: tuple[str, ...]) -> list[dict]:
@@ -220,8 +220,8 @@ def cluster_job_status(project_name: str,
     finishing; it returns at once when the job is over. So one call replaces a
     poll loop; the answer then says `waited_s`.
 
-    Pure-read: each look runs `bash -lc 'sacct -j <id> -P --noheader -X -o
-    <fields>'` over ssh, and for a pipeline one more hop for its records and
+    Pure-read: each look runs, in a login shell, `sacct -j <id> -P --noheader -X -o
+    <fields>` over ssh, and for a pipeline one more hop for its records and
     one sacct call for its tasks in flight; returns a list of row-dicts (one
     per job, plus one per array-task for array jobs).
 
@@ -406,7 +406,7 @@ def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
               f'if [ -n "$stamp" ] && seen {q(run_dir)}/"$stamp"/nextflow.log; then '
               f'echo SUBMITTED_BEGIN; grep -o "submitted process .* > jobId: [0-9]*; workDir: [^ ]*" '
               f'{q(run_dir)}/"$stamp"/nextflow.log; echo SUBMITTED_END; fi; exit 0')
-    return f"bash -lc {q(script)}"
+    return _login_shell(script)
 
 
 #: A task Nextflow handed to SLURM, as its log says so.
@@ -636,7 +636,7 @@ def remote_paths_exist(env: dict, paths: list[str], *,
     checks = _SEEN_FN + "; ".join(
         f'seen {shlex.quote(p)} || echo MISSING:{shlex.quote(p)}'
         for p in clean)
-    inner = f"bash -lc {shlex.quote(checks)}"
+    inner = _login_shell(checks)
     argv = _ssh_argv(env, inner)
     try:
         res = subprocess.run(argv, capture_output=True, text=True,
@@ -685,7 +685,7 @@ _RES_FIELDS = tuple(_RES_KEYS)
 def _build_sacct_resource_cmd(job_id: str) -> str:
     fields = ",".join(_RES_FIELDS)
     inner = f"sacct -j {shlex.quote(job_id)} -P --noheader -o {fields}"
-    return f"bash -lc {shlex.quote(inner)}"
+    return _login_shell(inner)
 
 
 def _parse_hhmmss(t: str) -> float:

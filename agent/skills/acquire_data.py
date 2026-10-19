@@ -63,8 +63,8 @@ _DEFAULT_DL_SLURM = {"time": "1-00:00:00", "mem": "4g"}
 _PROBE_TIMEOUT = 120
 
 
-#: Where a probe's own output starts (on a line of its own, whatever the login profile
-#: printed before it), and the markers around a file's text at its end.
+#: Where a probe's own output starts, after whatever lines the login profile printed,
+#: and the markers around a file's text at its end.
 _PROBE_BEGIN = "BIOINF_PROBE_BEGIN"
 _FILE_BEGIN, _FILE_END = "BIOINF_FILE_BEGIN", "BIOINF_FILE_END"
 _SBATCH_LINE_RE = re.compile(r"(?m)^#SBATCH .*(?:\n|\Z)")
@@ -80,15 +80,15 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
                          local_path=str(src), remote_abs_path=remote,
                          access_path=str(Path(access_path)) if access_path else None, timeout=600)
     if up.get("code") == "transfer.remote_exists":
-        from agent.skills.snapshot import _ssh_argv
+        from agent.skills.snapshot import _login_shell, _ssh_argv
         q = shlex.quote(remote)
         # the file's text comes last, so no line of it is read as the scheduler's or the hash
-        script = (f"echo; echo {_PROBE_BEGIN}; " + cluster_jobs.jobs_in_dir_sh(acq_dir) + "; "
+        script = (f"echo {_PROBE_BEGIN}; " + cluster_jobs.jobs_in_dir_sh(acq_dir) + "; "
                   f"echo SHA=$( (sha256sum {q} 2>/dev/null || shasum -a 256 {q}) | cut -d' ' -f1); "
                   f"echo {_FILE_BEGIN}; cat {q}; echo; echo {_FILE_END}")
         try:
             # bytes, split on \n alone: a line keeps a \r the file has
-            res = subprocess.run(_ssh_argv(env, f"bash -lc {shlex.quote(script)}"),
+            res = subprocess.run(_ssh_argv(env, _login_shell(script)),
                                  capture_output=True, timeout=_PROBE_TIMEOUT)
             lines = (res.stdout or b"").decode("utf-8", "replace").split("\n")
             said_ssh = (f"ssh rc={res.returncode}: "
@@ -137,9 +137,9 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
                    "(or a remote_dir) of its own")
     if up.get("outcome") == "loop":
         return loop("acquire.upload_still_running", acq_dir=acq_dir, task_id=up.get("task_id"),
-            error=f"{src.name} may still be arriving in {acq_dir}, so nothing was submitted: {up['error']}",
-            remedy=f"{transfer.status_call(transfer.AD_HOC_PROJECT_NAME, compute_env, up.get('task_id'))}; once it has SUCCEEDED, "
-                   f"submit the acquisition again")
+            error=f"{src.name} is not yet in place in {acq_dir}, so nothing was submitted: {up['error']}",
+            remedy=f"{transfer.status_call(transfer.AD_HOC_PROJECT_NAME, compute_env, up.get('task_id'))} (it "
+                   f"puts it in place, or says why it cannot), then submit the acquisition again")
     if "error" in up:
         return broke("acquire.upload_failed", acq_dir=acq_dir,
             error=f"upload of {src.name} to {acq_dir} failed: {up['error']}")
@@ -767,7 +767,7 @@ def _probe_cluster_path(env: dict, path: str, *, marker: str = "",
     the download job); `complete` when `marker` (an acquisition's completion file) is
     in the path's directory, or in the path itself when it is one.
     Returns {"error": ...} if the ssh itself fails (session down / unreachable)."""
-    from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
+    from agent.skills.snapshot import _SEEN_FN, _login_shell, _ssh_argv, _ssh_failure_hint
     q = shlex.quote(path)
     q_side = shlex.quote(f"{path}.source.sha256")
     done = ""
@@ -783,7 +783,7 @@ def _probe_cluster_path(env: dict, path: str, *, marker: str = "",
         f"if seen {q_side}; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi"
         f"{done}"
     )
-    probe = f"bash -lc {shlex.quote(body)}"
+    probe = _login_shell(body)
     argv = _ssh_argv(env, probe)
     try:
         res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)

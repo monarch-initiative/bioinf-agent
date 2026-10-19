@@ -162,7 +162,7 @@ class TestCommandShape:
         # "no GPUs here". `|| exit $?` on sinfo is what stops that.
         cmd = cp._build_sinfo_cmd()
         assert "sinfo -h -o" in cmd
-        sinfo_seg = cmd.split("echo")[0]
+        sinfo_seg = cmd.split(cp._SCONTROL_SENTINEL)[0]
         assert "|| exit $?" in sinfo_seg
         # scontrol is enrichment and SHOULD degrade quietly.
         assert "scontrol show partition -o" in cmd

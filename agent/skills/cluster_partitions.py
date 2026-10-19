@@ -70,7 +70,7 @@ from typing import Optional
 from agent.skills import compute_access
 from agent.skills.cluster_modules import SAFE_PATTERN_CHARS_RE, validate_pattern
 from agent.skills.outcomes import refused, broke
-from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _login_shell, _ssh_argv, _ssh_failure_hint
 
 
 
@@ -128,7 +128,7 @@ def _build_sinfo_cmd() -> str:
     inner = (f"sinfo -h -o {shlex.quote(_SINFO_FORMAT)} || exit $?; "
              f"echo {shlex.quote(_SCONTROL_SENTINEL)}; "
              f"scontrol show partition -o 2>/dev/null || true")
-    return f"bash -lc {shlex.quote(inner)}"
+    return _login_shell(inner)
 
 
 def _split_probe_output(text: str) -> tuple[str, str]:
@@ -303,7 +303,7 @@ def cluster_partitions(project_name: str,
                        timeout: int = 60) -> dict:
     """List the SLURM partitions on `compute_env_name`.
 
-    Pure-read: runs ONE ssh invocation of `bash -lc 'sinfo -h -o …'`, parses
+    Pure-read: runs `sinfo -h -o …` in a login shell over ONE ssh invocation, parses
     the output, returns one record per partition. Submits nothing, loads
     nothing, writes nothing.
 

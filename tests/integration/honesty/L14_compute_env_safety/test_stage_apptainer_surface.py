@@ -400,9 +400,9 @@ class TestAdoptHappyPath:
 
 
 class TestEarlierUploadInFlight:
-    """An earlier Globus upload of the .sif whose end was not seen holds a rebuild of
-    the local .sif it may still be reading; on another wire nothing can lift such a
-    hold, so there is none."""
+    """An earlier Globus upload of the .sif not yet in place (its end not seen, or its
+    rename not made) holds a rebuild and a second upload; on another wire nothing
+    can lift such a hold, so there is none."""
     SIF = "/work/u/CLAUDE_CONTAINERS/samtools_23cda33a3a42.sif"
 
     def _receipt(self):
@@ -411,7 +411,7 @@ class TestEarlierUploadInFlight:
         d = workspace.scratch_dir() / "transfer_history" / "demo" / "2026-10-16"
         d.mkdir(parents=True, exist_ok=True)
         (d / "x_upload_abc.json").write_text(json.dumps({
-            "outcome": "still running", "to": f"fakehpc:{self.SIF}",
+            "outcome": "still running", "direction": "upload", "to": f"fakehpc:{self.SIF}",
             "globus_task_id": "33333333-3333-3333-3333-333333333333",
             "pending_rename": {"env": "fakehpc", "from": self.SIF.replace("samtools_", ".samtools_") + ".partial",
                                "to": self.SIF}}))
@@ -437,7 +437,8 @@ class TestEarlierUploadInFlight:
             env_cache=cache, access_path=str(access_path))
         assert (r.get("code") == "stage.sif_upload_still_running") is held, r
         if held:
-            assert "compute_env_name='fakehpc'" in r["remedy"]
+            assert "compute_env_name='fakehpc'" in r["remedy"] and "not yet in place" in r["error"]
+            assert "or says why it cannot" in r["remedy"]
 
 
 # ===========================================================================
@@ -666,6 +667,22 @@ class TestEnvRecordBesideTheSif:
         assert r["env_record"]["status"] == "not_sent" and "unreachable" in r["env_record"]["reason"]
         assert (Path(r["env_record"]["staged"]) / "samtools.ENV.html").is_file()
 
+    @pytest.mark.integration
+    def test_a_record_not_yet_in_place_names_the_call_that_puts_it_there(self, tmp_path, monkeypatch):
+        def answer(dst):
+            if dst.endswith(".sif"):
+                return {"success": True, "remote_abs_path": dst}
+            return {"outcome": "loop", "code": "transfer.globus_rename_unanswered",
+                    "error": "`globus rename` did not answer within 60s; it may have been made",
+                    "task_id": "33333333-3333-3333-3333-333333333333",
+                    "status_call": "globus_task_status(project_name='demo', compute_env_name='fakehpc', "
+                                   "task_id='33333333-3333-3333-3333-333333333333')"}
+        r, _, _ = self._stage(tmp_path, monkeypatch, upload_answer=answer)
+        assert r["outcome"] == "proven", r
+        rec = r["env_record"]
+        assert rec["status"] == "not_yet_in_place" and rec["task_id"].startswith("3333"), rec
+        assert rec["status_call"].startswith("globus_task_status(")
+
 
 def test_the_remote_record_probe_reads_checksums_or_says_none(tmp_path, monkeypatch):
     """Run through bash here: a record directory answers with each file's sha256, a
@@ -733,3 +750,4 @@ class TestTheSifIsTheImage:
             "error": "we stopped waiting", "task_id": "33333333-3333-3333-3333-333333333333"})
         assert (r["outcome"], r["code"]) == ("loop", "stage.sif_upload_still_running"), r
         assert "globus_task_status" in r["remedy"] and r["task_id"].startswith("3333")
+        assert "or says why it cannot" in r["remedy"] and "until SUCCEEDED" not in r["remedy"]

@@ -24,8 +24,8 @@ modules). It's not a binary on PATH. Most HPCs surface it via
 in non-interactive mode often FAILS because the function isn't loaded.
 
 Two paths:
-  - `ssh host bash -lc 'module avail'`  — forces a login shell so the
-    profile.d setup runs. Works on most clusters.
+  - `module avail` in a login shell (`bash -lc`) — the profile.d setup
+    runs. Works on most clusters.
   - `ssh host bash -c 'source /etc/profile.d/lmod.sh && module avail'`
     — explicit source; brittle.
 
@@ -57,7 +57,7 @@ from typing import Optional
 
 from agent.skills import compute_access
 from agent.skills.outcomes import refused, broke
-from agent.skills.snapshot import _ssh_argv, _ssh_failure_hint
+from agent.skills.snapshot import _login_shell, _ssh_argv, _ssh_failure_hint
 
 
 # A `module avail` pattern token is a boring subset: alnum + `_+.-/`.
@@ -85,19 +85,25 @@ def validate_pattern(pattern: Optional[str]) -> Optional[str]:
     return pattern
 
 
+#: Around `module avail`'s own output, after whatever the login profile printed: the
+#: parser takes every safe word as a module, so a banner's words would be listed. The
+#: closing line carries `module avail`'s exit status.
+_MODULES_BEGIN, _MODULES_END = "BIOINF_MODULES_BEGIN", "BIOINF_MODULES_END="
+
+
 def _build_module_avail_cmd(pattern: Optional[str]) -> str:
     """The remote shell command. We force a login shell with `bash -lc`
     so the profile.d/lmod.sh setup loads. `module avail` writes to
     STDERR; we redirect to STDOUT so subprocess captures it cleanly.
     Pinned by a test."""
-    inner = "module avail"
+    inner = f"echo {_MODULES_BEGIN}; module avail"
     if pattern:
         inner = f"{inner} {shlex.quote(pattern)}"
     # 2>&1 because module avail writes to stderr — capturing only stdout
-    # would lose everything. The trailing `|| true` keeps the rc=0 even
-    # when `module avail` exits non-zero (some Lmod versions return 1
-    # when the pattern matches nothing; that's not an error for us).
-    return f"bash -lc {shlex.quote(inner + ' 2>&1')} || true"
+    # would lose everything. Its exit status is echoed rather than
+    # returned: some Lmod versions return 1 when a pattern matches
+    # nothing, which is not an error; 127 is no `module` at all.
+    return _login_shell(f"{inner} 2>&1; echo {_MODULES_END}$?")
 
 
 def _parse_module_avail_output(text: str) -> list[str]:
@@ -153,7 +159,7 @@ def cluster_module_avail(project_name: str,
     """List the modules available on `compute_env_name` (filtered by
     `pattern` if given).
 
-    Pure-read: runs ONE ssh invocation of `bash -lc 'module avail …'`,
+    Pure-read: runs `module avail` in a login shell over ONE ssh invocation,
     parses the output, returns a flat list. Does not load any module;
     does not submit any job; never writes anything.
 
@@ -204,8 +210,7 @@ def cluster_module_avail(project_name: str,
         res = subprocess.run(argv, capture_output=True, text=True,
                              timeout=timeout)
         # rc captures ssh-layer failures (BatchMode, no session, etc.);
-        # `module avail`'s own non-zero exit is hidden by the `|| true`
-        # tail in our remote_cmd.
+        # `module avail`'s own exit status is echoed on its closing line.
         if res.returncode != 0:
             hint = _ssh_failure_hint(res.stderr or "", env.get("host", "?"))
             return broke("modules.ssh_failed", error=
@@ -213,7 +218,26 @@ def cluster_module_avail(project_name: str,
                 f"{(res.stderr or '').strip()[:500]}",
                 **({"hint": hint} if hint else {}))
 
-        modules = _parse_module_avail_output(res.stdout)
+        lines = (res.stdout or "").splitlines()
+        end = next((i for i, ln in enumerate(lines) if ln.startswith(_MODULES_END)), None)
+        if _MODULES_BEGIN not in lines or end is None:
+            return broke("modules.listing_unobserved", error=(
+                f"the login shell on {compute_env_name!r} printed no module listing of ours "
+                f"(its profile may replace or end the shell): "
+                f"{(res.stdout or '').strip()[-300:]!r}"))
+        rc = lines[end][len(_MODULES_END):]
+        if rc == "127":
+            return broke("modules.module_command_missing", error=(
+                f"a login shell on {compute_env_name!r} has no `module` command, so there "
+                f"is no module listing to read"))
+        said = lines[lines.index(_MODULES_BEGIN) + 1:end]
+        if rc == "1" and norm_pattern:      # a pattern that matched nothing; its message is not modules
+            said = []
+        elif rc != "0":
+            return broke("modules.module_avail_failed", error=(
+                f"`module avail` on {compute_env_name!r} exited {rc}: "
+                f"{chr(10).join(said).strip()[-300:]!r}"))
+        modules = _parse_module_avail_output("\n".join(said))
         # Client-side pattern re-filter — defense in depth.
         if norm_pattern:
             modules = [m for m in modules if norm_pattern in m]

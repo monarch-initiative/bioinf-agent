@@ -95,7 +95,9 @@ def upload(project_name: str,
     that did not take) `globus_task_unobserved` — the transfer may still be
     running server-side; resolve it with `globus_task_status`, do not
     assume it failed. Until then, an upload to the same path sends nothing
-    and returns `upload_in_flight` with the call that resolves it.
+    and returns `in_flight` with the call that resolves it. A verified
+    upload whose rename did not answer returns `globus_rename_unanswered`
+    with that call, and holds its path the same way.
 
     Manifest: every call (success OR failure) writes a JSON record under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_upload_<hash>.json`
@@ -138,7 +140,15 @@ def download(project_name: str,
     is refused over scp, and reported incomplete over Globus), and the result
     adds `files` and `checksums` (a `sha256sum -c` list beside the receipt).
     A transfer that may outlast the ~9-minute wait (a large directory) is one
-    to start with `background=True`.
+    to start with `background=True`. The bytes land under a hidden partial
+    name beside `local_path` and take its name only once verified, so a file
+    under that name is always whole. A globus task past the wait cap
+    (`globus_sync_wait_exceeded`), or one whose end could not be seen
+    (`globus_task_unobserved`), keeps landing there; `globus_task_status`
+    puts it in place when the task has succeeded. Until then a download to
+    the same `local_path`, from any env, sends nothing and returns
+    `in_flight` with the call that resolves it. A file that appears at
+    `local_path` while the download runs is never replaced (`local_exists`).
     Symmetric to `upload`: same zone routing (auto-classified by where
     remote_abs_path falls), same auth (the matched zone must declare
     `download` in its permissions; `upload` alone does NOT satisfy
@@ -170,7 +180,7 @@ def cluster_module_avail(project_name: str,
     """Discover what HPC modules are loadable on a compute env so the
     agent can pick the right `module load X/Y.Z` line for a launcher.
 
-    Pure-read: runs ONE ssh invocation of `bash -lc 'module avail …'`,
+    Pure-read: runs `module avail` in a login shell over ONE ssh invocation,
     parses the output, returns a flat list of `<name>/<version>`
     strings. Does not load any module; does not submit any job; never
     writes anything.
@@ -185,7 +195,11 @@ def cluster_module_avail(project_name: str,
 
     Returns {compute_env, pattern, modules, module_count, captured_at}
     on success; {"error": "...", "hint": ...} on failure (e.g. no
-    ControlMaster session)."""
+    ControlMaster session). Only what `module avail` printed is read, never
+    the login profile's own output; a listing the login shell never printed
+    is `listing_unobserved`, a login shell with no `module` command is
+    `module_command_missing`, and `module avail` exiting other than 0 or 1
+    (1: nothing matched) is `module_avail_failed`, never an empty list."""
     from agent.skills import cluster_modules
     return cluster_modules.cluster_module_avail(
         project_name=project_name,
@@ -202,7 +216,7 @@ def cluster_partitions(project_name: str,
     """Discover the SLURM partitions on a compute env — so a GPU convention
     can be read off the cluster instead of typed by hand.
 
-    Pure-read: runs ONE ssh invocation of `bash -lc 'sinfo -h -o …'`, parses
+    Pure-read: runs `sinfo -h -o …` in a login shell over ONE ssh invocation, parses
     the output, returns one record per partition. Submits nothing, loads
     nothing, writes nothing.
 
@@ -265,23 +279,46 @@ def globus_task_status(project_name: str,
     Runs `globus task show <id> --format json`; no submission.
 
     Reach for this when `upload`/`download` returned
-    `globus_sync_wait_exceeded` or `globus_task_unobserved`: we stopped
-    watching, but Globus may not have stopped transferring. This answers how the task actually ended. The
+    `globus_sync_wait_exceeded` or `globus_task_unobserved` (we stopped
+    watching, but Globus may not have stopped transferring),
+    `globus_rename_unanswered` (the bytes arrived; their rename did not
+    answer), or `in_flight` (an earlier transfer to the path is not yet in
+    place). This answers how the task actually ended. The
     outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
     ACTIVE/INACTIVE -> loop (poll again). A directory task that SUCCEEDED
     but skipped files or left symlinks behind -> broke: not a whole copy.
-    An upload lands under a hidden partial name until it is verified; when
+    A transfer lands under a hidden partial name until it is verified; when
     the task has SUCCEEDED, this call renames it into place (`renamed_to`)
-    and the upload's receipt says it finished; when it ended otherwise,
-    the receipt says it failed and an upload to that path may go again.
-    The rename is made only on the env the upload went to (another env is
-    refused, `task_other_env`, naming the call). When the rename does not
-    answer as made, what is at each name decides: the partial still there
-    and the destination free, or either name unreadable, keeps the hold
-    (call again); the destination written meanwhile is `task_rename_blocked`
+    and the transfer's receipt says it finished; when it ended otherwise,
+    the receipt says it failed and a transfer to that path may go again.
+    A task is resolved only on the env it ran on (another env is refused,
+    `task_other_env`, naming the call), and only once the call that started
+    it has returned: while that call still waits (a `background=True`
+    transfer), or another globus_task_status is putting it in place, this
+    call changes nothing and says so (`task_call_waiting`); a hold on the
+    transfer's receipt that cannot be taken at all is `receipt_hold_failed`.
+    Once the transfer has ended, `transfer` and `manifest` say how, from its
+    receipt; a task that SUCCEEDED whose bytes were not put in place is
+    `task_transfer_unplaced`.
+    An upload's rename is made on the cluster. When it does not answer as
+    made, what is at each name decides: the partial still there and the
+    destination free keeps the hold (call again once the cause is put
+    right, or remove the partial to clear the way), and so does either name
+    unreadable (call again once both can be read); the destination written
+    meanwhile is `task_rename_blocked`
     (nothing replaced, the bytes stay at the partial); the partial gone and
     the destination there is `task_rename_unconfirmed`; both gone clears the
     way to upload again.
+    A download's rename is made here, once what landed has been read (a
+    directory must hold every file the task moved): its `local_sha256`, or
+    `files` and `checksums`, come back as a sync download's do. A download
+    whose task did not succeed has what arrived removed. One that cannot be
+    put in place: the destination written meanwhile is `task_rename_blocked`
+    (nothing replaced, the copy removed); a copy short of the task, or
+    nothing left under the partial name, is `task_rename_failed` (download
+    it again), but `task_rename_unconfirmed` when the destination holds a
+    file. A rename this machine's filesystem refused is `task_rename_failed`
+    with `partial_path`: the bytes stay there and a later call retries it.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.
@@ -333,7 +370,7 @@ def cluster_job_status(project_name: str,
     """Look up SLURM state for `job_id` on `compute_env_name` so the
     agent can poll a submitted job to completion.
 
-    Pure-read: runs `bash -lc 'sacct -j <id> -P --noheader -X -o <fields>'`
+    Pure-read: runs, in a login shell, `sacct -j <id> -P --noheader -X -o <fields>`
     over ssh, parses the pipe-delimited output, returns a list of row-dicts.
     Does not submit, cancel, or modify anything.
 
@@ -465,7 +502,9 @@ def stage_apptainer_image(project_name: str,
       and how it was proven; sent once, also for a .sif staged before.
       `env_record.status` says sent / already_there (its checksums match) /
       differs / not_this_image (the record here is of a later freeze under the
-      same name) / not_sent (never fatal to the .sif) / none_here.
+      same name) / not_yet_in_place (a Globus transfer of it whose
+      `status_call` puts it in place) / not_sent (never fatal to the .sif) /
+      none_here.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare a `container_upload_target` with
