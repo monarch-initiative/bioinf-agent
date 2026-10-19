@@ -37,14 +37,17 @@ I8 composition walk's path/basename match works unchanged) plus `locus:
 """
 from __future__ import annotations
 
+import posixpath
+import re
 import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Optional
 
-from agent.skills import compute_access, stage_apptainer, transfer, submit_workflow, workflow_render
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills import cluster_jobs, compute_access, stage_apptainer, transfer, submit_workflow, workflow_render
+from agent.models.core_data import sha256_file
+from agent.skills.outcomes import proven, refused, broke, loop
 
 
 
@@ -60,9 +63,99 @@ _DEFAULT_DL_SLURM = {"time": "1-00:00:00", "mem": "4g"}
 _PROBE_TIMEOUT = 120
 
 
+#: Where a probe's own output starts (on a line of its own, whatever the login profile
+#: printed before it), and the markers around a file's text at its end.
+_PROBE_BEGIN = "BIOINF_PROBE_BEGIN"
+_FILE_BEGIN, _FILE_END = "BIOINF_FILE_BEGIN", "BIOINF_FILE_END"
+_SBATCH_LINE_RE = re.compile(r"(?m)^#SBATCH .*(?:\n|\Z)")
+
+
+def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Optional[str]) -> Optional[dict]:
+    """Put `src` in the acquisition directory for its job. A re-submit finds the same
+    file there and runs it again (the job resumes), once no job of the acquisition
+    is still queued or running there; a different file under that name (by sha256)
+    is refused, never overwritten. Returns the failure, or None."""
+    remote = f"{acq_dir}/{src.name}"
+    up = transfer.upload(project_name=transfer.AD_HOC_PROJECT_NAME, compute_env_name=compute_env,
+                         local_path=str(src), remote_abs_path=remote,
+                         access_path=str(Path(access_path)) if access_path else None, timeout=600)
+    if up.get("code") == "transfer.remote_exists":
+        from agent.skills.snapshot import _ssh_argv
+        q = shlex.quote(remote)
+        # the file's text comes last, so no line of it is read as the scheduler's or the hash
+        script = (f"echo; echo {_PROBE_BEGIN}; " + cluster_jobs.jobs_in_dir_sh(acq_dir) + "; "
+                  f"echo SHA=$( (sha256sum {q} 2>/dev/null || shasum -a 256 {q}) | cut -d' ' -f1); "
+                  f"echo {_FILE_BEGIN}; cat {q}; echo; echo {_FILE_END}")
+        try:
+            # bytes, split on \n alone: a line keeps a \r the file has
+            res = subprocess.run(_ssh_argv(env, f"bash -lc {shlex.quote(script)}"),
+                                 capture_output=True, timeout=_PROBE_TIMEOUT)
+            lines = (res.stdout or b"").decode("utf-8", "replace").split("\n")
+            said_ssh = (f"ssh rc={res.returncode}: "
+                        f"{(res.stderr or b'').decode('utf-8', 'replace').strip()[:200]}"
+                        if res.returncode != 0 else "")
+        except subprocess.TimeoutExpired:
+            lines, said_ssh = [], "ssh timed out"
+        lines = lines[lines.index(_PROBE_BEGIN) + 1:] if _PROBE_BEGIN in lines else []
+        if said_ssh or _FILE_BEGIN not in lines or _FILE_END not in lines:
+            return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
+                error=f"could not read {remote} and the scheduler's jobs in {acq_dir} "
+                      f"({said_ssh or 'the probe printed no answer'}); a re-submit is not sent unchecked",
+                remedy="submit again once ssh to the cluster answers")
+        a, b = lines.index(_FILE_BEGIN), len(lines) - 1 - lines[::-1].index(_FILE_END)
+        there = "\n".join(lines[a + 1:b])          # the file as it is, `echo` taking off its last \n
+        sha = next((ln[len("SHA="):] for ln in lines[:a] if ln.startswith("SHA=")), "")
+        live, said = cluster_jobs.jobs_in_dir(lines[:a])
+        if said is not None:
+            return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
+                error=f"could not tell whether a job of this acquisition still runs in {acq_dir} "
+                      f"({said[:300]}); a second job would race it",
+                remedy="submit again once `squeue -u $USER` answers on the login node")
+        if live:
+            return refused("acquire.still_running", acq_dir=acq_dir, jobs=live,
+                error=f"a job of this acquisition is still queued or running in {acq_dir} ({live}); "
+                      f"a second one would race it for the same files",
+                remedy="cluster_job_status on it; submit again only once it has ended")
+        if not sha:
+            return broke("acquire.resubmit_unchecked", acq_dir=acq_dir,
+                error=f"could not hash {remote} on the cluster; a re-submit is not sent unchecked",
+                remedy=(f"submit again: if {remote} is gone the re-submit uploads it, and if it is "
+                        f"there it is compared once sha256sum answers on the login node"))
+        if sha == sha256_file(src):
+            return None
+        mine = src.read_bytes().decode("utf-8", "replace")
+        if _SBATCH_LINE_RE.sub("", there) == _SBATCH_LINE_RE.sub("", mine):
+            return refused("acquire.slurm_differs", acq_dir=acq_dir,
+                error=f"{remote} is this acquisition's job script with another SLURM request; "
+                      f"it is never rewritten under a job that may resume from it",
+                remedy="re-submit with the SLURM request it was submitted with (its submission "
+                       "manifest records it): the job resumes where it stopped")
+        return refused("acquire.acq_dir_holds_another", acq_dir=acq_dir,
+            error=f"{remote} is there and is not this acquisition's {src.name}: {acq_dir} holds an "
+                  f"acquisition submitted with other arguments",
+            remedy="re-submit with the arguments it was submitted with, or give this acquisition a name "
+                   "(or a remote_dir) of its own")
+    if up.get("outcome") == "loop":
+        return loop("acquire.upload_still_running", acq_dir=acq_dir, task_id=up.get("task_id"),
+            error=f"{src.name} may still be arriving in {acq_dir}, so nothing was submitted: {up['error']}",
+            remedy=f"{transfer.status_call(transfer.AD_HOC_PROJECT_NAME, compute_env, up.get('task_id'))}; once it has SUCCEEDED, "
+                   f"submit the acquisition again")
+    if "error" in up:
+        return broke("acquire.upload_failed", acq_dir=acq_dir,
+            error=f"upload of {src.name} to {acq_dir} failed: {up['error']}")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # The simple SLURM download-script renderer
 # ---------------------------------------------------------------------------
+
+def acquired_marker(name: str) -> str:
+    """The file an acquisition job writes in its directory as its LAST act, and
+    only when it succeeded (each run removes it first). A directory that exists
+    and is non-empty may still be a job that died midway; this says it finished."""
+    return f".acquired_{name}"
+
 
 def render_download_script(*, name: str, url: str, dest_filename: str,
                            extract: bool, slurm_v: dict, email: str) -> str:
@@ -120,10 +213,12 @@ def render_download_script(*, name: str, url: str, dest_filename: str,
         f"# SLURM stages the script into /var/spool/slurmd/...; $SLURM_SUBMIT_DIR\n"
         f"# is the dir we `sbatch`ed from (the acquisition dir the files live in).\n"
         f'cd "${{SLURM_SUBMIT_DIR:-$(dirname "$(readlink -f "$0")")}}"\n'
+        f"rm -f {acquired_marker(name)}\n"
         f"\n"
         f"{fetch}"
         f"{hasher}"
         f"{extract_block}"
+        f"touch {acquired_marker(name)}\n"
         f'echo "acquire_{name}: DONE"\n'
     )
 
@@ -145,9 +240,14 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
     takes its batch path — e.g. tmux: a download-manager recipe re-execs into a
     DETACHED tmux server that SLURM kills at job end; masking tmux makes the
     recipe's own `[ -z $TMX ]` branch run the downloads inline (+ `wait`)."""
+    # Both are pasted into the job script, inside double quotes and a `case`.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", recipe_filename or ""):
+        raise ValueError(f"recipe file name {recipe_filename!r} must be letters, digits and ._- only")
+    bad = [t for t in (mask_tools or ()) if not compute_access._is_safe_token(str(t))]
+    if bad:
+        raise ValueError(f"mask_tools {bad} must be bare command names (alnum + '_-')")
     q_recipe = shlex.quote(recipe_filename)
     mask = " ".join(mask_tools or ())
-    q_mask = shlex.quote(mask)
 
     # Force the recipe's non-interactive path: mirror the full PATH into a shim
     # dir MINUS the masked tools (recipe-agnostic — nothing legitimate is lost,
@@ -202,12 +302,17 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
         f"# files already present).\n"
         f"\n"
         f'cd "${{SLURM_SUBMIT_DIR:-$(dirname "$(readlink -f "$0")")}}"\n'
+        f"rm -f {acquired_marker(name)}\n"
         f"\n"
         f"{mask_block}"
         f'echo "[acquire] running recipe: {recipe_filename}"\n'
         f"{run_line}"
         f'recipe_rc=$?\n'
         f'echo "[acquire] recipe exited rc=$recipe_rc"\n'
+        f'if [ "$recipe_rc" -ne 0 ]; then\n'
+        f'  echo "acquire_{name}: recipe FAILED (rc=$recipe_rc); nothing hashed, re-submit to resume"\n'
+        f'  exit $recipe_rc\n'
+        f'fi\n'
         f"\n"
         f"# Provenance sweep (recipe-agnostic): sha256 every FINAL produced file, at any\n"
         f"# depth, beside it. The recipe doesn't write checksums; this is our\n"
@@ -223,8 +328,8 @@ def render_recipe_runner_script(*, name: str, recipe_filename: str,
         f"| awk '{{print $1}}' > \"$f.source.sha256\"\n"
         f'done\n'
         f"\n"
-        f'echo "acquire_{name}: recipe DONE (rc=$recipe_rc)"\n'
-        f'exit $recipe_rc\n'
+        f"touch {acquired_marker(name)}\n"
+        f'echo "acquire_{name}: recipe DONE"\n'
     )
 
 
@@ -335,20 +440,12 @@ def acquire_to_cluster(*, name: str, url: str, compute_env: str,
         local_launcher = Path(td) / _LAUNCHER_NAME
         local_launcher.write_text(script)
 
-        # Upload the launcher into the acquisition dir (common_data zone). Globus
-        # auto-creates the acq_dir leaf; scp mkdir -p's it — either way under the
-        # agent's own common_data zone (env-implicit grant), not user directories[].
-        up = transfer.upload(
-            project_name=transfer.AD_HOC_PROJECT_NAME,
-            compute_env_name=compute_env,
-            local_path=str(local_launcher),
-            remote_abs_path=f"{acq_dir}/{_LAUNCHER_NAME}",
-            access_path=str(Path(access_path)) if access_path else None,
-            timeout=600)
-        if "error" in up:
-            return broke("acquire.upload_failed",
-                error=f"upload of the download script to {acq_dir} failed: {up['error']}",
-                acq_dir=acq_dir)
+        # Into the acquisition dir (common_data zone). Globus auto-creates the
+        # acq_dir leaf; scp mkdir -p's it — either way under the agent's own
+        # common_data zone (env-implicit grant), not user directories[].
+        failed = _send(env, compute_env, local_launcher, acq_dir, access_path)
+        if failed:
+            return failed
 
     # ─── sbatch the download job (compute node does the pull) ──────────
     sb = submit_workflow.sbatch_via_ssh(env, acq_dir, timeout=300)
@@ -526,7 +623,7 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str = "", compute_env: s
                 workflow_render._check_module("apptainer_module", module)
             except ValueError as e:
                 return refused("acquire.bad_module", error=str(e))
-        digest = record.get("content_digest") or record.get("image_digest") or ""
+        digest = record.get("image_digest") or record.get("content_digest") or ""
         env_name = record.get("name") or freeze_request_key.split("|", 1)[0]
         recipe_filename = "run_in_image.sh"
         recipe_text = render_image_recipe(command=command, sif=sif, env_name=env_name, digest=digest,
@@ -565,20 +662,12 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str = "", compute_env: s
                                      dir=str(transfer.staging_dir("acquire_render_staging"))) as td:
         (Path(td) / _LAUNCHER_NAME).write_text(launcher)
         (Path(td) / recipe_filename).write_text(recipe_text)
-        # Upload the tool's recipe verbatim, then our launcher, into acq_dir
+        # The tool's recipe verbatim, then our launcher, into acq_dir
         # (common_data zone — env-implicit grant, auto-created leaf).
         for fn in (recipe_filename, _LAUNCHER_NAME):
-            up = transfer.upload(
-                project_name=transfer.AD_HOC_PROJECT_NAME,
-                compute_env_name=compute_env,
-                local_path=str(Path(td) / fn),
-                remote_abs_path=f"{acq_dir}/{fn}",
-                access_path=str(Path(access_path)) if access_path else None,
-                timeout=600)
-            if "error" in up:
-                return broke("acquire.upload_failed",
-                    error=f"upload of {fn} to {acq_dir} failed: {up['error']}",
-                    acq_dir=acq_dir)
+            failed = _send(env, compute_env, Path(td) / fn, acq_dir, access_path)
+            if failed:
+                return failed
 
     # ─── sbatch the recipe-runner job ──────────────────────────────────
     sb = submit_workflow.sbatch_via_ssh(env, acq_dir, timeout=300)
@@ -670,21 +759,29 @@ def acquire_via_recipe(*, name: str, recipe_local_path: str = "", compute_env: s
 # Seal-side: probe + verify a cluster-resident reference DB over ssh
 # ---------------------------------------------------------------------------
 
-def _probe_cluster_path(env: dict, path: str, *,
+def _probe_cluster_path(env: dict, path: str, *, marker: str = "",
                         timeout: int = _PROBE_TIMEOUT) -> dict:
-    """ONE ssh hop that reports {exists, size_bytes, sha256} for a cluster path
-    (file OR directory). size via `du -sb`; sha256 read from a `<path>.source.sha256`
-    sidecar if present (the reproducibility anchor written by the download job).
+    """ONE ssh hop that reports {exists, size_bytes, sha256, complete} for a cluster
+    path (file OR directory). size via `du -sb`; sha256 read from a
+    `<path>.source.sha256` sidecar if present (the reproducibility anchor written by
+    the download job); `complete` when `marker` (an acquisition's completion file) is
+    in the path's directory, or in the path itself when it is one.
     Returns {"error": ...} if the ssh itself fails (session down / unreachable)."""
     from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
     q = shlex.quote(path)
     q_side = shlex.quote(f"{path}.source.sha256")
-    # Emit three tagged lines so a MOTD banner can't confuse the parse.
+    done = ""
+    if marker:
+        q_in, q_beside = (shlex.quote(f"{path.rstrip('/')}/{marker}"),
+                          shlex.quote(f"{posixpath.dirname(path.rstrip('/'))}/{marker}"))
+        done = f"; if seen {q_in} || seen {q_beside}; then echo DONE=1; fi"
+    # Emit tagged lines so a MOTD banner can't confuse the parse.
     body = (
         _SEEN_FN + f"if seen {q}; then echo EXISTS=1; else echo EXISTS=0; fi; "
         f"if [ -e {q} ]; then du -sb {q} 2>/dev/null | cut -f1 | "
         f"sed \"s/^/SIZE=/\"; fi; "
         f"if seen {q_side}; then head -n1 {q_side} | sed \"s/^/SHA=/\"; fi"
+        f"{done}"
     )
     probe = f"bash -lc {shlex.quote(body)}"
     argv = _ssh_argv(env, probe)
@@ -703,8 +800,8 @@ def _probe_cluster_path(env: dict, path: str, *,
     exists = False
     size_bytes: Optional[int] = None
     sha256: Optional[str] = None
-    for line in (res.stdout or "").splitlines():
-        line = line.strip()
+    lines = [ln.strip() for ln in (res.stdout or "").splitlines()]
+    for line in lines:
         if line.startswith("EXISTS="):
             exists = line.endswith("1")
         elif line.startswith("SIZE="):
@@ -716,7 +813,10 @@ def _probe_cluster_path(env: dict, path: str, *,
             tok = line[len("SHA="):].strip()
             if len(tok) == 64 and all(c in "0123456789abcdef" for c in tok.lower()):
                 sha256 = tok.lower()
-    return {"exists": exists, "size_bytes": size_bytes, "sha256": sha256}
+    out = {"exists": exists, "size_bytes": size_bytes, "sha256": sha256}
+    if marker:
+        out["complete"] = "DONE=1" in lines
+    return out
 
 
 def _resolve_env_for_rdb(rdb: dict, access_path: Optional[str]):
@@ -799,7 +899,7 @@ def check_cluster_reference_db(rdb: dict, *,
             "message":   f"cluster reference_database '{name}' cannot be verified: {err}",
             "where":     where, "path": path,
         }]
-    probe = _probe_cluster_path(env, path)
+    probe = _probe_cluster_path(env, path, marker=acquired_marker(name))
     if "error" in probe:
         return [{
             "invariant": "I5.reference_database_unverifiable",
@@ -823,6 +923,21 @@ def check_cluster_reference_db(rdb: dict, *,
             "message":   f"cluster reference_database '{name}' exists on "
                          f"{rdb.get('compute_env')!r} but is empty at {path} "
                          f"(partial/failed download?)",
+            "where":     where, "path": path,
+        }]
+    if not probe.get("complete"):
+        # A cluster reference is only ever made by an acquisition job (a download or
+        # the tool's recipe), and that job writes its marker last, on success.
+        return [{
+            "invariant": "I5.reference_database_incomplete",
+            "message":   f"cluster reference_database '{name}' is at {path} on "
+                         f"{rdb.get('compute_env')!r}, but the job that fetched it has not "
+                         f"reported finishing (no {acquired_marker(name)} beside it): it is "
+                         f"still running, or it died midway and what is there is partial. "
+                         f"Check cluster_job_status; to resume, call "
+                         f"{'acquire_reference_via_recipe' if rdb.get('recipe') else 'download_reference_database'}"
+                         f"(name={name!r}, …) again with the arguments it was submitted with: it "
+                         f"finds its own job script there and runs it again.",
             "where":     where, "path": path,
         }]
     recorded = str(rdb.get("sha256") or "").strip().lower()

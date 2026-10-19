@@ -46,13 +46,18 @@ The binding table — how a how-to placeholder reaches a process script
                                                  every row's copy of the per-sample artifact, collected
   artifact in an output slot {OUT}/x.bam     ->  x.bam           (placeholders inside bind as above)
   bare output slot           {OUT}           ->  .
+  An index the sealed run found beside a path input (x.bam.bai, ref.fa.fai) is staged
+  with it: `path(reads_index)` in the row's tuple, `path gtf_index` for a shared path.
+  A prior stage's glob artifact (`*_fastqc.html`) is staged as a variable, under the
+  files' own names; the command never names it.
   `bound_commands` is that table applied to a stage — the page's command column, so
   the page shows the line main.nf runs and never a paraphrase of it.
 
 Channels
 --------
 `rows` emits one `tuple(meta, <path columns>...)` per samples.csv row (bare `meta`
-when the sheet has no path column); `meta` holds `sample` plus every value column. A
+when the sheet has no path column); `meta` holds `sample` plus every value column a
+command binds (a column only a script reads through the samplesheet stays out). A
 stage consuming artifacts from prior stages receives their `tuple(meta, path)` output
 channels `.join()`ed on meta; one that also consumes a path column joins `rows` last
 (projected to the columns it uses); one consuming only columns takes `rows`; one
@@ -315,6 +320,25 @@ def _nf_time(t: str) -> str:
     return "'" + (" ".join(p for p in parts if p) or "0s") + "'"
 
 
+class _RowFile:
+    """One file position of a samples.csv row's tuple: a path column, or the index
+    files staged beside one (`<column>_index`, never named in a command)."""
+
+    def __init__(self, name: str, expr: str, placeholder: str):
+        self.name, self.expr, self.placeholder = name, expr, placeholder
+
+
+def _index_expr(base: str, ix) -> str:
+    """The Groovy path of an index file beside the path `base`."""
+    if ix.strip:
+        return f"{base}.replaceFirst(/{re.escape(ix.strip)}$/, '{ix.add}')"
+    return f"{base} + '{ix.add}'"
+
+
+def _index_list(base: str, indexes) -> str:
+    return "[" + ", ".join(f"file({_index_expr(base, ix)}, checkIfExists: true)" for ix in indexes) + "]"
+
+
 class _Context:
     """Everything the five files share: the images (docker tag and .sif, per stage),
     the env's SLURM policy merged for the manager job, the module names, the emit
@@ -361,8 +385,18 @@ class _Context:
         # the samplesheet's columns by placeholder
         cols = record.samplesheet.columns
         self.col_of = {c.placeholder: c.name for c in cols}
-        self.path_cols = [c for c in cols if c.value_kind in ("path", "prefix")]
-        self.value_cols = [c for c in cols if c.value_kind == "value" and c.name != "sample"]
+        self.path_cols: list[_RowFile] = []
+        for c in cols:
+            if c.value_kind not in ("path", "prefix"):
+                continue
+            self.path_cols.append(_RowFile(c.name, f"file(r.{c.name}, checkIfExists: true)", c.placeholder))
+            if c.index_files:
+                self.path_cols.append(_RowFile(f"{c.name}_index", _index_list(f"r.{c.name}", c.index_files),
+                                               c.placeholder))
+        # the values a command binds ride in meta; a column only a script reads through the
+        # samplesheet (placeholder == name) stays in samples.csv alone
+        self.value_cols = [c for c in cols if c.value_kind == "value" and c.name != "sample"
+                           and c.placeholder != c.name]
 
     def param(self, name: str) -> PipelineParam:
         return self.record.param(name)
@@ -378,9 +412,11 @@ class _Context:
         if p.kind == "samplesheet":
             return "${" + low + "}"
         if p.kind == "per_sample":
+            if ph not in self.col_of:
+                raise ValueError(f"per-sample input {ph} has no samplesheet column; re-derive the record")
             if p.value_kind == "value":
-                return "${meta." + self.col_of.get(ph, "sample") + "}"
-            return "${" + self.col_of.get(ph, low) + "}"
+                return "${meta." + self.col_of[ph] + "}"
+            return "${" + self.col_of[ph] + "}"
         if p.value_kind == "value":
             return "${params." + low + "}"
         if p.value_kind == "prefix":
@@ -392,7 +428,9 @@ class _Context:
         -> `x`, bare `{OUT}` -> `.`), then the parameters."""
         out = text
         for slot in self.record.output_slots:
-            out = out.replace("{" + slot + "}/", "").replace("{" + slot + "}", ".")
+            # `{OUT}/name` is the name in the task's directory; a slot with no name after
+            # it (`{OUT}/ `, `{OUT}//x`, bare `{OUT}`) is the directory itself
+            out = re.sub(r"\{" + re.escape(slot) + r"\}/(?=[^\s'\"|;&<>()/])", "", out).replace("{" + slot + "}", ".")
         collected = {i.name: i.name.lower() for i in stage.inputs if i.origin == "collect"}
 
         def sub(m: re.Match) -> str:
@@ -564,7 +602,10 @@ def _stage_call(stage: PipelineStage, ctx: _Context) -> tuple[str, Optional[str]
             primary = "rows"
         args.append(primary)
     args += [f"file(params.{SAMPLESHEET_PARAM[0]}, checkIfExists: true)" for _ in io["sheets"]]
-    args += [f"file(params.{p.name.lower()})" for p in io["shared_paths"]]
+    for p in io["shared_paths"]:
+        args.append(f"file(params.{p.name.lower()})")
+        if p.index_files:
+            args.append(_index_list(f"params.{p.name.lower()}", p.index_files))
     args += ['files("${params.' + p.name.lower() + '}*")' for p in io["prefixes"]]
     return f"{stage.name}({', '.join(args)})", comment
 
@@ -610,21 +651,39 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
     if stage.stage_in_copy:
         body.append("stageInMode 'copy'                       // this stage rewrites an artifact it consumed")
 
-    # inputs
+    # inputs. A consumed artifact is staged under its own name: a glob as a variable,
+    # because a pattern input renames what it stages (`*_fastqc.html` -> `1_fastqc.html`).
+    def staged(i) -> str:
+        art = i.artifact or i.name
+        if not any(c in art for c in "*?"):
+            return ctx.artifact_expr(stage, art)
+        return _slug(art) if _slug(art) not in _RESERVED else f"{_slug(art)}_files"
+    named = [staged(i) for i in io["artifacts"]] + [c.name for c in io["path_cols"]] \
+        + [i.name.lower() for i in (*io["collects"], *io["sheets"])] \
+        + [n for p in io["shared_paths"] for n in (p.name.lower(), *([f"{p.name.lower()}_index"] if p.index_files else []))] \
+        + [f"{p.name.lower()}_files" for p in io["prefixes"]]
+    clash = sorted({n for n in named if named.count(n) > 1})
+    if clash:
+        raise ValueError(f"stage {stage.name}: two inputs would be staged as {clash}; rename the "
+                         f"placeholder in the how-to and re-seal")
     ins: list[str] = []
     if cohort:
         for i in io["collects"]:
             ins.append(f"path '{i.name.lower()}/*'" + " " * max(1, 28 - len(i.name) - 9)
                        + f"// every row's {ctx.words(i.artifact or i.name)}, from {i.from_stage}, in one directory")
-        ins += [f"path {ctx.artifact_expr(stage, i.artifact or i.name)}" for i in io["artifacts"]]
+        ins += [f"path {staged(i)}" for i in io["artifacts"]]
     else:
         parts = ["val(meta)"]
-        parts += [f"path({ctx.artifact_expr(stage, i.artifact or i.name)})" for i in io["artifacts"]]
+        parts += [f"path({staged(i)})" for i in io["artifacts"]]
         parts += [f"path({c.name})" for c in io["path_cols"]]
         ins.append("tuple " + ", ".join(parts))
     ins += [f"path {i.name.lower()}" + " " * max(1, 28 - len(i.name) - 5)
             + "// the samplesheet itself, as this run read it" for i in io["sheets"]]
-    ins += [f"path {p.name.lower()}" for p in io["shared_paths"]]
+    for p in io["shared_paths"]:
+        ins.append(f"path {p.name.lower()}")
+        if p.index_files:
+            ins.append(f"path {p.name.lower()}_index" + " " * max(1, 22 - len(p.name))
+                       + f"// its index file(s), staged beside it for the tool to find")
     ins += [f"path {p.name.lower()}_files" for p in io["prefixes"]]
 
     # outputs
@@ -672,7 +731,7 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
     # killed hard still has it (RUN_RECORD_BLOCK, the standard of every rendered pipeline).
     lines.append(RUN_RECORD_BLOCK)
     meta = ", ".join(["sample: r.sample"] + [f"{c.name}: r.{c.name}" for c in ctx.value_cols])
-    files = [f"file(r.{c.name}, checkIfExists: true)" for c in ctx.path_cols]
+    files = [c.expr for c in ctx.path_cols]
     item = f"tuple([{meta}], " + ", ".join(files) + ")" if files else f"[{meta}]"
     shape = "(meta, " + ", ".join(c.name for c in ctx.path_cols) + ")" if files else "meta"
     lines += [

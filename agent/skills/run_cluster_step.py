@@ -83,7 +83,7 @@ from agent.skills import (
     transfer,
 )
 from agent.models.core_data import PipelineStep, default_step_tool
-from agent.skills.outcomes import proven, refused, broke
+from agent.skills.outcomes import proven, refused, broke, loop
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.validators.output_validator import infer_validator_type
 
@@ -97,13 +97,8 @@ _RENDERED_FILES = ("main.nf", "nextflow.config", "launcher.sh")
 
 
 
-# Terminal SLURM states — once we hit one of these the job is over.
-#: Alias of the one definition, in `cluster_jobs` alongside the sacct parser
-#: that produces the rows. It was a second literal copy here — and the copy in
-#: the L14 surface test asserts set-equality against it, so the two had to be
-#: edited in lockstep and the test could only prove the set had not changed,
-#: never that it was right. Same shape as the invariant roster: the poller that
-#: consumes the set is not its owner.
+#: Terminal SLURM states: the one definition lives in `cluster_jobs`, beside the
+#: sacct parser that produces the rows.
 _TERMINAL_STATES = cluster_jobs.TERMINAL_STATES
 
 
@@ -273,6 +268,16 @@ def run_step_on_cluster(
         return refused("run_cluster.invalid_inputs",
             error=f"relative input path(s) {_rel[:5]} — recorded steps require "
                   f"absolute paths (they must reproduce from any CWD)")
+    # A file already where an output will be downloaded is an earlier attempt's;
+    # recording it as this job's output would validate bytes this job never made.
+    _dl = absolutize_download_dir(download_local_dir)
+    _stale = [str(_dl / fn) for fn in (outputs or {}).values() if (_dl / fn).exists()]
+    if _stale:
+        return refused("run_cluster.download_dir_not_fresh",
+            error=f"download_local_dir already holds {_stale[:3]}; this job's outputs "
+                  f"must land where nothing is yet",
+            remedy="pass a download_local_dir that holds none of the outputs, e.g. one "
+                   "named after this workflow_name")
 
     # Late-bind the singletons (preserves [[feedback-mcp-tools-conventions]]
     # monkeypatchability — tests inject overrides via the _* kwargs).
@@ -344,6 +349,8 @@ def run_step_on_cluster(
         freeze_request_key=freeze_request_key,
         sif_subpath=sif_subpath or "",
         access_path=access_path)
+    if stage.get("outcome") == "loop":
+        return stage                      # the .sif is still arriving: its remedy says what to call
     if "error" in stage:
         return broke("run_cluster.stage_failed",
                 error=f"stage_apptainer_image failed: {stage['error']}",
@@ -426,6 +433,12 @@ def run_step_on_cluster(
                   f"one directory, which creates it",
             remedy="a fresh workflow_name for each attempt; inputs belong elsewhere in scratch",
             stage_result=stage)
+    if up.get("outcome") == "loop":
+        return loop("run_cluster.upload_still_running",
+            error=f"the rendered workflow may still be arriving in scratch: {up['error']}",
+            task_id=up.get("task_id"), staged=str(tree), stage_result=stage,
+            remedy=f"{transfer.status_call(project_name, compute_env_name, up.get('task_id'))} says how it ended; then run "
+                   f"the step again under a fresh workflow_name")
     if "error" in up:
         return broke("run_cluster.upload_failed",
             error=f"upload of the rendered workflow to scratch failed: {up['error']}",
@@ -435,9 +448,8 @@ def run_step_on_cluster(
 
     sb = submit_workflow.sbatch_via_ssh(env, workflow_dir, timeout=300)
     if "error" in sb:
-        # RECORDED (was VANISHED): the SLURM submission failed. Record a failed
-        # pipeline_step BEFORE returning so this attempt leaves a durable trace
-        # in the draft — the files were uploaded but no job started.
+        # the submission failed: a failed step records the attempt (files uploaded,
+        # no job started)
         step_index = _record_failed_cluster_step(
             _pipeline_state, pipeline_id,
             tool_name=tool_name, command=command, inputs=inputs,
@@ -466,10 +478,8 @@ def run_step_on_cluster(
             job_id=job_id,
             access_path=access_path)
         if "error" in s:
-            # RECORDED (was VANISHED — the worst hole): the job was submitted
-            # (job_id in hand) but the poll query errored. Record a failed step
-            # carrying the job_id so the possibly-still-running SLURM job is
-            # traceable (a reader can sacct it) instead of leaving zero trace.
+            # the job was submitted but the poll errored: a failed step carrying the
+            # job_id keeps the possibly still running job traceable
             step_index = _record_failed_cluster_step(
                 _pipeline_state, pipeline_id,
                 tool_name=tool_name, command=command, inputs=inputs,
@@ -487,20 +497,15 @@ def run_step_on_cluster(
                                 "step_index": step_index})
         if s.get("jobs"):
             row = s["jobs"][0]
-            # normalize_state, not a bare `in`: sacct writes `CANCELLED by 12345`,
-            # which never matched the undecorated name — so the one death a user
-            # causes on purpose polled until the timeout and was reported as a
-            # poll_timeout rather than as the cancellation it was.
+            # normalize_state: sacct writes `CANCELLED by 12345`
             if cluster_jobs.normalize_state(row.get("state")) in _TERMINAL_STATES:
                 final_status = row
                 break
         time.sleep(poll_interval)
 
     if final_status is None:
-        # RECORDED (was VANISHED): the job was submitted but never reached a
-        # terminal state within the poll cap. Record a failed step carrying the
-        # job_id so the (possibly still-running) job is traceable — the caller
-        # can sacct it or cancel it rather than losing the handle.
+        # no terminal state within the poll cap: a failed step carrying the job_id,
+        # so the caller can look at it or cancel it
         step_index = _record_failed_cluster_step(
             _pipeline_state, pipeline_id,
             tool_name=tool_name, command=command, inputs=inputs,
@@ -618,14 +623,9 @@ def run_step_on_cluster(
             local_path=local,
             access_path=access_path)
         if "error" in dl:
-            # Tolerate the local-already-exists case as a re-download skip;
-            # caller may have downloaded outputs in a prior partial run.
-            if "already exists" in (dl.get("error") or ""):
-                downloaded.append(local)
-            else:
-                download_errors.append({
-                    "placeholder": placeholder, "filename": filename,
-                    "error": dl["error"]})
+            download_errors.append({
+                "placeholder": placeholder, "filename": filename,
+                "local_path": local, "error": dl["error"]})
         else:
             downloaded.append(local)
 
@@ -664,12 +664,10 @@ def run_step_on_cluster(
         # input traces to nothing, and the honest options are to fake a lineage
         # or to give up on sealing. Recording the truth is neither.
         #
-        # Declared from `outputs`, which is what the job was TOLD to write and
-        # what the download loop just read back — not a guess about the remote
-        # filesystem. Empty when the step declared no outputs, so a step that
-        # produced nothing gains no phantom provenance.
-        "remote_outputs":         [f"{workflow_dir}/{fn}"
-                                   for fn in outputs.values()] or None,
+        # Only the outputs the download loop read back: a declared output that
+        # never arrived is not known to exist at the locus.
+        "remote_outputs":         [f"{workflow_dir}/{fn}" for fn in outputs.values()
+                                   if str(download_dir / fn) in downloaded] or None,
         "validation_locus":       "cluster",
         "cluster_job_id":         job_id,
         "cluster_workflow_dir":   workflow_dir,
@@ -753,6 +751,15 @@ def run_step_on_cluster(
             # cluster fan-out is precisely where two outputs share a basename.
             validations[_validation_key(path)] = v
             by_path[path] = v
+        # A declared output that never arrived fails its check, so the seal (I3)
+        # refuses a step that did not deliver what it was told to write.
+        for err in download_errors:
+            v = refused("run_cluster.output_not_fetched", passed=False,
+                        file=err["local_path"],
+                        error=f"declared output {err['filename']} was not fetched "
+                              f"from the cluster: {err['error']}")
+            validations[_validation_key(err["local_path"])] = v
+            by_path[err["local_path"]] = v
         # one draft write for every output, not one per file (a tree of outputs is thousands)
         _pipeline_state.add_validations(pipeline_id, step_index, by_path)
     # Same disclosure as run_pipeline_step's: a key that bound to nothing is a

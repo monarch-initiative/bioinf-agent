@@ -619,13 +619,12 @@ def render_workflow(*,
 
 
 def _nf_quote(s: str) -> str:
-    """Quote a string for safe interpolation inside a Nextflow `params`
-    block. Nextflow's Groovy parser accepts single-quoted strings as
-    literal — no escape processing — so any string that doesn't contain
-    a single quote is safe. The validators upstream already refuse
-    every dangerous character, so this is the last-mile assert."""
+    """Quote a string as a Groovy single-quoted literal that reads back as `s`.
+    Single quotes do not interpolate `$` but do process backslash escapes
+    (`'\\t'` is a tab), so each backslash is doubled; a single quote or a
+    newline refuses."""
     if "'" in s or "\n" in s:
         raise ValueError(
             f"value {s!r} contains characters that cannot be safely "
             f"quoted into a Nextflow params block (single quote or newline)")
-    return f"'{s}'"
+    return "'" + s.replace("\\", "\\\\") + "'"

@@ -8,6 +8,8 @@ built only from validated tokens.
 """
 from __future__ import annotations
 
+import pytest
+
 from agent.skills import cluster_jobs as cj
 
 TRACE = "\n".join([
@@ -67,14 +69,41 @@ def test_the_verdict_is_over_the_tasks_never_the_manager():
     assert cj._pipeline_verdict(ok, manager_done) == "succeeded"
     assert cj._pipeline_verdict([], manager_running) == "running"
     assert cj._pipeline_verdict([], [{"verdict": cj.DIED}]) == "failed"
-    assert cj._pipeline_verdict([], manager_done) == "not_started"
+    assert cj._pipeline_verdict([], [{"verdict": cj.RUNNING, "state": "PENDING"}]) == "not_started"
+    # a manager that ended with no task on record did not "not start": nothing says what it did
+    assert cj._pipeline_verdict([], manager_done) == "unobserved"
+    # no scheduler row for the manager: in-flight tasks say running; otherwise nothing says it is over
+    in_flight = ok + [{"status": "RUNNING"}]
+    assert cj._pipeline_verdict(in_flight, []) == "running"
+    assert cj._pipeline_verdict(ok, []) == "unobserved" and cj._pipeline_verdict([], []) == "unobserved"
+
+
+def test_a_run_with_no_manager_log_reads_the_managers_own_row(monkeypatch):
+    """No `<pipeline>-<id>.out` in run_dir is what a queued job looks like, and also
+    what a job cancelled in the queue, a node that failed to boot, or a wrong run_dir
+    look like. The manager's SLURM row tells them apart."""
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(
+        a, 0, stdout="NOOUT\n", stderr=""))
+    env = {"type": "ssh", "host": "h", "user": "u"}
+    queued = cj._read_pipeline_run(env, "/w/run1", "4242",
+                                   [{"verdict": cj.RUNNING, "state": "PENDING"}], timeout=5)
+    died = cj._read_pipeline_run(env, "/w/run1", "4242",
+                                 [{"verdict": cj.DIED, "state": "CANCELLED by 1234"}], timeout=5)
+    ended = cj._read_pipeline_run(env, "/w/run1", "4242", [{"verdict": cj.SUCCEEDED,
+                                                            "state": "COMPLETED"}], timeout=5)
+    assert queued["verdict"] == "not_started" and "has not started" in queued["note"]
+    unknown = cj._read_pipeline_run(env, "/w/run1", "4242", [], timeout=5)
+    assert died["verdict"] == "failed" and "run_dir is not the directory" in died["note"]
+    assert ended["verdict"] == "unobserved" and "check that run_dir" in ended["note"]
+    assert unknown["verdict"] == "unobserved" and "no record of the job" in unknown["note"]
 
 
 def test_the_remote_script_is_built_from_validated_tokens_only():
     cmd = cj._build_pipeline_run_cmd("/work/pipelines/run1", "4242")
     assert cmd.startswith("bash -lc ")
     assert "/work/pipelines/run1/*-4242.out" in cmd and "trace.txt" in cmd
-    assert "runs/[0-9_]*" in cmd
+    assert "^run records: " in cmd, "the stamp is read off the line main.nf prints, nowhere else"
 
 
 def test_status_refuses_an_unsafe_run_dir_before_ssh(tmp_path):
@@ -109,8 +138,21 @@ def _access(tmp_path):
     ap = tmp_path / "a.yaml"
     ap.write_text(yaml.safe_dump({
         "compute_envs": [{"name": "hpc", "type": "ssh", "host": "h", "user": "u"}],
-        "projects": [{"name": "demo", "compute_envs": ["hpc"], "directories": []}]}))
+        "projects": [{"name": "demo", "compute_envs": ["hpc"],
+                      "directories": [{"env": "hpc", "path": "/w", "permissions": ["download"]}]}]}))
     return str(ap)
+
+
+def test_a_run_dir_the_project_does_not_grant_is_never_read(tmp_path, monkeypatch):
+    """The run's log and trace come back through this call: reading them is a download,
+    from a directory the project grants, like any other."""
+    import subprocess
+    called = []
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: called.append(a) or None)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/home/someone_else/proj",
+                              access_path=_access(tmp_path))
+    assert r["outcome"] == "refused" and "PermissionDenied" in r["error"], r
+    assert called == [], "refused before any ssh"
 
 
 def _sacct(*rows):
@@ -282,3 +324,228 @@ def test_the_schedulers_word_is_kept_apart_from_nextflows(tmp_path, monkeypatch)
     monkeypatch.setattr(subprocess, "run", _Cluster([_DONE], [], inflight_rc=1))
     r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", access_path=_access(tmp_path))
     assert "sacct for the tasks in flight failed" in r["pipeline"]["scheduler_unread"]
+
+
+def test_a_trace_whose_first_column_is_not_task_id_still_reads_every_task():
+    """A trace.fields edited by hand: no line opens with a task_id, and each is a task."""
+    moved = "\n".join("\t".join([ln.split("\t")[2], *ln.split("\t")[:2], *ln.split("\t")[3:]])
+                      for ln in TRACE.splitlines())
+    rows = cj._parse_trace(moved)
+    assert [r["status"] for r in rows] == ["COMPLETED", "FAILED", "RUNNING"]
+    assert cj._pipeline_verdict([cj._task_view(r) for r in rows], [{"verdict": cj.RUNNING}]) == "failed"
+
+
+def test_the_run_read_is_the_last_one_its_manager_logged_and_its_last_task_counts(tmp_path, monkeypatch):
+    """A requeued manager appends its next run to the same log; a trace's last line may
+    still lack its newline. Both through bash, as the login node runs them."""
+    import shlex
+    import subprocess
+    run = tmp_path / "run1"
+    for stamp, body in (("runs/20261009_100000", TRACE.splitlines()[0] + "\n" + TRACE.splitlines()[1] + "\n"),
+                        ("runs/20261010_090000", TRACE.splitlines()[0] + "\n" + TRACE.splitlines()[2])):
+        (run / stamp).mkdir(parents=True)
+        (run / stamp / "trace.txt").write_text(body)              # the second has no last newline
+    (run / "rnaseq-4242.out").write_text("run records: runs/20261009_100000\nrequeued\n"
+                                         "run records: runs/20261010_090000\n")
+    real = subprocess.run
+    monkeypatch.setattr(subprocess, "run", lambda argv, *a, **kw: real(
+        ["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=True))
+    out = cj._read_pipeline_run({"host": "h", "user": "u"}, str(run), "4242", [{"verdict": cj.SUCCEEDED}],
+                                timeout=30)
+    assert out["stamp"] == "runs/20261010_090000"
+    assert [t["status"] for t in out["tasks"]] == ["FAILED"] and out["verdict"] == "failed"
+    assert list(out)[:2] == ["run_dir", "verdict"], "the verdict leads; the task list is as long as the run"
+
+
+def test_a_failed_tasks_command_in_the_manager_log_never_moves_the_stamp(tmp_path, monkeypatch):
+    """Nextflow echoes a failed task's command into the manager log after the run's own
+    line; an input under a sequencer's runs/<date>_… directory is not the run's stamp."""
+    import shlex
+    import subprocess
+    run = tmp_path / "run1"
+    (run / "runs/20261016_120000").mkdir(parents=True)
+    (run / "runs/20261016_120000/trace.txt").write_text(TRACE.splitlines()[0] + "\n" + TRACE.splitlines()[2] + "\n")
+    (run / "rnaseq-4242.out").write_text(
+        "run records: runs/20261016_120000/\n[PROCESS f8/47b90e] ALIGN (s1)\n"
+        "ERROR ~ Error executing process > 'ALIGN (s1)'\n\nCommand executed:\n\n"
+        "  echo reading /data/runs/240115_A01234_0123_BHXXXX/s1.fq\n  exit 3\n\n"
+        "Command error:\n  reading /data/runs/240115_A01234_0123_BHXXXX/s1.fq\n")
+    real = subprocess.run
+    monkeypatch.setattr(subprocess, "run", lambda argv, *a, **kw: real(
+        ["bash", "-c", shlex.split(argv[-1])[-1]], capture_output=True, text=True))
+    out = cj._read_pipeline_run({"host": "h", "user": "u"}, str(run), "4242", [{"verdict": cj.SUCCEEDED}],
+                                timeout=30)
+    assert out["stamp"] == "runs/20261016_120000" and out["verdict"] == "failed"
+
+
+def test_a_slow_read_is_not_cut_short_while_the_wait_has_time_for_it(tmp_path, monkeypatch):
+    """The run records are the slow hop. Each hop is held to the time left before the
+    deadline, never to a share of it, so the slow read finishes and the last look is
+    a whole one."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+
+    def timed(argv, **kw):
+        cost = 8 if "TRACE_BEGIN" in argv[-1] else 1
+        if cost > kw["timeout"]:
+            clock.now += kw["timeout"]
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"])
+        clock.now += cost
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", timed)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                              access_path=_access(tmp_path))
+    assert "error" not in r["pipeline"] and r["pipeline"]["verdict"] == "running"
+    assert {t["native_id"] for t in r["pipeline"]["tasks"]} == {"501", "502", "503"}
+    assert r["waited_s"] <= 540
+
+
+def test_a_read_the_deadline_cuts_short_leaves_the_last_whole_answer(tmp_path, monkeypatch):
+    """On the wait's last look the records read takes 25 s, far under its own 60 s, but
+    more than the time left: it was the wait that ran out, not the cluster."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+
+    cut = []
+
+    def slower_at_the_end(argv, **kw):
+        records = "TRACE_BEGIN" in argv[-1]
+        cost = (25 if clock.now >= 1000 + 500 else 8) if records else 1
+        if cost > kw["timeout"]:
+            cut.append(kw["timeout"])
+            clock.now += kw["timeout"]
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"])
+        clock.now += cost
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", slower_at_the_end)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                              access_path=_access(tmp_path))
+    assert cut and cut[-1] < 60, "the records read was cut short by the wait"
+    assert "error" not in r["pipeline"] and r["pipeline"]["verdict"] == "running", r["pipeline"]
+    assert r["waited_s"] <= 540
+
+
+def test_a_scheduler_read_the_deadline_cuts_short_leaves_the_last_whole_answer(tmp_path, monkeypatch):
+    """The same for the last hop of a look, the sacct for the tasks in flight: cut short
+    by the wait, it is not reported as a scheduler that could not be read."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+
+    cut = []
+
+    def slower_at_the_end(argv, **kw):
+        cmd = argv[-1]
+        in_flight = "TRACE_BEGIN" not in cmd and "sacct -j 4242 " not in cmd
+        cost = (25 if clock.now >= 1000 + 500 else 1) if in_flight else 1
+        if cost > kw["timeout"]:
+            cut.append(kw["timeout"])
+            clock.now += kw["timeout"]
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"])
+        clock.now += cost
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", slower_at_the_end)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                              access_path=_access(tmp_path))
+    assert cut and cut[-1] < 60, "the in-flight sacct was cut short by the wait"
+    assert "scheduler_unread" not in r["pipeline"], r["pipeline"]
+    assert {t["native_id"]: t["status"] for t in r["pipeline"]["tasks"]}["502"] == "PENDING"
+
+
+@pytest.mark.parametrize("slow", ["records", "in_flight"])
+def test_a_first_looks_timed_out_read_is_in_its_answer_however_the_timeout_says_it(
+        tmp_path, monkeypatch, slow):
+    """A first look has no deadline: every hop has its whole timeout, so a read that runs
+    out is the cluster's, reported in the answer. `communicate()` may raise with the time
+    remaining rather than the timeout passed (a child whose pipes closed first)."""
+    import subprocess
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+
+    def times_out(argv, **kw):
+        cmd = argv[-1]
+        kind = "records" if "TRACE_BEGIN" in cmd else "manager" if "sacct -j 4242 " in cmd else "in_flight"
+        if kind == slow:
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"] - 0.01)
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", times_out)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", access_path=_access(tmp_path))
+    assert r.get("code") != "cluster.status_timeout" and r["jobs"], r
+    if slow == "records":
+        assert r["pipeline"]["code"] == "cluster.run_records_timeout"
+        assert "timed out after 60s" in r["pipeline"]["error"]
+    else:
+        assert "timed out after 60s" in r["pipeline"]["scheduler_unread"]
+
+
+class _Phased(_Cluster):
+    """The first look: task 501 done. Every later look: 502 failed too, and the sacct
+    for the tasks still in flight fails, or with `ssh_dies` the manager's row cannot
+    be read at all."""
+    def __init__(self, *, ssh_dies=False):
+        super().__init__([_DONE], [])
+        self.looks, self.ssh_dies = 0, ssh_dies
+
+    def __call__(self, argv, **kw):
+        cmd = argv[-1]
+        if "sacct -j 4242 " in cmd:
+            self.looks += 1
+            if self.ssh_dies and self.looks > 1:
+                class R: returncode = 255; stdout = ""; stderr = "ssh: connect to host h port 22: Connection refused"
+                return R()
+        if self.looks > 1:
+            self.trace_rows = [_DONE, _DONE.replace("\t501\tBUILD (a)\tCOMPLETED\t0", "\t502\tTRIALS (a)\tFAILED\t137")]
+            self.inflight_rc = 1
+        return super().__call__(argv, **kw)
+
+
+def _wait(tmp_path, monkeypatch, cluster):
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    monkeypatch.setattr(subprocess, "run", cluster)
+    return cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                                 access_path=_access(tmp_path))
+
+
+def test_a_later_look_that_sees_a_task_fail_is_the_answer_though_one_of_its_reads_failed(tmp_path, monkeypatch):
+    r = _wait(tmp_path, monkeypatch, _Phased())
+    assert r["pipeline"]["verdict"] == "failed" and r["pipeline"]["task_summary"]["FAILED"] == 1
+    assert "sacct for the tasks in flight failed" in r["pipeline"]["scheduler_unread"]
+
+
+def test_ssh_that_dies_mid_wait_is_the_answer_not_the_look_before_it(tmp_path, monkeypatch):
+    r = _wait(tmp_path, monkeypatch, _Phased(ssh_dies=True))
+    assert r["code"] == "cluster.status_ssh_failed" and "Connection refused" in r["error"]
+
+
+def test_a_look_that_hangs_still_ends_the_wait_by_its_cap(tmp_path, monkeypatch):
+    """Late in the wait the cluster stops answering: every hop runs out its time. Each
+    hop's time is what is left before the deadline, so the wait ends by it, and the
+    hop that runs out is the job's own row, so the last answer stands."""
+    import subprocess
+    clock = _Clock()
+    monkeypatch.setattr(cj.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(cj.time, "sleep", clock.sleep)
+    cluster = _Cluster([_DONE], [("502", "PENDING", "0", "0:0", "", "Priority", "-", "-")])
+    hops = []
+
+    def hangs_near_the_deadline(argv, **kw):
+        hops.append((clock.now, kw["timeout"]))
+        if clock.now >= 1000 + 500:
+            clock.now += kw["timeout"]
+            raise subprocess.TimeoutExpired("ssh", kw["timeout"])
+        return cluster(argv, **kw)
+    monkeypatch.setattr(subprocess, "run", hangs_near_the_deadline)
+    r = cj.cluster_job_status("demo", "hpc", "4242", run_dir="/w/run1", wait_s=540,
+                              access_path=_access(tmp_path))
+    assert r["waited_s"] <= 540 and r["pipeline"]["tasks"], "the last answer stands"
+    assert hops[-1][1] < 60, "the hanging hop was held to the time left, not its own 60 s"

@@ -22,6 +22,7 @@ They pin:
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 import pytest
@@ -118,6 +119,11 @@ def _ssh_access(tmp_path: Path) -> str:
 class _FakeJobManager:
     def __init__(self):
         self.calls = []
+        self.running_in = ""        # a run directory a job of ours is still running in
+
+    def list_jobs(self, include_terminated=True):
+        return ([{"job_id": "pipeline_x", "state": "running", "working_dir": self.running_in}]
+                if self.running_in else [])
 
     def start(self, command, env_name="", job_id="", working_dir="", tool=""):
         self.calls.append({"command": command, "job_id": job_id, "working_dir": working_dir, "tool": tool})
@@ -235,6 +241,141 @@ class TestGates:
         r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, ["data/r1.fq"]),
                        access=_local_access(tmp_path, str(d)))
         assert r["code"] == "run_production.samplesheet_relative_path"
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("sample", ["WT rep1", "../escape", "s0;touch $HOME/x", ".hidden"])
+    def test_a_sample_name_that_cannot_name_a_directory_is_refused(self, tmp_path, local_ok, sample):
+        """`sample` names results/<sample>/ and is pasted into commands (`> ${meta.sample}.counts.tsv`):
+        a space breaks the command, `..` writes outside results/, `;` runs a second command."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        sheet = tmp_path / "bad.csv"
+        sheet.write_text(f'sample,reads\n{sample},{fq}\n')
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=str(sheet),
+                       access=_local_access(tmp_path, str(d)))
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.samplesheet_unsafe_cell"), r
+        assert "starting with a letter or digit" in r["error"], r
+        assert not (d / "run1").exists(), "refused before anything was copied"
+
+    @pytest.mark.integration
+    def test_a_spreadsheets_byte_order_mark_is_read_as_nextflow_reads_it(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        sheet = tmp_path / "excel.csv"
+        sheet.write_text(f"\ufeffsample,reads\ns1,{fq}\n", encoding="utf-8")
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=str(sheet),
+                       access=_local_access(tmp_path, str(d)))
+        assert r["outcome"] == "proven", r
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("row,code", [
+        ('"s1",{fq}', "samplesheet_unsafe_cell"),
+        ("s1, {fq}", "samplesheet_unsafe_cell"),
+        ("s1,{fq} ", "samplesheet_unsafe_cell"),
+        ("s1,{fq},extra", "samplesheet_malformed"),
+        ("s1", "samplesheet_malformed"),
+        ("s1,{fq},", "samplesheet_malformed"),
+    ], ids=["quoted", "padded", "trailing_space", "extra_field", "missing_field", "empty_column_name"])
+    def test_a_sheet_nextflow_reads_differently_is_refused(self, tmp_path, local_ok, row, code):
+        """Nextflow's splitCsv(header: true) keeps quotes and spaces in the value, drops
+        a row's extra fields and reads a missing one as empty; Python's csv unquotes,
+        and a gate that read the sheet that way would pass what the run then breaks on."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        sheet = tmp_path / "odd.csv"
+        head = "sample,reads," if row.endswith(",") else "sample,reads"
+        sheet.write_text(head + "\n" + row.format(fq=fq) + "\n")
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=str(sheet),
+                       access=_local_access(tmp_path, str(d)))
+        assert (r["outcome"], r["code"]) == ("refused", f"run_production.{code}"), r
+        assert not (d / "run1").exists()
+
+    @pytest.mark.integration
+    def test_a_relaunch_holds_its_own_samplesheet_to_the_same_rules(self, tmp_path, local_ok):
+        """A re-launch runs the samples.csv already in the run directory; a path in it
+        that is not there is refused as it would be on a first launch."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap)["success"]
+        (d / "run1" / "samples.csv").write_text(f"sample,reads\nS9,{d}/nowhere/r9.fq\n")
+        again = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert again["outcome"] == "refused" and "r9.fq" in again["error"], again
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("outdir", ["{elsewhere}", "../../elsewhere"])
+    def test_results_published_outside_the_grant_are_refused(self, tmp_path, local_ok, outdir):
+        """outdir is where the job writes; outside the run directory it needs the
+        grant a run directory needs, whether named absolutely or with `..`."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                       params={"outdir": outdir.format(elsewhere=tmp_path / "elsewhere")},
+                       access=_local_access(tmp_path, str(d)))
+        assert r["outcome"] == "refused" and "elsewhere" in r["error"], r
+        assert not (d / "run1").exists()
+
+    @pytest.mark.integration
+    def test_results_outside_the_run_need_exec_only_and_name_the_outdir(self, tmp_path, local_ok):
+        """The job writes the results; nothing is uploaded there. An exec-only grant is
+        enough, and a grant without exec is refused naming the outdir."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        out = tmp_path / "out"; out.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        for perms, ok in ((["exec"], True), (["download"], False)):
+            ap = _write(tmp_path, {
+                "compute_envs": [{"name": "laptop", "type": "local", "container_upload_target": None}],
+                "projects": [{"name": "demo", "compute_envs": ["laptop"], "directories": [
+                    {"env": "laptop", "path": str(d), "permissions": ["upload", "exec"], "description": "x"},
+                    {"env": "laptop", "path": str(out), "permissions": perms, "description": "x"}]}]})
+            run = d / f"run_{perms[0]}"
+            r = _run_local(tmp_path, "rnaseq_counts", run, samplesheet=_sheet(tmp_path, [str(fq)]),
+                           params={"outdir": str(out / perms[0])}, access=ap)
+            assert r.get("success", False) is ok, r
+            if not ok:
+                assert str(out / perms[0]) in r["error"] and "main.nf" not in r["error"], r
+
+    @pytest.mark.integration
+    def test_results_in_the_reference_data_zone_are_refused(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        common = tmp_path / "common"; common.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _write(tmp_path, {
+            "compute_envs": [{"name": "laptop", "type": "local", "container_upload_target": None,
+                              "agent_common_data_target": {"path": str(common),
+                                                           "permissions": ["upload", "download", "exec"]}}],
+            "projects": [{"name": "demo", "compute_envs": ["laptop"], "directories": [
+                {"env": "laptop", "path": str(d), "permissions": ["upload", "exec"], "description": "x"}]}]})
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                       params={"outdir": str(common / "results")}, access=ap)
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.outdir_zone"), r
+
+    @pytest.mark.integration
+    def test_an_empty_outdir_is_refused(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                       params={"outdir": ""}, access=_local_access(tmp_path, str(d)))
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.outdir_empty"), r
+        assert not (d / "run1").exists()
+
+    @pytest.mark.integration
+    def test_the_results_path_reported_is_where_the_run_writes(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                       params={"outdir": str(d / "shared_results")}, access=_local_access(tmp_path, str(d)))
+        assert r["success"] and r["follow_up"]["results"] == f"{d / 'shared_results'}/", r["follow_up"]
 
     @pytest.mark.integration
     def test_a_bound_path_that_is_not_there_refused(self, tmp_path, local_ok):
@@ -419,6 +560,28 @@ class TestLocalLaunch:
                        access=_local_access(tmp_path, str(d)))
         assert r["success"] and r["edited_since_render"] == ["params.yaml"]
 
+    @pytest.mark.integration
+    def test_a_relaunch_discloses_edits_in_the_run_directory_not_the_template(self, tmp_path, local_ok):
+        """What a re-launch runs is the run directory's copy; a hand edit there is
+        what the record must name, whatever the template looks like."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap)["success"]
+        (d / "run1" / "main.nf").write_text((d / "run1" / "main.nf").read_text() + "// tuned by hand\n")
+        again = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert again["reused_run_dir"] is True and again["edited_since_render"] == ["main.nf"]
+        # launcher.sh: the time line a launch's walltime= writes is not an edit; a hand edit is
+        launcher = d / "run1" / "launcher.sh"
+        launcher.write_text(re.sub(r"(?m)^#SBATCH --time=\S*", "#SBATCH --time=2:00:00", launcher.read_text()))
+        assert "#SBATCH --time=2:00:00" in launcher.read_text()
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)["edited_since_render"] == ["main.nf"]
+        launcher.write_text(launcher.read_text().replace("#!/usr/bin/env bash\n", "#!/usr/bin/env bash\nulimit -n 4096\n", 1))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1",
+                          access=ap)["edited_since_render"] == ["launcher.sh", "main.nf"]
+
 
 # ===========================================================================
 # The cluster: fakes for every remote probe; the sbatch tokens
@@ -436,6 +599,7 @@ class _Remote:
         self.uploads = []
         self.sent = {}      # what the uploads carried: {remote path: bytes}
         self.upload_error = ""
+        self.upload_outcome = "loop"
         self.sbatch = None
 
     def install(self, monkeypatch):
@@ -451,7 +615,8 @@ class _Remote:
             missing = self.run_state["missing"]
             texts = {rel: self.run_state["texts"].get(rel, "") for rel in run_production._RUN_TEXTS}
             return {**self.run_state, "missing": list(rels) if missing is None else list(missing),
-                    "texts": texts, "live": self.run_state.get("live", [])}
+                    "texts": texts, "live": self.run_state.get("live", []),
+                    "sums": self.run_state.get("sums", {})}
         monkeypatch.setattr(run_production, "_remote_run_dir_state", run_dir_state)
         monkeypatch.setattr(run_production, "_write_remote",
                             lambda env, run_dir, texts, *, timeout: self.writes.update(
@@ -462,7 +627,8 @@ class _Remote:
         def upload(project_name, compute_env_name, local_path, remote_abs_path, access_path=None, timeout=600):
             self.uploads.append((local_path, remote_abs_path))
             if self.upload_error:
-                return {"error": self.upload_error, "task_id": "33333333-3333-3333-3333-333333333333"}
+                return {"outcome": self.upload_outcome, "error": self.upload_error,
+                        "task_id": "33333333-3333-3333-3333-333333333333"}
             src = Path(local_path)
             files = sorted(f for f in src.rglob("*") if f.is_file()) if src.is_dir() else [src]
             for f in files:
@@ -577,16 +743,27 @@ class TestClusterLaunch:
 
     @pytest.mark.integration
     def test_an_upload_that_did_not_finish_keeps_its_staged_copy_and_says_what_to_do(self, tmp_path, monkeypatch):
-        """A transfer that stopped waiting may still be reading the staged run directory,
-        so it is never deleted under it; the refusal names it and the way on."""
+        """A transfer whose end was not seen may still be reading the staged run
+        directory, so it is never deleted under it; the result says the upload may
+        still be running, names the copy, and the way on."""
         remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
         remote.upload_error = "Globus task 3333 did not reach a terminal state within the 300s sync-wait cap"
         _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
         r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1",
                      samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
-        assert (r["outcome"], r["code"]) == ("broke", "run_production.upload_failed"), r
+        assert (r["outcome"], r["code"]) == ("loop", "run_production.upload_still_running"), r
         assert (Path(r["staged"]) / "main.nf").is_file() and r["task_id"].startswith("3333")
         assert "same run_dir and no samplesheet" in r["remedy"] and remote.sbatch is None
+
+    @pytest.mark.integration
+    def test_an_upload_that_failed_is_a_failure_and_leaves_nothing_staged(self, tmp_path, monkeypatch):
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        remote.upload_error, remote.upload_outcome = "Globus task 3333 FAILED: ENDPOINT_ERROR", "broke"
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1",
+                     samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert (r["outcome"], r["code"]) == ("broke", "run_production.upload_failed"), r
+        assert "staged" not in r and remote.sbatch is None
 
     @pytest.mark.integration
     def test_uploads_the_run_directory_with_the_overrides_written_into_it(self, tmp_path, monkeypatch):
@@ -638,13 +815,24 @@ class TestClusterLaunch:
         assert r["outcome"] == "refused" and "exec" in r["error"]
 
     @pytest.mark.integration
+    def test_the_follow_up_names_only_a_status_call_the_grant_allows(self, tmp_path, monkeypatch):
+        """cluster_job_status reads a run's tasks only where the project may download:
+        under an upload+exec grant the poll names the job alone, and says why."""
+        _Remote(existing={"/work/demo", "/data/r1.fq"} | _REFS, sifs=set(_SIF.values())).install(monkeypatch)
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/demo/run1", samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["outcome"] == "proven", r
+        assert "run_dir=" not in r["follow_up"]["poll"] and "download" in r["follow_up"]["tasks"], r["follow_up"]
+
+    @pytest.mark.integration
     def test_relaunch_reuses_the_remote_directory(self, tmp_path, monkeypatch):
         pdir = _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
         ours = (pdir / MANIFEST_PATH).read_text()
         texts = {MANIFEST_PATH: ours, "launcher.sh": (pdir / "launcher.sh").read_text(),
-                 "params.yaml": (pdir / "params.yaml").read_text().replace("\nstranded: reverse\n", "\nstranded: 'yes'\n")}
+                 "params.yaml": (pdir / "params.yaml").read_text().replace("\nstranded: reverse\n", "\nstranded: 'yes'\n"),
+                 "samples.csv": "sample,reads\nS1,/data/r1.fq\n"}
         assert texts["params.yaml"] != (pdir / "params.yaml").read_text(), "the hand edit took"
-        remote = _Remote(existing={"/work/pipelines"} | _REFS, sifs=set(_SIF.values()),
+        remote = _Remote(existing={"/work/pipelines", "/data/r1.fq"} | _REFS, sifs=set(_SIF.values()),
                          run_state={"exists": True, "missing": [], "samplesheet": True,
                                     "texts": texts}).install(monkeypatch)
         r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1")
@@ -737,3 +925,63 @@ class TestReferencePins:
         assert check["summary"] == "1 matched, 1 not pinned by the sealed workflow"
         manifest = __import__("json").loads(Path(r["manifest_path"]).read_text())
         assert manifest["reference_check"]["status"] == "unanchored"
+
+
+# ===========================================================================
+# A run in progress is never launched over: the guard fails closed when the
+# scheduler cannot answer, sees a run directory reached through a link, sees
+# the tasks under work/, and on a laptop asks the job manager.
+# ===========================================================================
+
+def _probe_with_squeue(tmp_path, monkeypatch, run_dir: Path, squeue_body: str) -> dict:
+    """Run the real probe through bash here, with `squeue` a script printing what a
+    scheduler would."""
+    import subprocess
+    bin_dir = tmp_path / "fakebin"; bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "squeue").write_text("#!/bin/sh\n" + squeue_body)
+    (bin_dir / "squeue").chmod(0o755)
+    real = subprocess.run
+
+    def via_bash(argv, *a, **kw):
+        import os, shlex
+        script = shlex.split(argv[-1])[-1]         # ssh's `bash -lc '<script>'`, minus the login shell
+        return real(["bash", "-c", script], capture_output=True, text=True,
+                    env={**os.environ, "PATH": f"{bin_dir}:/usr/bin:/bin", "USER": "u"})
+    monkeypatch.setattr(subprocess, "run", via_bash)
+    return run_production._remote_run_dir_state({"host": "h", "user": "u"}, str(run_dir), ["main.nf"],
+                                                timeout=30)
+
+
+class TestARunInProgress:
+    @pytest.mark.integration
+    def test_a_scheduler_that_cannot_answer_is_never_read_as_nothing_running(self, tmp_path, monkeypatch):
+        run = tmp_path / "run1"; run.mkdir()
+        with pytest.raises(run_production._Refusal) as e:
+            _probe_with_squeue(tmp_path, monkeypatch, run,
+                               "echo 'slurm_load_jobs error: Socket timed out' >&2; exit 1\n")
+        assert e.value.result["code"] == "run_production.run_dir_probe_failed"
+        assert "Socket timed out" in e.value.result["error"], "the scheduler's own words say why"
+
+    @pytest.mark.integration
+    def test_the_manager_and_its_tasks_are_seen_through_a_link(self, tmp_path, monkeypatch):
+        real = tmp_path / "gpfs" / "run1"; (real / "work" / "ab").mkdir(parents=True)
+        link = tmp_path / "project"; link.symlink_to(tmp_path / "gpfs")
+        st = _probe_with_squeue(tmp_path, monkeypatch, link / "run1",
+                                f"echo '4242 RUNNING {real.resolve()}'\n"
+                                f"echo '4243 PENDING {real.resolve()}/work/ab/cd'\n"
+                                f"echo '9999 RUNNING /elsewhere'\n")
+        assert st["live"] == ["4242 RUNNING", "4243 PENDING"]
+
+    @pytest.mark.integration
+    def test_a_laptop_run_still_going_is_never_launched_over(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap)["success"]
+        busy = _FakeJobManager()
+        busy.running_in = str(d / "run1")
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", params={"stranded": "no"}, access=ap, jm=busy)
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.run_in_progress"), r
+        assert "check_job(" in r["remedy"] and "cancel_job(" in r["remedy"], "a laptop run has no scheduler"

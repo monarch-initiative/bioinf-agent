@@ -169,7 +169,7 @@ def _image_probe(image: str, platform: str, tool: str) -> dict:
     glob = _shq(f"*{tok}*")
     q = _shq(tok)
     cmd = (f'echo "PATH=$PATH"; echo "---executables---"; '
-           f'find / -xdev \( -type f -o -type l \) -iname {glob} -perm -u+x -not -path "/proc/*" '
+           f'find / -xdev \\( -type f -o -type l \\) -iname {glob} -perm -u+x -not -path "/proc/*" '
            f'2>/dev/null | head -20; '
            f'echo "---console_scripts---"; '
            f'for f in $(find / -xdev -name entry_points.txt -not -path "/proc/*" 2>/dev/null | '
@@ -566,10 +566,11 @@ def freeze_from_image(
     # The adopt branch below therefore records `registry_manifest_digest`, the same
     # value `adopt_image` carries.
     content_digest = digest
-    _md = ""
+    _pull = _md = ""
     if mode == "adopt":
-        from agent.skills.container_build import registry_manifest_digest
-        _md = registry_manifest_digest(image)
+        from agent.skills.container_build import registry_pull_ref
+        _pull = registry_pull_ref(image)
+        _md = _pull.split("@", 1)[1] if _pull else ""
         if _md:
             content_digest = _md
     # WHERE THE IMAGE CAME FROM — observed, not asserted. `built`: this record's own
@@ -675,10 +676,9 @@ def freeze_from_image(
     # registry, so there is nothing to pin: say so rather than emit an unpullable string.
     adopt_ref = ""
     if build_method == "adopt-image":
-        # `content_digest` above already resolved the manifest digest for this image;
-        # reuse it rather than making a second registry call that could answer differently.
-        md = content_digest if content_digest != digest else ""
-        adopt_ref = f"{image.split('@', 1)[0].split(':')[0]}@{md}" if md else ""
+        # the pullable reference resolved above, reused rather than asked again; under
+        # the containerd snapshotter its digest equals `.Id`, and it is a pin all the same
+        adopt_ref = _pull
         if adopt_ref:
             record["image_by_digest"] = adopt_ref
         else:

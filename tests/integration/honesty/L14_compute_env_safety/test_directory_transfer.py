@@ -163,8 +163,13 @@ class TestScp:
             env=_env_ssh(), local_path=src, abs_remote_path=str(tmp_path / "far" / "results"),
             local_sha256="", timeout=60, tree=transfer._scan_tree(src)[0])
         assert out["outcome"] == "proven", out
-        assert "-r" in calls[0] and out["checksums"] == transfer._scan_tree(src)[0]
-        assert calls[1][-1].startswith("bash -c "), "a compound remote command runs in bash, not the login shell"
+        scp = next(c for c in calls if c[0] == "scp")
+        assert "-r" in scp and scp[-1].endswith("/far/.results.partial"), "bytes go to the partial name"
+        assert out["checksums"] == transfer._scan_tree(src)[0]
+        assert all(c[-1].startswith("bash -c ") for c in calls[calls.index(scp) + 1:]), \
+            "a compound remote command runs in bash, not the login shell"
+        assert _files(tmp_path / "far" / "results") == _files(src), "renamed into place once verified"
+        assert not (tmp_path / "far" / ".results.partial").exists()
 
     @pytest.mark.integration
     def test_an_upload_names_the_file_that_did_not_arrive(self, tmp_path, monkeypatch):
@@ -175,6 +180,40 @@ class TestScp:
             local_sha256="", timeout=60, tree=transfer._scan_tree(src)[0])
         assert out["code"] == "transfer.scp_upload_tree_mismatch", out
         assert "1 file(s) missing (first: sub/b.tsv)" in out["error"]
+        assert not (tmp_path / "far" / "results").exists(), "an unverified copy never takes the final name"
+        assert not (tmp_path / "far" / ".results.partial").exists(), "and its partial is cleared"
+
+    @pytest.mark.integration
+    def test_a_partial_an_earlier_attempt_left_is_cleared_first(self, tmp_path, monkeypatch):
+        stale = tmp_path / "far" / ".results.partial" / "results"
+        stale.mkdir(parents=True)
+        (stale / "old.txt").write_text("from an interrupted attempt")
+        monkeypatch.setattr(subprocess, "run", _fake_ssh_and_scp([]))
+        src = _tree(tmp_path / "results")
+        out = transfer_providers.ScpHeadNodeProvider().upload_one(
+            env=_env_ssh(), local_path=src, abs_remote_path=str(tmp_path / "far" / "results"),
+            local_sha256="", timeout=60, tree=transfer._scan_tree(src)[0])
+        assert out["outcome"] == "proven", out
+        assert _files(tmp_path / "far" / "results") == _files(src)
+
+    @pytest.mark.integration
+    def test_a_destination_that_appears_during_the_transfer_is_not_overwritten(self, tmp_path, monkeypatch):
+        dest = tmp_path / "far" / "results"
+        fake = _fake_ssh_and_scp([])
+        def racing(argv, *a, **kw):
+            out = fake(argv, *a, **kw)
+            if argv[0] == "scp":
+                dest.mkdir(parents=True)
+                (dest / "theirs.txt").write_text("someone else's")
+            return out
+        monkeypatch.setattr(subprocess, "run", racing)
+        src = _tree(tmp_path / "results")
+        out = transfer_providers.ScpHeadNodeProvider().upload_one(
+            env=_env_ssh(), local_path=src, abs_remote_path=str(dest),
+            local_sha256="", timeout=60, tree=transfer._scan_tree(src)[0])
+        assert (out["outcome"], out["code"]) == ("refused", "transfer.remote_exists"), out
+        assert [p.name for p in dest.iterdir()] == ["theirs.txt"]
+        assert not (tmp_path / "far" / ".results.partial").exists()
 
     @pytest.mark.integration
     def test_a_download_finds_the_directory_at_the_source(self, tmp_path, monkeypatch):

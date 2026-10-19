@@ -36,7 +36,8 @@ def test_runner_is_valid_bash_and_runs_the_recipe():
     assert "masked from recipe PATH: tmux" in s
     # provenance sweep, skipping our own scaffolding + partials
     assert "sha256sum" in s and "shasum -a 256" in s
-    assert ("! -name '*.source.sha256' ! -name '*.part' ! -path ./launcher.sh ! -path ./gather_files.sh "
+    assert ("! -name '*.source.sha256' ! -name '*.part' ! -path ./launcher.sh "
+            "! -path ./gather_files.sh "
             "! -path './acquire_ref_bundle-*.out' ! -path './acquire_ref_bundle-*.err'") in s
     r = subprocess.run(["bash", "-n", "/dev/stdin"], input=s,
                        capture_output=True, text=True)

@@ -434,7 +434,7 @@ def _next_superseded_path(out_dir: Path, wname: str) -> Path:
     destroy it: {wname}.superseded.{n}.workflow.yaml (n = next free integer)."""
     n = 1
     while True:
-        p = out_dir / f"{wname}.superseded.{n}.workflow.yaml"
+        p = out_dir / _workspace.superseded_workflow_name(wname, n)
         if not p.exists():
             return p
         n += 1

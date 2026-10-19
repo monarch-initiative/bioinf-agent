@@ -328,9 +328,12 @@ def test_run_in_image_double_failure_returns_the_natural_error(monkeypatch):
 # adopt_image block in the same function already used registry_manifest_digest. The fix
 # had landed on the reader and on the sibling field, never on this producer.
 
-def _mock_registry_digest(monkeypatch, manifest_digest):
+def _mock_registry_digest(monkeypatch, manifest_digest, *, pulled_as=None):
+    """The image carries `manifest_digest` as a repo digest, under the repo it names, or
+    under `pulled_as` (a local retag of an image pulled under another name)."""
     import agent.skills.container_build as CB
-    monkeypatch.setattr(CB, "registry_manifest_digest", lambda ref: manifest_digest)
+    monkeypatch.setattr(CB, "registry_pull_ref", lambda ref: (
+        f"{pulled_as or ref.split('@', 1)[0].split(':')[0]}@{manifest_digest}" if manifest_digest else ""))
 
 
 def test_an_adopt_record_anchors_on_the_registry_manifest_not_the_local_id(tmp_path, monkeypatch):
@@ -355,6 +358,38 @@ def test_an_adopt_record_anchors_on_the_registry_manifest_not_the_local_id(tmp_p
     assert recipe["content_digest"] == manifest, (
         "the recipe's content_digest is what verify_env_recipe compares against "
         "registry_manifest_digest — a local .Id there cannot be reproduced by anyone else")
+
+
+def test_a_daemon_whose_local_id_is_the_manifest_digest_still_pins_the_image(tmp_path, monkeypatch):
+    """Under the containerd snapshotter `.Id` IS the registry manifest digest: the image
+    is pinned all the same, never recorded as one no registry served."""
+    manifest = "sha256:" + "45" * 32
+    _mock_docker(monkeypatch, digest=manifest)
+    _mock_registry_digest(monkeypatch, manifest)
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="quay.io/biocontainers/miniprot:0.13", name="miniprot_bc", version="0.13",
+        tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    rec = list(cache.registered.values())[0]
+    assert rec["image_by_digest"] == f"quay.io/biocontainers/miniprot@{manifest}"
+    assert "adopt_pin_error" not in rec
+
+
+def test_a_local_retag_of_a_pulled_image_is_pinned_under_the_name_the_registry_serves(tmp_path, monkeypatch):
+    manifest = "sha256:" + "2e" * 32
+    _mock_docker(monkeypatch, digest="sha256:" + "65" * 32)
+    _mock_registry_digest(monkeypatch, manifest, pulled_as="quay.io/biocontainers/miniprot")
+    cache = _Cache()
+    out = F.freeze_from_image(
+        image="lab/miniprot:dev", name="miniprot_lab", version="0.13",
+        tools=[{"name": "miniprot", "evidence": "miniprot --version"}],
+        build_method="adopt-image", env_cache=cache, env_dir=tmp_path)
+    assert out["outcome"] in ("proven", "degraded"), out
+    rec = list(cache.registered.values())[0]
+    assert rec["image_by_digest"] == f"quay.io/biocontainers/miniprot@{manifest}", \
+        "lab/miniprot@<digest> is a reference no registry serves"
 
 
 def test_an_unpullable_adopt_image_keeps_the_local_id_and_says_it_is_unpinnable(tmp_path, monkeypatch):
@@ -604,7 +639,7 @@ def test_the_recorded_patches_reach_every_deliverable(tmp_path, monkeypatch):
     assert recipe["dockerfile_source"]["patches"][0]["find"] == _GIT_PATCH["find"]
     assert recipe["dockerfile_source"]["patches"][0]["reason"] == _GIT_PATCH["reason"]
     md = (tmp_path / "talos.recipe.md").read_text()
-    assert "### Patches applied to the authors' source (1)" in md
+    assert "### Patches to apply to the checkout before building (1)" in md
     assert "`docker/Dockerfile`** · uv clones a git dependency" in md
     assert "--- find\napt-get install -y curl\n+++ replace\napt-get install -y curl git" in md
     assert "the 1 recorded patch above would have to be re-applied to the pinned source" in md
@@ -713,7 +748,7 @@ def test_patches_apply_in_order_and_each_sees_the_previous_result(tmp_path, monk
     assert ds["patches"][0]["sha256_after"] == ds["patches"][1]["sha256_before"]
     assert "apt-get install -y curl git ca-certificates" in ds["dockerfile"]
     md = (tmp_path / "talos.recipe.md").read_text()
-    assert "Patches applied to the authors' source (2)" in md
+    assert "Patches to apply to the checkout before building (2)" in md
     assert "the 2 recorded patches above would have to be re-applied" in md
 
 
@@ -918,3 +953,19 @@ def test_the_known_repo_is_tied_to_the_primary_tool_only(tmp_path, monkeypatch):
     assert ids["talos"]["collision"] is not None and ids["talos"]["self_description"] is None
     assert ids["bcftools"]["collision"] is None
     assert ids["bcftools"]["self_description"] == "PYPI::bcftools"
+
+
+def test_the_pull_ref_is_the_repo_asked_about_else_the_one_the_bytes_came_from(monkeypatch):
+    import subprocess
+    from unittest.mock import MagicMock
+    import agent.skills.container_build as CB
+    held = "quay.io/biocontainers/miniprot@sha256:" + "2e" * 32 + "\nmirror.example/miniprot@sha256:" + "2f" * 32 + "\n"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: MagicMock(returncode=0, stdout=held, stderr=""))
+    assert CB.registry_pull_ref("mirror.example/miniprot:0.13") == "mirror.example/miniprot@sha256:" + "2f" * 32
+    assert CB.registry_pull_ref("lab/miniprot:dev") == "quay.io/biocontainers/miniprot@sha256:" + "2e" * 32
+    assert CB.registry_manifest_digest("mirror.example/miniprot:0.13") == "sha256:" + "2f" * 32
+    ported = held + "registry.lab:5000/tools/miniprot@sha256:" + "30" * 32 + "\n"
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: MagicMock(returncode=0, stdout=ported, stderr=""))
+    for ref in ("registry.lab:5000/tools/miniprot:0.13", "registry.lab:5000/tools/miniprot",
+                "registry.lab:5000/tools/miniprot@sha256:" + "30" * 32):
+        assert CB.registry_pull_ref(ref) == "registry.lab:5000/tools/miniprot@sha256:" + "30" * 32, ref
