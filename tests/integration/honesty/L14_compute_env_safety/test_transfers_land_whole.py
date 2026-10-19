@@ -271,6 +271,23 @@ class TestLocalCopy:
         assert local.read_text() == "theirs" and not (tmp_path / ".back.txt.partial").exists()
 
     @pytest.mark.integration
+    def test_a_local_rename_that_fails_is_a_typed_failure_with_its_receipt(self, tmp_path, monkeypatch):
+        from tests.integration.honesty.L14_compute_env_safety.test_transfer_surface import _make_access
+        access = _make_access(tmp_path)
+        far = tmp_path / "fakescratch" / "demo_project" / "x.txt"
+        far.parent.mkdir(parents=True)
+        far.write_text("payload")
+
+        def refused_by_the_filesystem(part, dst):
+            raise PermissionError(13, "Permission denied", str(dst))
+        monkeypatch.setattr(transfer, "_into_place", refused_by_the_filesystem)
+        local = tmp_path / "back.txt"
+        out = transfer.download("demo_project", "fakehpc", str(far), str(local), access_path=str(access))
+        assert (out["outcome"], out["code"]) == ("broke", "transfer.local_io_failed"), out
+        assert not local.exists() and not (tmp_path / ".back.txt.partial").exists()
+        assert json.loads(Path(out["manifest"]).read_text())["zone"] == "scratch"
+
+    @pytest.mark.integration
     def test_a_local_write_that_fails_is_a_typed_failure_not_a_missing_manifest(self, tmp_path):
         from tests.integration.honesty.L14_compute_env_safety.test_transfer_surface import _make_access
         access = _make_access(tmp_path)
@@ -872,6 +889,10 @@ class TestGlobus:
         assert not (tmp_path / ".out.bam.partial").exists()
         rec = json.loads(Path(out["manifest"]).read_text())
         assert rec["outcome"] == "refused" and "pending_rename" not in rec
+        later = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
+        assert (later["outcome"], later["code"]) == ("broke", "transfer.task_transfer_unplaced"), \
+            "a task that succeeded is not a transfer that did"
+        assert later["transfer"] == "refused" and later["manifest"] == out["manifest"]
 
     @pytest.mark.integration
     @pytest.mark.parametrize("direction", ["upload", "download"])
@@ -954,3 +975,67 @@ class TestGlobus:
         assert first["code"] == "transfer.globus_task_unobserved", first
         other = transfer.upload("demo_project", "hpc2", str(src), "/w/common/ref", access_path=access)
         assert other["code"] == "transfer.globus_task_unobserved", other
+
+    @pytest.mark.integration
+    def test_a_receipt_finished_before_the_hold_is_read_again_under_it(self, tmp_path, monkeypatch):
+        """The call that started the transfer may finish it between globus_task_status
+        finding its receipt and taking the hold on it."""
+        state = {"show": "error"}
+        monkeypatch.setattr(subprocess, "run", _globus_download([], state))
+        local = tmp_path / "out.bam"
+        out = transfer.download("demo_project", "hpc", "/w/scratch/demo_project/out.bam", str(local),
+                                access_path=str(_globus_access(tmp_path)))
+        real_hold = transfer._hold_receipt
+
+        def finished_first(path):
+            (tmp_path / ".out.bam.partial").rename(local)
+            rec = json.loads(path.read_text())
+            rec.pop("pending_rename")
+            rec["outcome"] = "downloaded"
+            path.write_text(json.dumps(rec))
+            return real_hold(path)
+        monkeypatch.setattr(transfer, "_hold_receipt", finished_first)
+        state["show"] = "SUCCEEDED"
+        st = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
+        assert st["outcome"] == "proven" and st["transfer"] == "downloaded", st
+        assert json.loads(Path(out["manifest"]).read_text())["outcome"] == "downloaded"
+
+    @pytest.mark.integration
+    def test_a_hold_that_cannot_be_taken_is_said_and_changes_nothing(self, tmp_path, monkeypatch):
+        import errno
+        import fcntl
+        state = {"show": "error"}
+        monkeypatch.setattr(subprocess, "run", _globus_download([], state))
+        out = transfer.download("demo_project", "hpc", "/w/scratch/demo_project/out.bam",
+                                str(tmp_path / "out.bam"), access_path=str(_globus_access(tmp_path)))
+
+        def no_locks(fd, op):
+            raise OSError(errno.ENOLCK, "No locks available")
+        monkeypatch.setattr(fcntl, "flock", no_locks)
+        state["show"] = "SUCCEEDED"
+        st = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
+        assert (st["outcome"], st["code"]) == ("broke", "transfer.receipt_hold_failed"), st
+        assert "No locks available" in st["error"] and "$BIOINF_WORKSPACE" in st["remedy"]
+        assert json.loads(Path(out["manifest"]).read_text())["outcome"] == "still running"
+        assert (tmp_path / ".out.bam.partial").exists()
+
+    @pytest.mark.integration
+    def test_a_rename_globus_task_status_cannot_make_is_held_for_a_retry(self, tmp_path, monkeypatch):
+        state = {"show": "error"}
+        monkeypatch.setattr(subprocess, "run", _globus_download([], state))
+        local = tmp_path / "out.bam"
+        out = transfer.download("demo_project", "hpc", "/w/scratch/demo_project/out.bam", str(local),
+                                access_path=str(_globus_access(tmp_path)))
+        real_into_place = transfer._into_place
+
+        def refused_by_the_filesystem(part, dst):
+            raise PermissionError(13, "Permission denied", str(dst))
+        monkeypatch.setattr(transfer, "_into_place", refused_by_the_filesystem)
+        state["show"] = "SUCCEEDED"
+        st = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
+        assert (st["outcome"], st["code"]) == ("broke", "transfer.task_rename_failed"), st
+        assert "retries the rename" in st["remedy"]
+        assert json.loads(Path(out["manifest"]).read_text())["outcome"] == "still running"
+        monkeypatch.setattr(transfer, "_into_place", real_into_place)
+        again = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
+        assert again["renamed_to"] == str(local) and local.read_bytes() == b"BAM\x01" * 8, again

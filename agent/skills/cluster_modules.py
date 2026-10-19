@@ -225,10 +225,15 @@ def cluster_module_avail(project_name: str,
                 f"the login shell on {compute_env_name!r} printed no module listing of ours "
                 f"(its profile may replace or end the shell): "
                 f"{(res.stdout or '').strip()[-300:]!r}"))
-        if lines[end][len(_MODULES_END):] == "127":
+        rc = lines[end][len(_MODULES_END):]
+        if rc == "127":
             return broke("modules.module_command_missing", error=(
                 f"a login shell on {compute_env_name!r} has no `module` command, so there "
                 f"is no module listing to read"))
+        if rc not in ("0", "1"):
+            return broke("modules.module_avail_failed", error=(
+                f"`module avail` on {compute_env_name!r} exited {rc}: "
+                f"{chr(10).join(lines[lines.index(_MODULES_BEGIN) + 1:end]).strip()[-300:]!r}"))
         modules = _parse_module_avail_output("\n".join(lines[lines.index(_MODULES_BEGIN) + 1:end]))
         # Client-side pattern re-filter — defense in depth.
         if norm_pattern:

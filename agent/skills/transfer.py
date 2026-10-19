@@ -1126,7 +1126,10 @@ def _do_transfer(*, direction: str,
                                    task_id=task_id, pending_rename=pending)
                 if written.is_file():
                     receipt["path"] = written
-                    receipt["hold"] = _hold_receipt(written)
+                    try:
+                        receipt["hold"] = _hold_receipt(written)
+                    except OSError:
+                        pass
             if direction == "upload":
                 pr = provider.upload_one(
                     env=env, local_path=lp, abs_remote_path=normed_remote,
@@ -1263,19 +1266,27 @@ def resolve_globus_task(env: dict, task_id: str) -> dict:
     resolved only on the env it ran on."""
     from agent.skills import transfer_providers
     status = transfer_providers.globus_task_status(env, task_id)
-    found = _pending_receipt(task_id=task_id)
+    found = _task_receipt(task_id)
     if found is None or status.get("code") not in ("transfer.task_status_ok", "transfer.task_failed",
                                                      "transfer.task_incomplete"):
         return status
     path = found[0]
-    hold = _hold_receipt(path)
+    try:
+        hold = _hold_receipt(path)
+    except OSError as e:
+        return broke("transfer.receipt_hold_failed", success=False, task_id=task_id, manifest=str(path),
+                     error=f"the hold on {path} could not be taken ({e}); nothing was changed",
+                     remedy=("put the workspace ($BIOINF_WORKSPACE) on a filesystem that takes file "
+                             "locks, then globus_task_status again"))
     if hold is None:
         return loop("transfer.task_call_waiting", success=False, task_id=task_id, manifest=str(path),
                     task_status=status.get("status"),
-                    error=(f"the call that started Globus task {task_id} is still waiting on it and "
-                           f"puts the bytes in place itself; nothing was changed here"),
-                    remedy=("wait for that call to return (check_job, if it ran with background=True); "
-                            "globus_task_status after it says how the transfer ended"))
+                    error=(f"another process holds the receipt of Globus task {task_id}: the call that "
+                           f"started the transfer, still waiting on it, or another globus_task_status "
+                           f"putting it in place; nothing was changed here"),
+                    remedy=("the call that started the transfer says how it ended when it returns (its "
+                            "own result, or check_job's when it ran with background=True); "
+                            "globus_task_status after that says the same"))
     try:
         return _resolve_held(env, task_id, status, path)
     finally:
@@ -1290,9 +1301,11 @@ def _resolve_held(env: dict, task_id: str, status: dict, path: Path) -> dict:
         rec = json.loads(path.read_text())
     except (OSError, ValueError):
         return status
-    pending = rec.get("pending_rename") if isinstance(rec, dict) else None
-    if not isinstance(pending, dict):
+    if not isinstance(rec, dict):
         return status
+    pending = rec.get("pending_rename")
+    if not isinstance(pending, dict):
+        return _as_receipt_says(status, path, rec)
     direction = "download" if rec.get("direction") == "download" else "upload"
     if pending.get("env") != env.get("name"):
         call = status_call(str(rec.get("project", "?")), str(pending.get("env")), task_id)
@@ -1327,6 +1340,23 @@ def _resolve_held(env: dict, task_id: str, status: dict, path: Path) -> dict:
     _rewrite_receipt(path, rec)
     return proven("transfer.task_status_ok", success=True, renamed_to=pending["to"],
                   manifest=str(path), **fields)
+
+
+def _as_receipt_says(status: dict, path: Path, rec: dict) -> dict:
+    """A task's status with how its transfer ended, as the transfer's receipt says: a
+    task that succeeded is a transfer that did only when its bytes are in place."""
+    said = {"transfer": rec.get("outcome"), "manifest": str(path)}
+    if status["code"] != "transfer.task_status_ok" or rec.get("outcome") in ("uploaded", "downloaded"):
+        return {**status, **said}
+    fields = {k: v for k, v in status.items() if k not in ("outcome", "code", "success", "error")}
+    why = (f"Globus task {status.get('task_id')} succeeded, but the transfer is "
+           f"{rec.get('outcome')}: {rec.get('reason') or rec.get('summary')}")
+    if rec.get("outcome") == "unconfirmed":
+        return degraded("transfer.task_rename_unconfirmed", success=False, **fields, **said, error=why,
+                        remedy="transfer it again to another path and compare, if the destination "
+                               "must hold this task's bytes")
+    return broke("transfer.task_transfer_unplaced", success=False, **fields, **said, error=why,
+                 remedy="transfer it again: this task's bytes are not under the destination's name")
 
 
 def _ended_unplaced(env: dict, task_id: str, path: Path, rec: dict, direction: str,
@@ -1388,6 +1418,11 @@ def _download_into_place(env: dict, task_id: str, path: Path, rec: dict, pending
         return _ended_unplaced(env, task_id, path, rec, "download", why, broke(
             "transfer.task_rename_blocked", success=False, **fields, error=why,
             remedy=f"download to another path: {dst} holds a file this download did not put there"))
+    except OSError as e:
+        return broke("transfer.task_rename_failed", success=False, manifest=str(path), **fields,
+                     partial_path=str(part),
+                     error=f"renaming {part} to {dst} failed ({type(e).__name__}: {e})",
+                     remedy="globus_task_status again once that is put right: it retries the rename")
     rec["outcome"] = "downloaded"
     rec["size"] = _human_size(nbytes)
     rec["summary"] = _summarize(
@@ -1449,28 +1484,40 @@ def _unrenamed(provider, env: dict, task_id: str, path: Path, rec: dict, pending
 def _hold_receipt(path: Path) -> Optional[int]:
     """An exclusive hold on a transfer's receipt, so one process at a time puts its bytes
     in place: the call that started the transfer while it lives, else globus_task_status.
-    None when another process has it. The kernel lets go when the holder exits, however
-    it exits."""
+    None when another process has it; OSError when it cannot be taken at all. The
+    kernel lets go when the holder exits, however it exits."""
     import fcntl
-    try:
-        fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        return None
+    fd = os.open(path, os.O_RDWR)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except BlockingIOError:
         os.close(fd)
         return None
+    except OSError:
+        os.close(fd)
+        raise
     return fd
 
 
-def _pending_receipt(*, task_id: Optional[str] = None, env: Optional[str] = None,
-                     direction: Optional[str] = None,
-                     to: Optional[str] = None) -> Optional[tuple[Path, dict]]:
-    """The receipt, under any project, of a transfer whose Globus task has not been
-    seen to end, and so still waits to be renamed into place: by its task, or by its
-    direction and the path it goes to (its pending rename's `to`), on `env` when one
-    is named."""
+def _task_receipt(task_id: str) -> Optional[tuple[Path, dict]]:
+    """The newest receipt, under any project, of the transfer Globus task `task_id` ran."""
+    root = _record_root() / "transfer_history"
+    for p in sorted(root.glob("*/*/*.json"), key=lambda p: p.name, reverse=True):
+        try:
+            text = p.read_text()
+            rec = json.loads(text) if task_id in text else None
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("globus_task_id") == task_id:
+            return p, rec
+    return None
+
+
+def _pending_receipt(*, direction: str, to: str,
+                     env: Optional[str] = None) -> Optional[tuple[Path, dict]]:
+    """The receipt, under any project, of a transfer in `direction` to `to` whose Globus
+    task has not been seen to end, and so still waits to be renamed into place; on `env`
+    when one is named."""
     root = _record_root() / "transfer_history"
     for p in sorted(root.glob("*/*/*.json"), key=lambda p: p.name, reverse=True):
         try:
@@ -1481,8 +1528,7 @@ def _pending_receipt(*, task_id: Optional[str] = None, env: Optional[str] = None
         pending = rec.get("pending_rename") if isinstance(rec, dict) else None
         if not isinstance(pending, dict):
             continue
-        if (rec.get("globus_task_id") == task_id if task_id
-                else (rec.get("direction"), pending.get("to")) == (direction, to)
+        if ((rec.get("direction"), pending.get("to")) == (direction, to)
                 and env in (None, pending.get("env"))):
             return p, rec
     return None
@@ -1577,6 +1623,16 @@ def _do_local_mode(*, direction: str,
                     started: float) -> dict:
     """Inline shutil.copy path for local-mode envs. Same trust contract
     (sha256 both ends + size compare) but no wire-protocol provider."""
+    def unplaced(part: Path, dst: Path, command: str, appeared: str) -> Optional[dict]:
+        """None once the verified copy has `dst`'s name; else its refusal or failure, journaled."""
+        from agent.skills.transfer_providers import _put_in_place
+        out = _put_in_place(part, dst, {"provider": "local_copy", "command": command}, appeared=appeared)
+        if "error" not in out:
+            return None
+        mpath = journal(result="refused" if out["outcome"] == "refused" else "error", zone=zone,
+                        transport="local_copy", command=command, error_msg=out["error"])
+        return {**out, "manifest": str(mpath)}
+
     cp_cmd_up = f"cp {shlex.quote(str(lp))} {shlex.quote(normed_remote)}"
     if direction == "upload":
         part = Path(partial_path(normed_remote))
@@ -1593,12 +1649,9 @@ def _do_local_mode(*, direction: str,
                 f"sha256 round-trip mismatch — local={local_sha} "
                 f"remote={remote_sha!r}; the copy was discarded."),
                 manifest=str(mpath))
-        try:
-            _into_place(part, Path(normed_remote))
-        except TransferError as e:
-            mpath = journal(result="refused", zone=zone, transport="local_copy",
-                            command=cp_cmd_up, error_msg=str(e))
-            return refused("transfer.remote_exists_local", error=str(e), manifest=str(mpath))
+        failed = unplaced(part, Path(normed_remote), cp_cmd_up, "transfer.remote_exists_local")
+        if failed:
+            return failed
         bytes_done = lp.stat().st_size
         mpath = journal(result="success", zone=zone,
             transport="local_copy", command=cp_cmd_up,
@@ -1645,12 +1698,9 @@ def _do_local_mode(*, direction: str,
             f"sha256 mismatch on local-mode download: "
             f"source={remote_sha} landed={landed_sha}"),
             manifest=str(mpath))
-    try:
-        _into_place(part, lp)
-    except TransferError as e:
-        mpath = journal(result="refused", zone=zone, transport="local_copy",
-                        command=cp_cmd_dn, error_msg=str(e))
-        return refused("transfer.local_exists", error=str(e), manifest=str(mpath))
+    failed = unplaced(part, lp, cp_cmd_dn, "transfer.local_exists")
+    if failed:
+        return failed
     bytes_done = lp.stat().st_size
     mpath = journal(result="success", zone=zone,
         transport="local_copy", command=cp_cmd_dn,

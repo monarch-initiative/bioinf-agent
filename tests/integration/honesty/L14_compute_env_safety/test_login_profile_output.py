@@ -93,8 +93,11 @@ def test_a_profile_banner_is_never_listed_as_a_module(chatty_profile):
 @pytest.mark.integration
 @pytest.mark.parametrize("profile,code", [
     ("exec true\n", "modules.listing_unobserved"),
+    ("module() { exit 0; }\n", "modules.listing_unobserved"),
     ("echo 'Welcome to the cluster'\n", "modules.module_command_missing"),
-], ids=["profile_replaces_the_shell", "no_module_command"])
+    ("module() { echo 'Lmod has detected the following error: no spider cache' >&2; return 2; }\n",
+     "modules.module_avail_failed"),
+], ids=["profile_replaces_the_shell", "listing_never_ends", "no_module_command", "module_avail_failed"])
 def test_a_listing_never_made_is_not_an_empty_one(chatty_profile, profile, code):
     (chatty_profile / "home" / ".bash_profile").write_text(profile)
     access = chatty_profile / "projects_access.yaml"
@@ -152,3 +155,15 @@ def test_the_scan_sees_each_spelling(spelling):
 @pytest.mark.parametrize("plain", ['["wc", "-l", q]', '["bash", "-c", q]', '"ls -la " + q'])
 def test_the_scan_passes_what_is_not_a_login_shell(plain):
     assert not any(map(_spells_login_shell, ast.walk(ast.parse(f"def check(q):\n    return {plain}\n"))))
+
+
+@pytest.mark.integration
+def test_a_pattern_that_matches_nothing_is_an_empty_listing(chatty_profile):
+    """Some Lmod versions exit 1 when a pattern matches nothing: not an error."""
+    (chatty_profile / "home" / ".bash_profile").write_text("module() { return 1; }\n")
+    access = chatty_profile / "projects_access.yaml"
+    access.write_text(yaml.safe_dump({
+        "compute_envs": [_env()],
+        "projects": [{"name": "demo_project", "compute_envs": ["hpc"], "directories": []}]}))
+    out = cluster_modules.cluster_module_avail("demo_project", "hpc", "nosuchtool", access_path=str(access))
+    assert out["modules"] == [] and "error" not in out, out
