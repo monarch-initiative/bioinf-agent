@@ -303,7 +303,7 @@ def cluster_partitions(project_name: str,
                        timeout: int = 60) -> dict:
     """List the SLURM partitions on `compute_env_name`.
 
-    Pure-read: runs ONE ssh invocation of `bash -lc 'sinfo -h -o …'`, parses
+    Pure-read: runs `sinfo -h -o …` in a login shell over ONE ssh invocation, parses
     the output, returns one record per partition. Submits nothing, loads
     nothing, writes nothing.
 

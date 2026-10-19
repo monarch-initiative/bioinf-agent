@@ -144,8 +144,9 @@ def download(project_name: str,
     (`globus_sync_wait_exceeded`), or one whose end could not be seen
     (`globus_task_unobserved`), keeps landing there; `globus_task_status`
     puts it in place when the task has succeeded. Until then a download to
-    the same `local_path` sends nothing and returns `in_flight` with the call
-    that resolves it.
+    the same `local_path`, from any env, sends nothing and returns
+    `in_flight` with the call that resolves it. A file that appears at
+    `local_path` while the download runs is never replaced (`local_exists`).
     Symmetric to `upload`: same zone routing (auto-classified by where
     remote_abs_path falls), same auth (the matched zone must declare
     `download` in its permissions; `upload` alone does NOT satisfy
@@ -177,7 +178,7 @@ def cluster_module_avail(project_name: str,
     """Discover what HPC modules are loadable on a compute env so the
     agent can pick the right `module load X/Y.Z` line for a launcher.
 
-    Pure-read: runs ONE ssh invocation of `bash -lc 'module avail …'`,
+    Pure-read: runs `module avail` in a login shell over ONE ssh invocation,
     parses the output, returns a flat list of `<name>/<version>`
     strings. Does not load any module; does not submit any job; never
     writes anything.
@@ -209,7 +210,7 @@ def cluster_partitions(project_name: str,
     """Discover the SLURM partitions on a compute env — so a GPU convention
     can be read off the cluster instead of typed by hand.
 
-    Pure-read: runs ONE ssh invocation of `bash -lc 'sinfo -h -o …'`, parses
+    Pure-read: runs `sinfo -h -o …` in a login shell over ONE ssh invocation, parses
     the output, returns one record per partition. Submits nothing, loads
     nothing, writes nothing.
 
@@ -293,9 +294,12 @@ def globus_task_status(project_name: str,
     A download's rename is made here, once what landed has been read (a
     directory must hold every file the task moved): its `local_sha256`, or
     `files` and `checksums`, come back as a sync download's do. A download
-    whose task did not succeed, or that cannot be put in place, is removed:
-    the destination written meanwhile is `task_rename_blocked` (nothing
-    replaced), anything else `task_rename_failed` (download it again).
+    whose task did not succeed has what arrived removed. One that cannot be
+    put in place: the destination written meanwhile is `task_rename_blocked`
+    (nothing replaced, the copy removed); a copy short of the task, or
+    nothing left under the partial name, is `task_rename_failed` (download
+    it again), but `task_rename_unconfirmed` when the destination holds a
+    file.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.
@@ -347,7 +351,7 @@ def cluster_job_status(project_name: str,
     """Look up SLURM state for `job_id` on `compute_env_name` so the
     agent can poll a submitted job to completion.
 
-    Pure-read: runs `bash -lc 'sacct -j <id> -P --noheader -X -o <fields>'`
+    Pure-read: runs, in a login shell, `sacct -j <id> -P --noheader -X -o <fields>`
     over ssh, parses the pipe-delimited output, returns a list of row-dicts.
     Does not submit, cancel, or modify anything.
 

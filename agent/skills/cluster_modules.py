@@ -24,8 +24,8 @@ modules). It's not a binary on PATH. Most HPCs surface it via
 in non-interactive mode often FAILS because the function isn't loaded.
 
 Two paths:
-  - `ssh host bash -lc 'module avail'`  — forces a login shell so the
-    profile.d setup runs. Works on most clusters.
+  - `module avail` in a login shell (`bash -lc`) — the profile.d setup
+    runs. Works on most clusters.
   - `ssh host bash -c 'source /etc/profile.d/lmod.sh && module avail'`
     — explicit source; brittle.
 
@@ -85,12 +85,17 @@ def validate_pattern(pattern: Optional[str]) -> Optional[str]:
     return pattern
 
 
+#: Where `module avail`'s own output starts, after whatever the login profile printed:
+#: the parser takes every safe word as a module, so a banner's words would be listed.
+_MODULES_BEGIN = "BIOINF_MODULES_BEGIN"
+
+
 def _build_module_avail_cmd(pattern: Optional[str]) -> str:
     """The remote shell command. We force a login shell with `bash -lc`
     so the profile.d/lmod.sh setup loads. `module avail` writes to
     STDERR; we redirect to STDOUT so subprocess captures it cleanly.
     Pinned by a test."""
-    inner = "module avail"
+    inner = f"echo {_MODULES_BEGIN}; module avail"
     if pattern:
         inner = f"{inner} {shlex.quote(pattern)}"
     # 2>&1 because module avail writes to stderr — capturing only stdout
@@ -153,7 +158,7 @@ def cluster_module_avail(project_name: str,
     """List the modules available on `compute_env_name` (filtered by
     `pattern` if given).
 
-    Pure-read: runs ONE ssh invocation of `bash -lc 'module avail …'`,
+    Pure-read: runs `module avail` in a login shell over ONE ssh invocation,
     parses the output, returns a flat list. Does not load any module;
     does not submit any job; never writes anything.
 
@@ -213,7 +218,9 @@ def cluster_module_avail(project_name: str,
                 f"{(res.stderr or '').strip()[:500]}",
                 **({"hint": hint} if hint else {}))
 
-        modules = _parse_module_avail_output(res.stdout)
+        lines = (res.stdout or "").splitlines()
+        ours = lines[lines.index(_MODULES_BEGIN) + 1:] if _MODULES_BEGIN in lines else []
+        modules = _parse_module_avail_output("\n".join(ours))
         # Client-side pattern re-filter — defense in depth.
         if norm_pattern:
             modules = [m for m in modules if norm_pattern in m]

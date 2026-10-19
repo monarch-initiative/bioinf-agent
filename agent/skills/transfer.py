@@ -376,7 +376,7 @@ def _parse_tree_listing(stdout: str) -> tuple[dict[str, str], list[str]]:
 
 
 def partial_path(abs_path: str) -> str:
-    """Where an upload lands until its bytes are verified: a hidden sibling of
+    """Where a transfer lands until its bytes are verified: a hidden sibling of
     the destination. Every transport renames it into place only after the
     check passes, so a file under its final name is always a complete one and
     an existence check can be trusted."""
@@ -693,9 +693,11 @@ def _write_transfer_manifest(*,
                               error_msg: Optional[str],
                               checksums: Optional[dict] = None,
                               pending_rename: Optional[dict] = None,
+                              path: Optional[Path] = None,
                               ) -> Path:
     """Write a human-readable JSON record of one transfer under
-    `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_<direction>_<hash>.json`.
+    `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_<direction>_<hash>.json`,
+    or over `path`, the record this transfer already wrote.
 
     The record leads with a plain-English `outcome` + `summary`, carries
     the ACTUAL command that ran (`command`), and OMITS any field that
@@ -765,18 +767,23 @@ def _write_transfer_manifest(*,
     record["project"] = project_name
     record["manifest_version"] = 2
 
-    base = _record_root() / "transfer_history" / project_name / day
-    base.mkdir(parents=True, exist_ok=True)
-    sh = _short_hash(direction, str(local_path), remote_abs_path,
-                     now.isoformat())
-    manifest_path = base / f"{stamp}_{direction}_{sh}.json"
+    if path is None:
+        base = _record_root() / "transfer_history" / project_name / day
+        base.mkdir(parents=True, exist_ok=True)
+        sh = _short_hash(direction, str(local_path), remote_abs_path,
+                         now.isoformat())
+        path = base / f"{stamp}_{direction}_{sh}.json"
     if checksums is not None:
-        sums_path = _checksums_path(manifest_path)
-        sums_path.write_text("".join(f"{sha}  {rel}\n"
-                                     for rel, sha in sorted(checksums.items())))
-        record["checksums"] = str(sums_path)
-    manifest_path.write_text(json.dumps(record, indent=2))
-    return manifest_path
+        record["checksums"] = str(_write_checksums(path, checksums))
+    path.write_text(json.dumps(record, indent=2))
+    return path
+
+
+def _write_checksums(manifest_path: Path, checksums: dict) -> Path:
+    """A directory's checksums beside its receipt, the list `sha256sum -c` reads."""
+    sums_path = _checksums_path(manifest_path)
+    sums_path.write_text("".join(f"{sha}  {rel}\n" for rel, sha in sorted(checksums.items())))
+    return sums_path
 
 
 def _summarize(*, outcome: str, direction: str, transport: Optional[str],
@@ -799,11 +806,11 @@ def _summarize(*, outcome: str, direction: str, transport: Optional[str],
                 f"{via_part}.")
     if outcome == "refused":
         return (f"Refused: {reason or 'precondition not met'}. "
-                f"({direction} of {fname} to {compute_env})")
+                f"({direction} of {fname} {'to' if direction == 'upload' else 'from'} {compute_env})")
     if outcome == "still running":
         return (f"Still moving {fname}{size_part} {'to' if direction == 'upload' else 'from'} "
-                f"{compute_env}{via_part}: we stopped waiting, Globus did not "
-                f"(task {task_id}).")
+                f"{compute_env}{via_part}: Globus task {task_id}, whose end has not "
+                f"been seen.")
     # failed
     return (f"Failed to {direction} {fname} {'to' if direction == 'upload' else 'from'} "
             f"{compute_env}: {reason or 'see logs'}.")
@@ -925,6 +932,7 @@ def _do_transfer(*, direction: str,
     started = time.perf_counter()
     if detached():
         timeout = max(timeout, _DETACHED_TIMEOUT_S)
+    receipt: dict = {}    # this transfer's record, once written: every later write replaces it
 
     def _journal(*, result: str, error_msg: Optional[str] = None,
                  transport: Optional[str] = None,
@@ -958,6 +966,7 @@ def _do_transfer(*, direction: str,
                 error_msg=error_msg,
                 checksums=checksums,
                 pending_rename=pending_rename,
+                path=receipt.get("path"),
             )
         except Exception:
             # Manifest write must not mask the real result.
@@ -1024,12 +1033,12 @@ def _do_transfer(*, direction: str,
 
         # 5) An earlier transfer to the same place whose task has not been seen to
         # end is still landing there under its partial name: a second copy would race it.
-        dest = normed_remote if direction == "upload" else str(lp)
-        inflight = pending_transfer(env, direction, dest)
+        dest = normed_remote if direction == "upload" else os.path.realpath(lp)
+        inflight = pending_transfer(env, direction, dest, access)
         if inflight is not None:
             path, rec = inflight
             tid = rec.get("globus_task_id")
-            call = status_call(project_name, compute_env_name, tid)
+            call = status_call(str(rec.get("project", "?")), str(rec["pending_rename"].get("env")), tid)
             mpath = _journal(result="refused", zone=zone, transport=transport_name,
                              error_msg=f"an earlier {direction} to it, Globus task {tid}, has not been seen to end")
             return loop("transfer.in_flight",
@@ -1105,17 +1114,28 @@ def _do_transfer(*, direction: str,
                     local_sha=local_sha, zone=zone, journal=_journal,
                     started=started)
             pr = _copy_local_tree(src, dst, source=tree)
-        elif direction == "upload":
-            pr = provider.upload_one(
-                env=env, local_path=lp, abs_remote_path=normed_remote,
-                local_sha256=local_sha, timeout=timeout,
-                label=f"upload {project_name} {Path(normed_remote).name}",
-                tree=tree)
         else:
-            pr = provider.download_one(
-                env=env, abs_remote_path=normed_remote,
-                local_path=lp, timeout=timeout,
-                label=f"download {project_name} {Path(normed_remote).name}")
+            def on_task(task_id: str) -> None:
+                # Journaled the moment the task exists, so a call that dies while it
+                # waits still leaves the hold and the rename for globus_task_status.
+                pending = {"env": compute_env_name, "to": dest,
+                           "from": partial_path(normed_remote if direction == "upload" else str(lp))}
+                written = _journal(result="waiting", zone=zone, transport=provider.name,
+                                   task_id=task_id, pending_rename=pending)
+                if written.is_file():
+                    receipt["path"] = written
+            if direction == "upload":
+                pr = provider.upload_one(
+                    env=env, local_path=lp, abs_remote_path=normed_remote,
+                    local_sha256=local_sha, timeout=timeout,
+                    label=f"upload {project_name} {Path(normed_remote).name}",
+                    tree=tree, on_task=on_task)
+            else:
+                pr = provider.download_one(
+                    env=env, abs_remote_path=normed_remote,
+                    local_path=lp, timeout=timeout,
+                    label=f"download {project_name} {Path(normed_remote).name}",
+                    on_task=on_task)
         if pr.get("outcome") == "loop":
             # Globus may still be running the task: we stopped waiting, or could not
             # see how it ended. Not a failure, and the receipt must not say one: it
@@ -1140,8 +1160,8 @@ def _do_transfer(*, direction: str,
                 task_id=pr.get("task_id"),
                 error_msg=pr["error"])
             out = dict(pr); out["manifest"] = str(mpath)
-            if pr.get("code") == "transfer.remote_exists":    # it appeared while this upload ran
-                return refused("transfer.remote_exists", **out)
+            if pr.get("code") in ("transfer.remote_exists", "transfer.local_exists"):
+                return refused(pr["code"], **out)             # it appeared while this transfer ran
             if said_no:
                 return refused("transfer.provider_refused", **out)
             return broke("transfer.provider_failed", **out)
@@ -1299,28 +1319,45 @@ def _download_into_place(env: dict, task_id: str, path: Path, rec: dict, pending
     """A download whose task SUCCEEDED: what landed under the partial name is read
     as the sync path reads it (a directory must hold every file the task moved) and
     renamed into place, unless something arrived there meanwhile. What cannot be put
-    in place is removed, as after a failed download."""
+    in place is removed, as after a failed download. With nothing left under the
+    partial name, what is at the destination decides, as for an upload's rename."""
     from agent.skills import transfer_providers
     part, dst = Path(pending["from"]), Path(pending["to"])
+    there = dst.exists() or dst.is_symlink()
+    if not (part.exists() or part.is_symlink()):
+        why = f"nothing is at {part} any more"
+        if there:
+            rec["outcome"] = "unconfirmed"
+            rec["reason"] = (f"the task succeeded and {dst} holds a file, but the rename that would "
+                             f"have put this download there was not seen to complete")
+            rec["summary"] = f"Download of {rec.get('file', '')} from {env.get('name', '?')}: {rec['reason']}."
+            _rewrite_receipt(path, rec)
+            return degraded("transfer.task_rename_unconfirmed", success=False, manifest=str(path),
+                            **fields, error=f"{why}; {rec['reason']}",
+                            remedy=f"download it again to another path and compare, if {dst} must be "
+                                   f"this task's bytes")
+        return _ended_unplaced(env, task_id, path, rec, "download", why, broke(
+            "transfer.task_rename_failed", success=False, **fields, error=why,
+            remedy=f"download it again: the way to {dst} is clear"))
     try:
-        if not (part.exists() or part.is_symlink()):
-            raise TransferError(f"nothing is at {part} any more")
         checksums, nbytes = _scan_tree(part) if part.is_dir() else (None, part.stat().st_size)
         sha = None if checksums is not None else _compute_local_sha256(part)
         short = None if checksums is None else transfer_providers._tree_shortfall(status, len(checksums))
         if short:
             raise TransferError(f"the task SUCCEEDED, but {short}")
-        _into_place(part, dst)
     except (OSError, TransferError) as e:
         transfer_providers._discard_local(part)
-        blocked = dst.exists() or dst.is_symlink()
-        why = f"{e}" + ("" if blocked else "; what had arrived was removed")
-        out = (broke("transfer.task_rename_blocked", success=False, **fields, error=why,
-                     remedy=f"download to another path: {dst} holds a file this download did not put there")
-               if blocked else
-               broke("transfer.task_rename_failed", success=False, **fields, error=why,
-                     remedy=f"download it again: the way to {dst} is clear"))
-        return _ended_unplaced(env, task_id, path, rec, "download", why, out)
+        why = f"{e}; what had arrived was removed"
+        return _ended_unplaced(env, task_id, path, rec, "download", why, broke(
+            "transfer.task_rename_failed", success=False, **fields, error=why,
+            remedy=f"download it again: the way to {dst} is clear"))
+    try:
+        _into_place(part, dst)
+    except TransferError as e:
+        why = str(e)
+        return _ended_unplaced(env, task_id, path, rec, "download", why, broke(
+            "transfer.task_rename_blocked", success=False, **fields, error=why,
+            remedy=f"download to another path: {dst} holds a file this download did not put there"))
     rec["outcome"] = "downloaded"
     rec["size"] = _human_size(nbytes)
     rec["summary"] = _summarize(
@@ -1331,10 +1368,9 @@ def _download_into_place(env: dict, task_id: str, path: Path, rec: dict, pending
     rec["verified"] = _VERIFIED_PHRASE["globus_end_to_end"]
     landed: dict = {"local_sha256": sha}
     if checksums is not None:
-        sums = _checksums_path(path)
-        sums.write_text("".join(f"{h}  {rel}\n" for rel, h in sorted(checksums.items())))
-        rec.update(files=len(checksums), checksums=str(sums))
-        landed = {"files": len(checksums), "checksums": str(sums)}
+        sums = str(_write_checksums(path, checksums))
+        rec.update(files=len(checksums), checksums=sums)
+        landed = {"files": len(checksums), "checksums": sums}
     _rewrite_receipt(path, rec)
     return proven("transfer.task_status_ok", success=True, renamed_to=str(dst),
                   manifest=str(path), **landed, **fields)
@@ -1385,7 +1421,8 @@ def _pending_receipt(*, task_id: Optional[str] = None, env: Optional[str] = None
                      to: Optional[str] = None) -> Optional[tuple[Path, dict]]:
     """The receipt, under any project, of a transfer whose Globus task has not been
     seen to end, and so still waits to be renamed into place: by its task, or by its
-    direction, the env and the path it goes to (its pending rename's `env` and `to`)."""
+    direction and the path it goes to (its pending rename's `to`), on `env` when one
+    is named."""
     root = _record_root() / "transfer_history"
     for p in sorted(root.glob("*/*/*.json"), key=lambda p: p.name, reverse=True):
         try:
@@ -1396,20 +1433,34 @@ def _pending_receipt(*, task_id: Optional[str] = None, env: Optional[str] = None
         if not isinstance(pending, dict):
             continue
         if (rec.get("globus_task_id") == task_id if task_id
-                else (rec.get("direction"), pending.get("env"), pending.get("to")) == (direction, env, to)):
+                else (rec.get("direction"), pending.get("to")) == (direction, to)
+                and env in (None, pending.get("env"))):
             return p, rec
     return None
 
 
-def pending_transfer(env: dict, direction: str, dest: str) -> Optional[tuple[Path, dict]]:
-    """The receipt of an earlier transfer on `env` in `direction` to `dest` (a path on
-    the env for an upload, on this machine for a download) whose Globus task has not
-    been seen to end. Only on an env whose wire is Globus: the one wire
-    globus_task_status resolves a task on, so the only one a hold lifts on."""
-    if env.get("type") != "ssh" or compute_access.get_globus_endpoints(env) is None:
+def pending_transfer(env: dict, direction: str, dest: str,
+                     access: Optional[dict] = None) -> Optional[tuple[Path, dict]]:
+    """The receipt of an earlier transfer in `direction` to `dest` whose Globus task
+    has not been seen to end. An upload's destination is a path on `env`, held by an
+    earlier upload on `env`; a download's is a path on this machine (resolved), held
+    by a download from any env in `access`, whatever this one's wire. A hold applies
+    only while the env it was made on speaks Globus: the one wire globus_task_status
+    resolves a task on, so the only one a hold lifts on."""
+    def speaks_globus(e: dict) -> bool:
+        return e.get("type") == "ssh" and compute_access.get_globus_endpoints(e) is not None
+    if direction == "upload":
+        return (_pending_receipt(env=env.get("name"), direction=direction,
+                                 to=_validate_remote_abs_path(dest))
+                if speaks_globus(env) else None)
+    found = _pending_receipt(direction=direction, to=dest)
+    if found is None:
         return None
-    to = _validate_remote_abs_path(dest) if direction == "upload" else dest
-    return _pending_receipt(env=env.get("name"), direction=direction, to=to)
+    try:
+        holder = compute_access.get_compute_env(found[1]["pending_rename"].get("env"), access or {})
+    except KeyError:
+        return None
+    return found if speaks_globus(holder) else None
 
 
 def status_call(project_name: str, compute_env_name: str, task_id: Optional[str]) -> str:

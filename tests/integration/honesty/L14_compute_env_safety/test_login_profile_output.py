@@ -6,20 +6,24 @@ Every remote check that needs the cluster's tools runs in a login shell
 prints without a final newline would glue its text onto the first line the check
 prints, and a check that reads its answer line by line ("EXISTS", "MISSING:<path>",
 a scheduler row) would miss it there: a missing input read as present, a staged
-image read as absent. Each check's output starts on a line of its own.
+image read as absent. Each check's output starts on a line of its own, and a check
+that would take any word as its answer (the module listing) reads only what follows
+its own marker.
 
 The checks run through a real login bash here, under a profile that prints.
 """
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
-from agent.skills import cluster_jobs, run_production, stage_apptainer
+from agent.skills import cluster_jobs, cluster_modules, run_production, stage_apptainer
 
 _REAL_RUN = subprocess.run
 _AGENT = Path(__file__).resolve().parents[4] / "agent"
@@ -73,10 +77,50 @@ def test_a_missing_index_family_reads_as_missing(chatty_profile):
 
 
 @pytest.mark.integration
+def test_a_profile_banner_is_never_listed_as_a_module(chatty_profile):
+    (chatty_profile / "home" / ".bash_profile").write_text(
+        "echo 'Welcome to the cluster. Default: python/3.11'\n"
+        "module() { echo '   samtools/1.21    nextflow/25.04.7 (D)' >&2; }\n"
+        "printf 'Quota: 80%% used'\n")
+    access = chatty_profile / "projects_access.yaml"
+    access.write_text(yaml.safe_dump({
+        "compute_envs": [_env()],
+        "projects": [{"name": "demo_project", "compute_envs": ["hpc"], "directories": []}]}))
+    out = cluster_modules.cluster_module_avail("demo_project", "hpc", access_path=str(access))
+    assert out["modules"] == ["samtools/1.21", "nextflow/25.04.7"], out
+
+
+#: A login shell however it is spelled: `bash -lc`, `/bin/bash -l -c`, `bash --login -c`.
+_LOGIN_SHELL = re.compile(r"\bbash\s+(?:-[A-Za-z]*l[A-Za-z]*|--login)\b")
+
+
+def _spells_login_shell(node: ast.AST) -> bool:
+    """A string in the code that starts a login shell, or an argv's own `-lc`."""
+    return (isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and (bool(_LOGIN_SHELL.search(node.value)) or node.value.strip() in ("-lc", "--login")))
+
+
+@pytest.mark.integration
 def test_every_login_shell_check_goes_through_the_one_wrapper():
-    """A check that spells its own `bash -lc` skips the line the wrapper starts it on."""
-    own = [f"{p.relative_to(_AGENT.parent)}:{n}"
-           for p in sorted(_AGENT.rglob("*.py")) if p.name != "snapshot.py"
-           for n, line in enumerate(p.read_text().splitlines(), 1)
-           if re.search(r"""["']bash -lc\b""", line)]
+    """A check that spells its own login shell skips the line the wrapper starts it on.
+    Every string in the code is read (docstrings aside), and an argv's own `-lc` too."""
+    own = []
+    for p in sorted(_AGENT.rglob("*.py")):
+        tree = ast.parse(p.read_text())
+        skip = {id(n.body[0].value) for n in ast.walk(tree)
+                if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                and n.body and isinstance(n.body[0], ast.Expr)
+                and isinstance(n.body[0].value, ast.Constant)}
+        skip |= {id(c) for f in ast.walk(tree)
+                 if isinstance(f, ast.FunctionDef) and p.name == "snapshot.py" and f.name == "_login_shell"
+                 for c in ast.walk(f)}
+        own += [f"{p.relative_to(_AGENT.parent)}:{n.lineno}" for n in ast.walk(tree)
+                if id(n) not in skip and _spells_login_shell(n)]
     assert not own, own
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("spelling", ['f"bash -lc {q}"', '"/bin/bash -lc " + q', '"bash -l -c " + q',
+                                      '"bash --login -c " + q', '["bash", "-lc", q]'])
+def test_the_scan_sees_each_spelling(spelling):
+    assert any(map(_spells_login_shell, ast.walk(ast.parse(f"def check(q):\n    return {spelling}\n"))))

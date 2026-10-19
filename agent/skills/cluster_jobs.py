@@ -220,8 +220,8 @@ def cluster_job_status(project_name: str,
     finishing; it returns at once when the job is over. So one call replaces a
     poll loop; the answer then says `waited_s`.
 
-    Pure-read: each look runs `bash -lc 'sacct -j <id> -P --noheader -X -o
-    <fields>'` over ssh, and for a pipeline one more hop for its records and
+    Pure-read: each look runs, in a login shell, `sacct -j <id> -P --noheader -X -o
+    <fields>` over ssh, and for a pipeline one more hop for its records and
     one sacct call for its tasks in flight; returns a list of row-dicts (one
     per job, plus one per array-task for array jobs).
 

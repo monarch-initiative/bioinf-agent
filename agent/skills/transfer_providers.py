@@ -67,7 +67,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from agent.skills import compute_access
 from agent.skills.backgroundable import detached
@@ -109,14 +109,18 @@ class TransferProvider:
                    abs_remote_path: str, local_sha256: str,
                    timeout: int,
                    label: Optional[str] = None,
-                   tree: Optional[dict] = None) -> dict:
+                   tree: Optional[dict] = None,
+                   on_task: Optional[Callable[[str], None]] = None) -> dict:
         """Provider-side upload. Blocks until the bytes are moved AND
-        verified; `verified_method` records how the provider knows."""
+        verified; `verified_method` records how the provider knows. A
+        provider whose transfer is a task that outlives the call hands the
+        task's id to `on_task` the moment it exists."""
         raise NotImplementedError
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
-                     label: Optional[str] = None) -> dict:
+                     label: Optional[str] = None,
+                     on_task: Optional[Callable[[str], None]] = None) -> dict:
         raise NotImplementedError
 
 
@@ -149,8 +153,8 @@ def _hint(hint: Optional[str]) -> dict:
 
 
 def _discard_local(p: Path) -> None:
-    """Remove what a failed download left. The primitive refused an existing
-    destination before the transfer began, so whatever is there is this attempt's."""
+    """Remove what a download attempt left at `p`, its partial name. No task still
+    writes there: the primitive refuses a destination an unended task holds."""
     import shutil
     try:
         if p.is_dir() and not p.is_symlink():
@@ -159,6 +163,18 @@ def _discard_local(p: Path) -> None:
             p.unlink()
     except OSError:
         pass
+
+
+def _put_in_place(part: Path, dst: Path, done: dict) -> dict:
+    """`done`, once the verified download at `part` has `dst`'s name; refused when
+    something arrived at `dst` meanwhile (the copy is discarded, nothing replaced)."""
+    from agent.skills.transfer import TransferError, _into_place
+    try:
+        _into_place(part, dst)
+    except TransferError as e:
+        return refused("transfer.local_exists", error=str(e),
+                       **{k: done[k] for k in ("provider", "task_id", "command") if k in done})
+    return done
 
 
 # ---------------------------------------------------------------------------
@@ -198,8 +214,9 @@ class ScpHeadNodeProvider(TransferProvider):
                    abs_remote_path: str, local_sha256: str,
                    timeout: int,
                    label: Optional[str] = None,
-                   tree: Optional[dict] = None) -> dict:
-        # scp is synchronous by nature; label is ignored.
+                   tree: Optional[dict] = None,
+                   on_task: Optional[Callable[[str], None]] = None) -> dict:
+        # scp is synchronous by nature; label and on_task are ignored.
         # We accept them so callers don't have to special-case the
         # provider when threading the flag through.
         from agent.skills.transfer import (
@@ -308,12 +325,13 @@ class ScpHeadNodeProvider(TransferProvider):
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
-                     label: Optional[str] = None) -> dict:
-        # label ignored — scp is sync-only.
+                     label: Optional[str] = None,
+                     on_task: Optional[Callable[[str], None]] = None) -> dict:
+        # label and on_task ignored — scp is sync-only.
         from agent.skills.transfer import (
             TransferError, _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
             _compute_local_sha256, _remote_tree_cmd, _parse_tree_listing,
-            _scan_tree, _tree_mismatch, _into_place, partial_path)
+            _scan_tree, _tree_mismatch, partial_path)
         from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
         # The bytes land under the partial name and take the final one only once
@@ -406,8 +424,7 @@ class ScpHeadNodeProvider(TransferProvider):
                     f"the directory scp wrote at {part} differs from "
                     f"{abs_remote_path}: {mismatch}; it was removed",
                     provider=self.name)
-            _into_place(part, local_path)
-            return proven("transfer.scp_downloaded_tree",
+            return _put_in_place(part, local_path, proven("transfer.scp_downloaded_tree",
                 success=          True,
                 provider=         self.name,
                 command=          _display_cmd(argv),
@@ -416,7 +433,7 @@ class ScpHeadNodeProvider(TransferProvider):
                 transferred_at=   _now_iso(),
                 checksums=        landed,
                 verified_method=  "sha256_round_trip",
-            )
+            ))
         local_sha = _compute_local_sha256(part)
         if local_sha != remote_sha:
             _discard_local(part)
@@ -424,20 +441,19 @@ class ScpHeadNodeProvider(TransferProvider):
                 f"sha256 mismatch on download: remote={remote_sha} "
                 f"local={local_sha}",
                 provider=self.name)
-        _into_place(part, local_path)
 
         duration = time.perf_counter() - started
-        return proven("transfer.scp_downloaded",
+        return _put_in_place(part, local_path, proven("transfer.scp_downloaded",
             success=          True,
             provider=         self.name,
             command=          _display_cmd(argv),
-            bytes=            local_path.stat().st_size,
+            bytes=            part.stat().st_size,
             duration_s=       round(duration, 3),
             transferred_at=   _now_iso(),
             remote_sha256=    remote_sha,
             local_sha256=     local_sha,
             verified_method=  "sha256_round_trip",
-        )
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +569,8 @@ class GlobusProvider(TransferProvider):
                    abs_remote_path: str, local_sha256: str,
                    timeout: int,
                    label: Optional[str] = None,
-                   tree: Optional[dict] = None) -> dict:
+                   tree: Optional[dict] = None,
+                   on_task: Optional[Callable[[str], None]] = None) -> dict:
         """To the partial name, renamed into place once Globus reports the task
         SUCCEEDED (its own end-to-end checksum), so a final name is never a
         file still arriving or one a failed task left behind."""
@@ -564,7 +581,7 @@ class GlobusProvider(TransferProvider):
             dst_ep=self._remote_ep, dst_path=part,
             direction="upload",
             local_path=local_path, local_sha256=local_sha256,
-            timeout=timeout, label=label, tree=tree)
+            timeout=timeout, label=label, tree=tree, on_task=on_task)
         if pr.get("outcome") == "loop":             # the task may still run: its end is unobserved
             pr["partial_path"] = part
             pr["error"] += (f" The bytes are landing at {part}; globus_task_status renames "
@@ -577,11 +594,12 @@ class GlobusProvider(TransferProvider):
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
-                     label: Optional[str] = None) -> dict:
+                     label: Optional[str] = None,
+                     on_task: Optional[Callable[[str], None]] = None) -> dict:
         """To the partial name beside `local_path`, put in place once Globus reports
         the task SUCCEEDED and what landed has been read, so a final name is never a
         file still arriving or one a failed task left behind."""
-        from agent.skills.transfer import _into_place, partial_path
+        from agent.skills.transfer import partial_path
         part = Path(partial_path(str(local_path)))
         _discard_local(part)    # an earlier attempt's; one whose task may still run holds the path
         pr = self._run_transfer(
@@ -589,7 +607,7 @@ class GlobusProvider(TransferProvider):
             dst_ep=self._local_ep, dst_path=str(part),
             direction="download",
             local_path=part, local_sha256="",
-            timeout=timeout, label=label)
+            timeout=timeout, label=label, on_task=on_task)
         if pr.get("outcome") == "loop":             # the task may still run: its end is unobserved
             pr["partial_path"] = str(part)
             pr["error"] += (f" The bytes are landing at {part}; globus_task_status puts "
@@ -598,8 +616,7 @@ class GlobusProvider(TransferProvider):
         if "error" in pr:
             _discard_local(part)    # the task is over or stopped; nothing still writes
             return pr
-        _into_place(part, local_path)
-        return pr
+        return _put_in_place(part, local_path, pr)
 
     def remote_exists(self, *, env: dict, abs_remote_path: str,
                       timeout: int) -> dict:
@@ -699,7 +716,8 @@ class GlobusProvider(TransferProvider):
                       local_path: Path, local_sha256: str,
                       timeout: int,
                       label: Optional[str],
-                      tree: Optional[dict] = None) -> dict:
+                      tree: Optional[dict] = None,
+                      on_task: Optional[Callable[[str], None]] = None) -> dict:
         started = time.perf_counter()
 
         # 1) Submit.
@@ -713,6 +731,8 @@ class GlobusProvider(TransferProvider):
             return sub
         task_id = sub["task_id"]
         command = sub.get("command")
+        if on_task is not None:
+            on_task(task_id)
 
         # 2) Poll to terminal.
         # Sync — block until terminal or watchdog ceiling (a detached job has no

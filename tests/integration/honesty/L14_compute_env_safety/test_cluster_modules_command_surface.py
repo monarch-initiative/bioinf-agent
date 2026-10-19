@@ -2,7 +2,7 @@
 L14 cheat-guards — cluster_module_avail's refuse-to-emit + parsing surface.
 
 cluster_module_avail is pure-read: ONE ssh invocation that runs
-`bash -lc 'echo; module avail [pattern] 2>&1' || true`, parses the output,
+`bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail [pattern] 2>&1' || true`, parses what follows the marker,
 returns a list. These tests pin:
 
   - pattern validation: pure-string token check fires BEFORE any ssh
@@ -109,12 +109,12 @@ class TestRemoteCmdShape:
         # `|| true` absorbs `module avail`'s nonzero exits (some Lmod
         # versions return 1 when pattern matches nothing).
         cmd = cluster_modules._build_module_avail_cmd(None)
-        assert cmd == "bash -lc 'echo; module avail 2>&1' || true"
+        assert cmd == "bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail 2>&1' || true"
 
     @pytest.mark.integration
     def test_with_pattern_shape(self):
         cmd = cluster_modules._build_module_avail_cmd("nextflow")
-        assert cmd == "bash -lc 'echo; module avail nextflow 2>&1' || true"
+        assert cmd == "bash -lc 'echo; echo BIOINF_MODULES_BEGIN; module avail nextflow 2>&1' || true"
 
     @pytest.mark.integration
     def test_pattern_with_metachar_would_be_quoted(self):
@@ -283,6 +283,7 @@ class TestSshHappyPathMock:
             self, _ssh_env_with_project_grant, monkeypatch):
         access_path = _ssh_env_with_project_grant
         fake_output = """
+BIOINF_MODULES_BEGIN
 ------- /nas/hpc_cluster/apps-modulefiles -------
    nextflow/22.04.5    nextflow/25.04.7 (D)
 """

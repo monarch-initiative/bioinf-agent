@@ -175,7 +175,9 @@ class TestScpFile:
         monkeypatch.setattr(subprocess, "run", another_arrives)
         out = transfer.download("demo_project", "hpc", str(far), str(local),
                                 access_path=str(_scp_access(tmp_path, scratch)))
-        assert out["outcome"] == "refused" and "appeared while the copy ran" in out["error"], out
+        assert (out["outcome"], out["code"]) == ("refused", "transfer.local_exists"), out
+        assert "appeared while the copy ran" in out["error"]
+        assert json.loads(Path(out["manifest"]).read_text())["outcome"] == "refused"
         assert local.read_bytes() == b"theirs" and not (tmp_path / ".back.bam.partial").exists()
 
     @pytest.mark.integration
@@ -302,6 +304,23 @@ def _unobserved_globus(calls: list, state: dict):
         return MagicMock(returncode=0, stderr="", stdout=json.dumps(
             {"status": state["show"], "files_transferred": 1}))
     return fake_run
+
+
+def _two_env_access(tmp_path: Path, *, hpc_wire: str = "globus", scratch: str = "/w/scratch") -> Path:
+    """`hpc` (Globus, or scp) and `hpc_scp`, both open to both projects."""
+    p = tmp_path / "projects_access.yaml"
+    zone = {"permissions": ["file_name_only", "upload", "download", "exec"]}
+    env = {"type": "ssh", "host": "hpc.example.edu", "user": "u",
+           "agent_scratch_target": {"path": scratch, **zone},
+           "agent_common_data_target": {"path": "/w/common", **zone}}
+    p.write_text(yaml.safe_dump({
+        "compute_envs": [
+            {"name": "hpc", **env, "data_transfer": ({"type": "globus", "globus": _GLOBUS}
+                                                     if hpc_wire == "globus" else {"type": "scp_head_node"})},
+            {"name": "hpc_scp", **env, "data_transfer": {"type": "scp_head_node"}}],
+        "projects": [{"name": n, "compute_envs": ["hpc", "hpc_scp"], "directories": []}
+                     for n in ("demo_project", "other_project")]}))
+    return p
 
 
 def _globus_env() -> dict:
@@ -653,12 +672,14 @@ class TestGlobus:
                                  str(local), access_path=access)["code"] != "transfer.in_flight"
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("meanwhile,code,remedy", [
-        ("theirs", "transfer.task_rename_blocked", "download to another path"),
-        ("gone", "transfer.task_rename_failed", "download it again"),
-    ], ids=["destination_written_meanwhile", "nothing_left_to_put_in_place"])
+    @pytest.mark.parametrize("meanwhile,outcome,code,remedy,receipt", [
+        ("theirs", "broke", "transfer.task_rename_blocked", "download to another path", "failed"),
+        ("gone", "broke", "transfer.task_rename_failed", "download it again", "failed"),
+        ("moved", "degraded", "transfer.task_rename_unconfirmed", "compare", "unconfirmed"),
+    ], ids=["destination_written_meanwhile", "nothing_left_to_put_in_place",
+            "partial_gone_destination_there"])
     def test_a_succeeded_download_that_cannot_be_put_in_place_replaces_nothing(
-            self, tmp_path, monkeypatch, meanwhile, code, remedy):
+            self, tmp_path, monkeypatch, meanwhile, outcome, code, remedy, receipt):
         state = {"show": "error"}
         monkeypatch.setattr(subprocess, "run", _globus_download([], state))
         local = tmp_path / "out.bam"
@@ -667,14 +688,18 @@ class TestGlobus:
                                 str(local), access_path=str(_globus_access(tmp_path)))
         if meanwhile == "theirs":
             local.write_bytes(b"theirs")
-        else:
+        elif meanwhile == "gone":
             part.unlink()
+        else:                       # a rename made, its receipt never rewritten
+            part.rename(local)
         state["show"] = "SUCCEEDED"
         st = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
-        assert (st["outcome"], st["code"]) == ("broke", code) and remedy in st["remedy"], st
+        assert (st["outcome"], st["code"]) == (outcome, code) and remedy in st["remedy"], st
         assert not part.exists()
-        assert (local.read_bytes() == b"theirs") if meanwhile == "theirs" else not local.exists()
-        assert json.loads(Path(out["manifest"]).read_text())["outcome"] == "failed"
+        assert {"theirs": local.read_bytes() == b"theirs" if local.exists() else False,
+                "gone": not local.exists(),
+                "moved": local.exists() and local.read_bytes() == b"BAM\x01" * 8}[meanwhile]
+        assert json.loads(Path(out["manifest"]).read_text())["outcome"] == receipt
 
     @pytest.mark.integration
     @pytest.mark.parametrize("moved,whole", [(3, True), (2, False)])
@@ -726,3 +751,104 @@ class TestGlobus:
         assert submit[3] == f"{_REMOTE_EP}:/w/u/.results.partial"
         assert "--delete-destination-extra" in submit, \
             "files an earlier attempt left in the partial must not ride into place"
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("direction", ["upload", "download"])
+    def test_a_call_that_dies_while_it_waits_still_holds_its_destination(
+            self, tmp_path, monkeypatch, direction):
+        """The receipt is written once the task exists, not when the call returns: a
+        server restarted, or a background job cancelled, mid-wait leaves the hold."""
+        class Died(BaseException):
+            pass
+        state = {"show": "error"}
+        calls: list = []
+        fake = (_unobserved_globus if direction == "upload" else _globus_download)(calls, state)
+
+        def dies_while_waiting(argv, *a, **kw):
+            if argv[:3] == ["globus", "task", "show"]:
+                raise Died
+            return fake(argv, *a, **kw)
+        access = str(_globus_access(tmp_path))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        local = tmp_path / "out.bam"
+        go = {"upload": lambda: transfer.upload("demo_project", "hpc", str(src), "/w/common/ref",
+                                                access_path=access),
+              "download": lambda: transfer.download("demo_project", "hpc",
+                                                    "/w/scratch/demo_project/out.bam", str(local),
+                                                    access_path=access)}[direction]
+        monkeypatch.setattr(subprocess, "run", dies_while_waiting)
+        with pytest.raises(Died):
+            go()
+        monkeypatch.setattr(subprocess, "run", fake)
+        again = go()
+        assert (again["outcome"], again["code"]) == ("loop", "transfer.in_flight"), again
+        assert sum(c[:2] == ["globus", "transfer"] for c in calls) == 1, "one task, never a second"
+        if direction == "download":
+            assert (tmp_path / ".out.bam.partial").exists(), "the live task's bytes stay where they land"
+
+    @pytest.mark.integration
+    def test_a_download_still_landing_holds_its_local_path_against_every_env(self, tmp_path, monkeypatch):
+        calls: list = []
+        monkeypatch.setattr(subprocess, "run", _globus_download(calls, {"show": "error"}))
+        access = str(_two_env_access(tmp_path))
+        local = tmp_path / "out.bam"
+        first = transfer.download("demo_project", "hpc", "/w/scratch/demo_project/out.bam",
+                                  str(local), access_path=access)
+        assert first["code"] == "transfer.globus_task_unobserved", first
+        again = transfer.download("other_project", "hpc_scp", "/w/scratch/other_project/out.bam",
+                                  str(local), access_path=access)
+        assert (again["outcome"], again["code"]) == ("loop", "transfer.in_flight"), again
+        assert "project_name='demo_project', compute_env_name='hpc'" in again["remedy"]
+        assert (tmp_path / ".out.bam.partial").exists()
+        assert not any(c[0] in ("ssh", "scp") for c in calls), "nothing was sent"
+
+    @pytest.mark.integration
+    def test_a_download_hold_lifts_once_its_env_no_longer_speaks_globus(self, tmp_path, monkeypatch):
+        """globus_task_status cannot resolve a task on an env that no longer speaks Globus,
+        so a hold there would never lift."""
+        monkeypatch.setattr(subprocess, "run", _globus_download([], {"show": "error"}))
+        local = tmp_path / "out.bam"
+        transfer.download("demo_project", "hpc", "/w/scratch/demo_project/out.bam", str(local),
+                          access_path=str(_two_env_access(tmp_path)))
+        monkeypatch.setattr(subprocess, "run", lambda argv, *a, **kw: MagicMock(
+            returncode=1, stdout="", stderr="no ssh"))
+        (tmp_path / "scp").mkdir()
+        out = transfer.download("demo_project", "hpc_scp", "/w/scratch/demo_project/out.bam", str(local),
+                                access_path=str(_two_env_access(tmp_path / "scp", hpc_wire="scp")))
+        assert out["code"] != "transfer.in_flight", out
+
+    @pytest.mark.integration
+    def test_an_upload_still_landing_does_not_hold_a_download_to_the_same_path(self, tmp_path, monkeypatch):
+        zone = tmp_path.resolve() / "zone"
+        (zone / "demo_project").mkdir(parents=True)
+        access = str(_two_env_access(tmp_path, scratch=str(zone)))
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus([], {"show": "error"}))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        same = str(zone / "demo_project" / "ref.fa")
+        up = transfer.upload("demo_project", "hpc", str(src), same, access_path=access)
+        assert up["code"] == "transfer.globus_task_unobserved", up
+        down = transfer.download("demo_project", "hpc", str(zone / "demo_project" / "other.fa"), same,
+                                 access_path=access)
+        assert down["code"] != "transfer.in_flight", down
+
+    @pytest.mark.integration
+    def test_a_destination_that_appears_during_a_globus_download_is_never_replaced(
+            self, tmp_path, monkeypatch):
+        local = tmp_path / "out.bam"
+        fake = _globus_download([], {"show": "SUCCEEDED"})
+
+        def another_arrives(argv, *a, **kw):
+            out = fake(argv, *a, **kw)
+            if argv[:2] == ["globus", "transfer"]:
+                local.write_bytes(b"theirs")
+            return out
+        monkeypatch.setattr(subprocess, "run", another_arrives)
+        out = transfer.download("demo_project", "hpc", "/w/scratch/demo_project/out.bam", str(local),
+                                access_path=str(_globus_access(tmp_path)))
+        assert (out["outcome"], out["code"]) == ("refused", "transfer.local_exists"), out
+        assert out["task_id"] == _TASK_ID and local.read_bytes() == b"theirs"
+        assert not (tmp_path / ".out.bam.partial").exists()
+        rec = json.loads(Path(out["manifest"]).read_text())
+        assert rec["outcome"] == "refused" and "pending_rename" not in rec
