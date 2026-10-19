@@ -110,17 +110,25 @@ class TestSubmitArgvShape:
     @pytest.mark.integration
     def test_download_argv_is_remote_to_local(self, monkeypatch, tmp_path):
         captured = []
-        monkeypatch.setattr(subprocess, "run", _fake_run_submit_then_succeeded(captured))
+        fake = _fake_run_submit_then_succeeded(captured)
+
+        def landing(argv, *a, **kw):
+            if "transfer" in argv[:2]:   # SUCCEEDED → the sync path sha256s what arrived
+                Path(argv[3].split(":", 1)[1]).write_bytes(b"landed")
+            return fake(argv, *a, **kw)
+        monkeypatch.setattr(subprocess, "run", landing)
         out_path = tmp_path / "fetched.bam"
-        out_path.write_bytes(b"landed")   # SUCCEEDED → the sync path sha256s what arrived
         out = _provider().download_one(
             env=_env_ssh(), abs_remote_path="/work/u/in.bam",
             local_path=out_path, timeout=60)
         assert "error" not in out, out
         argv = captured[0]
-        # Source is REMOTE, destination is LOCAL.
+        # Source is REMOTE, destination is LOCAL — under the partial name, put in
+        # place once the task SUCCEEDED and what landed was read.
         assert argv[2] == f"{_REMOTE_EP}:/work/u/in.bam"
-        assert argv[3] == f"{_LOCAL_EP}:{out_path}"
+        assert argv[3] == f"{_LOCAL_EP}:{tmp_path / '.fetched.bam.partial'}"
+        assert out_path.read_bytes() == b"landed"
+        assert not (tmp_path / ".fetched.bam.partial").exists()
 
 
 # ===========================================================================

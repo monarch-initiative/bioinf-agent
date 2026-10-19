@@ -95,7 +95,7 @@ def upload(project_name: str,
     that did not take) `globus_task_unobserved` — the transfer may still be
     running server-side; resolve it with `globus_task_status`, do not
     assume it failed. Until then, an upload to the same path sends nothing
-    and returns `upload_in_flight` with the call that resolves it.
+    and returns `in_flight` with the call that resolves it.
 
     Manifest: every call (success OR failure) writes a JSON record under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_upload_<hash>.json`
@@ -138,7 +138,14 @@ def download(project_name: str,
     is refused over scp, and reported incomplete over Globus), and the result
     adds `files` and `checksums` (a `sha256sum -c` list beside the receipt).
     A transfer that may outlast the ~9-minute wait (a large directory) is one
-    to start with `background=True`.
+    to start with `background=True`. The bytes land under a hidden partial
+    name beside `local_path` and take its name only once verified, so a file
+    under that name is always whole. A globus task past the wait cap
+    (`globus_sync_wait_exceeded`), or one whose end could not be seen
+    (`globus_task_unobserved`), keeps landing there; `globus_task_status`
+    puts it in place when the task has succeeded. Until then a download to
+    the same `local_path` sends nothing and returns `in_flight` with the call
+    that resolves it.
     Symmetric to `upload`: same zone routing (auto-classified by where
     remote_abs_path falls), same auth (the matched zone must declare
     `download` in its permissions; `upload` alone does NOT satisfy
@@ -270,18 +277,25 @@ def globus_task_status(project_name: str,
     outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
     ACTIVE/INACTIVE -> loop (poll again). A directory task that SUCCEEDED
     but skipped files or left symlinks behind -> broke: not a whole copy.
-    An upload lands under a hidden partial name until it is verified; when
+    A transfer lands under a hidden partial name until it is verified; when
     the task has SUCCEEDED, this call renames it into place (`renamed_to`)
-    and the upload's receipt says it finished; when it ended otherwise,
-    the receipt says it failed and an upload to that path may go again.
-    The rename is made only on the env the upload went to (another env is
-    refused, `task_other_env`, naming the call). When the rename does not
-    answer as made, what is at each name decides: the partial still there
-    and the destination free, or either name unreadable, keeps the hold
-    (call again); the destination written meanwhile is `task_rename_blocked`
+    and the transfer's receipt says it finished; when it ended otherwise,
+    the receipt says it failed and a transfer to that path may go again.
+    A task is resolved only on the env it ran on (another env is refused,
+    `task_other_env`, naming the call).
+    An upload's rename is made on the cluster. When it does not answer as
+    made, what is at each name decides: the partial still there and the
+    destination free, or either name unreadable, keeps the hold (call
+    again); the destination written meanwhile is `task_rename_blocked`
     (nothing replaced, the bytes stay at the partial); the partial gone and
     the destination there is `task_rename_unconfirmed`; both gone clears the
     way to upload again.
+    A download's rename is made here, once what landed has been read (a
+    directory must hold every file the task moved): its `local_sha256`, or
+    `files` and `checksums`, come back as a sync download's do. A download
+    whose task did not succeed, or that cannot be put in place, is removed:
+    the destination written meanwhile is `task_rename_blocked` (nothing
+    replaced), anything else `task_rename_failed` (download it again).
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare `data_transfer.type: globus`.

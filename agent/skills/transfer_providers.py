@@ -47,6 +47,9 @@ A path may be a directory. An upload names it by passing `tree` (its
 a directory's success carries `checksums`, the {relative path: sha256} of
 what was moved, and symlinks are never followed.
 
+In either direction the bytes land under the destination's hidden partial
+sibling (`transfer.partial_path`) and take its name only once verified.
+
 The transfer methods return a dict-in-dict-out shape: success path has
 {success: True, bytes, duration_s, transferred_at, provider,
  remote_sha256?, task_id?, verified_method}; failure surfaces as
@@ -310,13 +313,16 @@ class ScpHeadNodeProvider(TransferProvider):
         from agent.skills.transfer import (
             TransferError, _scp_argv, _remote_sha256_cmd, _parse_sha256sum_output,
             _compute_local_sha256, _remote_tree_cmd, _parse_tree_listing,
-            _scan_tree, _tree_mismatch)
+            _scan_tree, _tree_mismatch, _into_place, partial_path)
         from agent.skills.snapshot import _SEEN_FN, _ssh_argv, _ssh_failure_hint
 
+        # The bytes land under the partial name and take the final one only once
+        # they match, so a copy cut off midway never leaves a file that looks done.
         host = env["host"]
         user = env.get("user")
         target_host = f"{user}@{host}" if user else host
         scp_src = f"{target_host}:{abs_remote_path}"
+        part = Path(partial_path(str(local_path)))
 
         started = time.perf_counter()
 
@@ -364,39 +370,43 @@ class ScpHeadNodeProvider(TransferProvider):
                     f"{(sh_res.stdout or '').strip()[:500]!r}",
                     provider=self.name)
 
-        # 2) scp the file (or the directory) back.
-        argv = _scp_argv(env, scp_src, str(local_path), tree=tree)
+        # 2) scp the file (or the directory) back to the partial name; one an earlier
+        # attempt left would take a directory copy inside it.
+        _discard_local(part)
+        argv = _scp_argv(env, scp_src, str(part), tree=tree)
         try:
             res = subprocess.run(argv, capture_output=True, text=True,
                                  timeout=timeout)
         except subprocess.TimeoutExpired as e:
-            _discard_local(local_path)
+            _discard_local(part)
             return broke("transfer.scp_download_timeout",
                     error=f"scp timed out after {e.timeout}s; what had arrived was removed",
                     provider=self.name)
         if res.returncode != 0:
-            _discard_local(local_path)
+            _discard_local(part)
             return broke("transfer.scp_download_failed", provider=self.name,
                          error=f"scp failed (rc={res.returncode}): "
                                f"{(res.stderr or '').strip()[:500]}",
                          **_hint(_ssh_failure_hint(res.stderr or "", host)))
 
-        # 3) Compute local sha + compare.
+        # 3) Compute local sha + compare, then into place — unless something arrived
+        # at the destination meanwhile (the copy is then discarded and nothing replaced).
         if tree:
             try:
-                landed, nbytes = _scan_tree(local_path)
+                landed, nbytes = _scan_tree(part)
             except (OSError, TransferError) as e:
-                _discard_local(local_path)
+                _discard_local(part)
                 return broke("transfer.scp_download_tree_unreadable", error=
-                    f"the directory scp wrote at {local_path} can't be read "
+                    f"the directory scp wrote at {part} can't be read "
                     f"back: {e}; it was removed", provider=self.name)
             mismatch = _tree_mismatch(source, landed)
             if mismatch:
-                _discard_local(local_path)
+                _discard_local(part)
                 return broke("transfer.scp_download_tree_mismatch", error=
-                    f"the directory scp wrote at {local_path} differs from "
+                    f"the directory scp wrote at {part} differs from "
                     f"{abs_remote_path}: {mismatch}; it was removed",
                     provider=self.name)
+            _into_place(part, local_path)
             return proven("transfer.scp_downloaded_tree",
                 success=          True,
                 provider=         self.name,
@@ -407,13 +417,14 @@ class ScpHeadNodeProvider(TransferProvider):
                 checksums=        landed,
                 verified_method=  "sha256_round_trip",
             )
-        local_sha = _compute_local_sha256(local_path)
+        local_sha = _compute_local_sha256(part)
         if local_sha != remote_sha:
-            _discard_local(local_path)
+            _discard_local(part)
             return broke("transfer.scp_download_sha_mismatch", error=
                 f"sha256 mismatch on download: remote={remote_sha} "
                 f"local={local_sha}",
                 provider=self.name)
+        _into_place(part, local_path)
 
         duration = time.perf_counter() - started
         return proven("transfer.scp_downloaded",
@@ -567,14 +578,27 @@ class GlobusProvider(TransferProvider):
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
                      label: Optional[str] = None) -> dict:
+        """To the partial name beside `local_path`, put in place once Globus reports
+        the task SUCCEEDED and what landed has been read, so a final name is never a
+        file still arriving or one a failed task left behind."""
+        from agent.skills.transfer import _into_place, partial_path
+        part = Path(partial_path(str(local_path)))
+        _discard_local(part)    # an earlier attempt's; one whose task may still run holds the path
         pr = self._run_transfer(
             src_ep=self._remote_ep, src_path=abs_remote_path,
-            dst_ep=self._local_ep, dst_path=str(local_path),
+            dst_ep=self._local_ep, dst_path=str(part),
             direction="download",
-            local_path=local_path, local_sha256="",
+            local_path=part, local_sha256="",
             timeout=timeout, label=label)
-        if "error" in pr and pr.get("outcome") != "loop":
-            _discard_local(local_path)    # the task is over or stopped; nothing still writes
+        if pr.get("outcome") == "loop":             # the task may still run: its end is unobserved
+            pr["partial_path"] = str(part)
+            pr["error"] += (f" The bytes are landing at {part}; globus_task_status puts "
+                            f"them at {local_path} once the task has SUCCEEDED.")
+            return pr
+        if "error" in pr:
+            _discard_local(part)    # the task is over or stopped; nothing still writes
+            return pr
+        _into_place(part, local_path)
         return pr
 
     def remote_exists(self, *, env: dict, abs_remote_path: str,
@@ -798,8 +822,8 @@ class GlobusProvider(TransferProvider):
         if shortfall:
             return broke("transfer.globus_tree_incomplete",
                 error=
-                    f"Globus task {task_id} SUCCEEDED, but {shortfall}; "
-                    f"what arrived is at {dst_path}",
+                    f"Globus task {task_id} SUCCEEDED, but {shortfall}"
+                    + (f"; what arrived is at {dst_path}" if direction == "upload" else ""),
                 provider=self.name,
                 task_id= task_id,
             )

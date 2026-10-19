@@ -411,7 +411,7 @@ class TestEarlierUploadInFlight:
         d = workspace.scratch_dir() / "transfer_history" / "demo" / "2026-10-16"
         d.mkdir(parents=True, exist_ok=True)
         (d / "x_upload_abc.json").write_text(json.dumps({
-            "outcome": "still running", "to": f"fakehpc:{self.SIF}",
+            "outcome": "still running", "direction": "upload", "to": f"fakehpc:{self.SIF}",
             "globus_task_id": "33333333-3333-3333-3333-333333333333",
             "pending_rename": {"env": "fakehpc", "from": self.SIF.replace("samtools_", ".samtools_") + ".partial",
                                "to": self.SIF}}))
