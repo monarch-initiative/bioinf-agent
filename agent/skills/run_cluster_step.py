@@ -350,7 +350,7 @@ def run_step_on_cluster(
         sif_subpath=sif_subpath or "",
         access_path=access_path)
     if stage.get("outcome") == "loop":
-        return stage                      # the .sif is still arriving: its remedy says what to call
+        return stage                      # the .sif is not yet in place: its remedy says what to call
     if "error" in stage:
         return broke("run_cluster.stage_failed",
                 error=f"stage_apptainer_image failed: {stage['error']}",
@@ -435,10 +435,10 @@ def run_step_on_cluster(
             stage_result=stage)
     if up.get("outcome") == "loop":
         return loop("run_cluster.upload_still_running",
-            error=f"the rendered workflow may still be arriving in scratch: {up['error']}",
+            error=f"the rendered workflow is not yet in place in scratch: {up['error']}",
             task_id=up.get("task_id"), staged=str(tree), stage_result=stage,
-            remedy=f"{transfer.status_call(project_name, compute_env_name, up.get('task_id'))} says how it ended; then run "
-                   f"the step again under a fresh workflow_name")
+            remedy=f"{transfer.status_call(project_name, compute_env_name, up.get('task_id'))} (it puts it in "
+                   f"place, or says why it cannot); then run the step again under a fresh workflow_name")
     if "error" in up:
         return broke("run_cluster.upload_failed",
             error=f"upload of the rendered workflow to scratch failed: {up['error']}",

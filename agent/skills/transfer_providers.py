@@ -598,7 +598,11 @@ class GlobusProvider(TransferProvider):
         if "error" in pr:
             return pr
         moved = self.rename(part, abs_remote_path)
-        return {**moved, "task_id": pr.get("task_id")} if "error" in moved else pr
+        if "error" not in moved:
+            return pr
+        return broke("transfer.globus_rename_failed", provider=self.name, partial_path=part,
+                     task_id=pr.get("task_id"), command=pr.get("command"),
+                     error=f"{moved['error']}; the verified bytes were sent to {part}")
 
     def download_one(self, *, env: dict, abs_remote_path: str,
                      local_path: Path, timeout: int,
@@ -685,17 +689,17 @@ class GlobusProvider(TransferProvider):
         argv = ["globus", "rename", self._remote_ep, src, dst]
         try:
             res = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return broke("transfer.globus_rename_failed", provider=self.name,
-                         partial_path=src,
-                         error=f"`globus rename` to {dst} did not run ({e}); the "
-                               f"verified bytes are at {src}")
+        except FileNotFoundError as e:
+            return broke("transfer.globus_rename_failed", provider=self.name, partial_path=src,
+                         error=f"`globus rename` to {dst} did not run ({e})")
+        except subprocess.TimeoutExpired:
+            return broke("transfer.globus_rename_failed", provider=self.name, partial_path=src,
+                         error=f"`globus rename` to {dst} did not answer within {timeout}s; "
+                               f"it may have been made")
         if res.returncode != 0:
-            return broke("transfer.globus_rename_failed", provider=self.name,
-                         partial_path=src,
+            return broke("transfer.globus_rename_failed", provider=self.name, partial_path=src,
                          error=f"`globus rename` to {dst} failed (rc={res.returncode}): "
-                               f"{(res.stderr or '').strip()[:300]}; the verified bytes "
-                               f"are at {src}")
+                               f"{(res.stderr or '').strip()[:300]}")
         return {"renamed_to": dst}
 
     def _stopped(self, out: dict, task_id: str) -> dict:

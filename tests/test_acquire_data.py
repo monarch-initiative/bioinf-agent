@@ -118,6 +118,24 @@ class TestAcquireToClusterRefusals:
 
 
 class TestAcquireToClusterHappyPath:
+    def test_an_upload_not_yet_in_place_is_handed_back_with_the_call_that_places_it(self, monkeypatch):
+        from agent.skills import transfer
+        monkeypatch.setattr(compute_access, "load_access", lambda *_a, **_k: _FAKE_ACCESS)
+        monkeypatch.setattr(transfer, "upload", lambda **kw: {
+            "outcome": "loop", "code": "transfer.globus_rename_unanswered",
+            "error": "`globus rename` did not answer within 60s; it may have been made",
+            "task_id": "33333333-3333-3333-3333-333333333333"})
+
+        class FakeState:
+            def __init__(self): self.patched = None; self.draft = {}
+            def get_draft(self, pid): return self.draft
+            def patch(self, pid, d): self.patched = d
+        r = acquire_data.acquire_to_cluster(
+            name="exomiser_hg38", url="https://x.org/exomiser_2402.zip",
+            compute_env="hpc", pipeline_id="p1", _pipeline_state=FakeState())
+        assert (r["outcome"], r["code"]) == ("loop", "acquire.upload_still_running"), r
+        assert "not yet in place" in r["error"] and "or says why it cannot" in r["remedy"]
+
     def test_submits_and_records_cluster_entry(self, monkeypatch):
         from agent.skills import transfer, submit_workflow
 

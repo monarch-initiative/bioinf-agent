@@ -22,7 +22,8 @@ renamed into place once verified:
   - a Globus task whose end was not seen (a status query that failed, a cancel
     that did not take) is "still running", never "failed": it keeps its rename,
     leaves what it wrote alone, and holds its destination against a second copy
-    until globus_task_status says how it ended.
+    until globus_task_status says how it ended; so does a verified transfer whose
+    rename is not made, its receipt "not yet in place".
 
 The scp tests run the real remote commands through bash on this machine.
 """
@@ -329,7 +330,10 @@ def _unobserved_globus(calls: list, state: dict):
     def fake_run(argv, *a, **kw):
         calls.append(argv)
         if argv[:2] == ["globus", "stat"]:
-            hit = argv[2].split(":", 1)[1] in state.get("there", ())
+            name = argv[2].split(":", 1)[1]
+            if f"unreadable:{name}" in state.get("there", ()):
+                return MagicMock(returncode=1, stderr="ConsentRequired", stdout="")
+            hit = name in state.get("there", ())
             return MagicMock(returncode=0, stderr="",
                              stdout=json.dumps({"name": "x", "type": "file"} if hit else {"code": "NotFound"}))
         if argv[:2] == ["globus", "transfer"]:
@@ -573,13 +577,21 @@ class TestGlobus:
                                access_path=access)["code"] != "transfer.in_flight"
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("there,code,outcome,held", [
-        ({"/w/common/.ref.partial"}, "transfer.task_rename_failed", "still running", True),
-        ({"/w/common/ref"}, "transfer.task_rename_unconfirmed", "unconfirmed", False),
-        ({"/w/common/.ref.partial", "/w/common/ref"}, "transfer.task_rename_blocked", "failed", False),
-    ], ids=["partial_only_retries", "destination_only_unconfirmed", "both_nothing_replaced"])
+    @pytest.mark.parametrize("there,code,outcome,held,remedy", [
+        ({"/w/common/.ref.partial"}, "transfer.task_rename_failed", "not yet in place", True,
+         "removed on the cluster, it clears the way"),
+        ({"/w/common/.ref.partial", "unreadable:/w/common/ref"}, "transfer.task_rename_failed",
+         "not yet in place", True, "can be read: it renames, or says what is at each name"),
+        ({"unreadable:/w/common/ref"}, "transfer.task_rename_failed",
+         "not yet in place", True, "can be read: it renames, or says what is at each name"),
+        ({"/w/common/ref"}, "transfer.task_rename_unconfirmed", "unconfirmed", False, "compare"),
+        ({"/w/common/.ref.partial", "/w/common/ref"}, "transfer.task_rename_blocked", "failed", False,
+         "upload to another path"),
+    ], ids=["partial_only_retries", "destination_unreadable_retries",
+            "partial_gone_destination_unreadable_retries", "destination_only_unconfirmed",
+            "both_nothing_replaced"])
     def test_a_rename_that_did_not_answer_holds_only_while_a_retry_can_make_it(
-            self, tmp_path, monkeypatch, there, code, outcome, held):
+            self, tmp_path, monkeypatch, there, code, outcome, held, remedy):
         state = {"show": "error"}
         monkeypatch.setattr(subprocess, "run", _unobserved_globus([], state))
         src = tmp_path / "ref.fa"
@@ -589,8 +601,13 @@ class TestGlobus:
         state.update(show="SUCCEEDED", there=there)
         env = {**_env_ssh(), "data_transfer": {"type": "globus", "globus": _GLOBUS}}
         st = transfer.resolve_globus_task(env, _TASK_ID)
-        assert st["code"] == code and st["remedy"], st
-        assert json.loads(Path(first["manifest"]).read_text())["outcome"] == outcome
+        assert st["code"] == code and remedy in st["remedy"], st
+        rec = json.loads(Path(first["manifest"]).read_text())
+        assert rec["outcome"] == outcome
+        if held:                    # what was seen at each name, not what the rename said
+            seen_partial = ("holds a file" if "/w/common/.ref.partial" in there else "nothing is at")
+            assert f"{seen_partial}" in rec["reason"] and "verified bytes" not in rec["reason"]
+            assert "verified bytes" not in st["error"]
         state["show"] = "error"
         again = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
         assert (again["code"] == "transfer.in_flight") is held, again
@@ -1040,10 +1057,14 @@ class TestGlobus:
         st = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
         assert (st["outcome"], st["code"]) == ("broke", "transfer.task_rename_failed"), st
         assert "retries the rename" in st["remedy"] and st["partial_path"] == str(tmp_path / ".out.bam.partial")
-        assert json.loads(Path(out["manifest"]).read_text())["outcome"] == "still running"
+        rec = json.loads(Path(out["manifest"]).read_text())
+        assert rec["outcome"] == "not yet in place" and "Permission denied" in rec["reason"]
+        assert rec["pending_rename"]["to"] == str(local) and "succeeded" in rec["summary"]
         monkeypatch.setattr(transfer, "_into_place", real_into_place)
         again = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
         assert again["renamed_to"] == str(local) and local.read_bytes() == b"BAM\x01" * 8, again
+        rec = json.loads(Path(out["manifest"]).read_text())
+        assert rec["outcome"] == "downloaded" and "reason" not in rec
 
     @pytest.mark.integration
     def test_a_sync_upload_whose_rename_did_not_answer_leaves_it_to_globus_task_status(
@@ -1066,16 +1087,20 @@ class TestGlobus:
         src.write_bytes(b">c\nACGT\n")
         access = str(_globus_access(tmp_path))
         out = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
-        assert out["outcome"] == "broke" and out["task_id"] == _TASK_ID, out
-        assert "globus_task_status(" in out["remedy"]
+        assert (out["outcome"], out["code"]) == ("loop", "transfer.globus_rename_unanswered"), out
+        assert out["task_id"] == _TASK_ID and "globus_task_status(" in out["remedy"]
         rec = json.loads(Path(out["manifest"]).read_text())
         assert rec["globus_task_id"] == _TASK_ID and rec["pending_rename"]["to"] == "/w/common/ref"
+        assert rec["command"].startswith("globus transfer") and rec["outcome"] == "not yet in place"
+        assert "Connection reset" in rec["reason"]
         again = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref", access_path=access)
-        assert again["code"] == "transfer.in_flight", again
+        assert again["code"] == "transfer.in_flight" and "not yet in place" in again["error"], again
+        assert "not yet in place" in json.loads(Path(again["manifest"]).read_text())["reason"]
         renames["answer"] = 0
         st = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
-        assert st["renamed_to"] == "/w/common/ref", st
-        assert json.loads(Path(out["manifest"]).read_text())["outcome"] == "uploaded"
+        assert st["renamed_to"] == "/w/common/ref" and st["manifest"] == out["manifest"], st
+        rec = json.loads(Path(out["manifest"]).read_text())
+        assert rec["outcome"] == "uploaded" and "reason" not in rec
 
     @pytest.mark.integration
     def test_a_receipt_older_than_the_partial_name_is_not_read_as_unplaced(self, tmp_path, monkeypatch):
@@ -1131,3 +1156,39 @@ class TestGlobus:
         finally:
             Path(out["manifest"]).chmod(0o644)
         assert st["code"] == "transfer.receipt_hold_failed" and "readable and writable" in st["remedy"], st
+
+    @pytest.mark.integration
+    def test_a_rename_that_does_not_answer_is_not_said_to_have_failed(self, monkeypatch):
+        def slow(argv, *a, **kw):
+            raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+        monkeypatch.setattr(subprocess, "run", slow)
+        out = transfer_providers.GlobusProvider(_GLOBUS).rename("/w/u/.x.partial", "/w/u/x", timeout=60)
+        assert out["code"] == "transfer.globus_rename_failed", out
+        assert "did not answer within 60s; it may have been made" in out["error"]
+        assert "did not run" not in out["error"]
+
+    @pytest.mark.integration
+    def test_a_rename_that_completes_while_it_is_looked_at_is_not_read_as_blocked(
+            self, tmp_path, monkeypatch):
+        """The partial is seen, then the destination: a rename that had not answered and
+        completes between the two looks would leave both seen at once."""
+        state = {"show": "error"}
+        monkeypatch.setattr(subprocess, "run", _unobserved_globus([], state))
+        src = tmp_path / "ref.fa"
+        src.write_bytes(b">c\nACGT\n")
+        first = transfer.upload("demo_project", "hpc", str(src), "/w/common/ref",
+                                access_path=str(_globus_access(tmp_path)))
+        looks = {"partial": 0}
+        base = _unobserved_globus([], state)
+
+        def completing(argv, *a, **kw):
+            if argv[:2] == ["globus", "stat"] and argv[2].endswith("/w/common/.ref.partial"):
+                looks["partial"] += 1
+                state["there"] = ({"/w/common/.ref.partial", "/w/common/ref"} if looks["partial"] == 1
+                                  else {"/w/common/ref"})
+            return base(argv, *a, **kw)
+        monkeypatch.setattr(subprocess, "run", completing)
+        state.update(show="SUCCEEDED", there={"/w/common/.ref.partial"})
+        st = transfer.resolve_globus_task(_globus_env(), _TASK_ID)
+        assert st["code"] == "transfer.task_rename_unconfirmed", st
+        assert json.loads(Path(first["manifest"]).read_text())["outcome"] == "unconfirmed"

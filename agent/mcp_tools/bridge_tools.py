@@ -95,7 +95,9 @@ def upload(project_name: str,
     that did not take) `globus_task_unobserved` — the transfer may still be
     running server-side; resolve it with `globus_task_status`, do not
     assume it failed. Until then, an upload to the same path sends nothing
-    and returns `in_flight` with the call that resolves it.
+    and returns `in_flight` with the call that resolves it. A verified
+    upload whose rename did not answer returns `globus_rename_unanswered`
+    with that call, and holds its path the same way.
 
     Manifest: every call (success OR failure) writes a JSON record under
     `transfer_history/<project>/<YYYY-MM-DD>/<stamp>_upload_<hash>.json`
@@ -277,8 +279,11 @@ def globus_task_status(project_name: str,
     Runs `globus task show <id> --format json`; no submission.
 
     Reach for this when `upload`/`download` returned
-    `globus_sync_wait_exceeded` or `globus_task_unobserved`: we stopped
-    watching, but Globus may not have stopped transferring. This answers how the task actually ended. The
+    `globus_sync_wait_exceeded` or `globus_task_unobserved` (we stopped
+    watching, but Globus may not have stopped transferring),
+    `globus_rename_unanswered` (the bytes arrived; their rename did not
+    answer), or `in_flight` (an earlier transfer to the path is not yet in
+    place). This answers how the task actually ended. The
     outcome reflects the TASK: SUCCEEDED -> proven, FAILED -> broke,
     ACTIVE/INACTIVE -> loop (poll again). A directory task that SUCCEEDED
     but skipped files or left symlinks behind -> broke: not a whole copy.
@@ -297,8 +302,10 @@ def globus_task_status(project_name: str,
     `task_transfer_unplaced`.
     An upload's rename is made on the cluster. When it does not answer as
     made, what is at each name decides: the partial still there and the
-    destination free, or either name unreadable, keeps the hold (call
-    again); the destination written meanwhile is `task_rename_blocked`
+    destination free keeps the hold (call again once the cause is put
+    right, or remove the partial to clear the way), and so does either name
+    unreadable (call again once both can be read); the destination written
+    meanwhile is `task_rename_blocked`
     (nothing replaced, the bytes stay at the partial); the partial gone and
     the destination there is `task_rename_unconfirmed`; both gone clears the
     way to upload again.
@@ -495,7 +502,9 @@ def stage_apptainer_image(project_name: str,
       and how it was proven; sent once, also for a .sif staged before.
       `env_record.status` says sent / already_there (its checksums match) /
       differs / not_this_image (the record here is of a later freeze under the
-      same name) / not_sent (never fatal to the .sif) / none_here.
+      same name) / not_yet_in_place (a Globus transfer of it whose
+      `status_call` puts it in place) / not_sent (never fatal to the .sif) /
+      none_here.
 
     Authorization: the project's `compute_envs` must list the env, AND
     the env must declare a `container_upload_target` with

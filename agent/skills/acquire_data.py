@@ -137,9 +137,9 @@ def _send(env: dict, compute_env: str, src: Path, acq_dir: str, access_path: Opt
                    "(or a remote_dir) of its own")
     if up.get("outcome") == "loop":
         return loop("acquire.upload_still_running", acq_dir=acq_dir, task_id=up.get("task_id"),
-            error=f"{src.name} may still be arriving in {acq_dir}, so nothing was submitted: {up['error']}",
-            remedy=f"{transfer.status_call(transfer.AD_HOC_PROJECT_NAME, compute_env, up.get('task_id'))}; once it has SUCCEEDED, "
-                   f"submit the acquisition again")
+            error=f"{src.name} is not yet in place in {acq_dir}, so nothing was submitted: {up['error']}",
+            remedy=f"{transfer.status_call(transfer.AD_HOC_PROJECT_NAME, compute_env, up.get('task_id'))} (it "
+                   f"puts it in place, or says why it cannot), then submit the acquisition again")
     if "error" in up:
         return broke("acquire.upload_failed", acq_dir=acq_dir,
             error=f"upload of {src.name} to {acq_dir} failed: {up['error']}")

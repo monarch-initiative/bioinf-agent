@@ -161,13 +161,15 @@ def test_the_scan_passes_what_is_not_a_login_shell(plain):
 
 
 @pytest.mark.integration
-def test_a_pattern_that_matches_nothing_is_an_empty_listing(chatty_profile):
-    """Some Lmod versions exit 1 when a pattern matches nothing: not an error."""
+@pytest.mark.parametrize("pattern", ["nosuchtool", "module"])
+def test_a_pattern_that_matches_nothing_is_an_empty_listing(chatty_profile, pattern):
+    """Some Lmod versions exit 1 when a pattern matches nothing: not an error, and the
+    message that says so is not a module."""
     (chatty_profile / "home" / ".bash_profile").write_text(
         "module() { echo 'No module(s) or extension(s) found!' >&2; return 1; }\n")
     access = chatty_profile / "projects_access.yaml"
     access.write_text(yaml.safe_dump({
         "compute_envs": [_env()],
         "projects": [{"name": "demo_project", "compute_envs": ["hpc"], "directories": []}]}))
-    out = cluster_modules.cluster_module_avail("demo_project", "hpc", "nosuchtool", access_path=str(access))
+    out = cluster_modules.cluster_module_avail("demo_project", "hpc", pattern, access_path=str(access))
     assert out["modules"] == [] and "error" not in out, out

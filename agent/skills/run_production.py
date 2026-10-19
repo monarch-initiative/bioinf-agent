@@ -780,11 +780,11 @@ def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir:
     if up.get("outcome") == "loop":
         # The staged copy stays: the transfer may still be reading it.
         raise _Refusal(loop("run_production.upload_still_running",
-                            error=f"the run directory may still be arriving, so nothing was launched: {up['error']}",
+                            error=f"the run directory is not yet in place, so nothing was launched: {up['error']}",
                             staged=str(tree), task_id=up.get("task_id"),
-                            remedy=f"{transfer.status_call(project_name, env_name, up.get('task_id'))}; once it has "
-                                   f"SUCCEEDED (it puts the directory in place), launch again with the "
-                                   f"same run_dir and no samplesheet"))
+                            remedy=f"{transfer.status_call(project_name, env_name, up.get('task_id'))} (it puts "
+                                   f"the directory in place, or says why it cannot), then launch again with "
+                                   f"the same run_dir and no samplesheet"))
     if "error" in up:
         shutil.rmtree(staged, ignore_errors=True)
         raise _Refusal(broke("run_production.upload_failed",
