@@ -428,6 +428,7 @@ def test_the_run_dir_probe_reads_what_the_cluster_holds_and_the_rewrite_is_exact
     env = {"host": "hpc.example.invalid", "user": "u"}
     state = rp._remote_run_dir_state(env, str(run), ["main.nf", "nextflow.config"], timeout=10)
     assert state["exists"] and state["missing"] == ["nextflow.config"] and state["live"] == ["77 PENDING"]
+    assert state["entries"] == ["launcher.sh", "main.nf", "params.yaml"]
     assert state["texts"]["params.yaml"] == (run / "params.yaml").read_text()
     assert state["texts"]["launcher.sh"] == "#SBATCH --time=01:00:00"
 

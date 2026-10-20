@@ -442,10 +442,13 @@ def run_production_pipeline(project_name: str,
       pipeline     the name of a directory `render_pipeline` wrote under <workspace>/pipelines/,
                    or a rendered directory's absolute path.
       run_dir      absolute path on the env: the launch directory, created by the first
-                   launch (on the cluster, as one transfer). It may be under the env's pipelines
-                   zone, the agent's scratch, or a project `directories[]` grant with `upload`
-                   and `exec`. A run_dir that already holds this pipeline is re-launched with
-                   `-resume`; any other existing directory is refused.
+                   launch (on the cluster, as one transfer), or filled by it when it exists and
+                   holds nothing the launch writes — the granted directory itself, say — with
+                   its other files left alone. It may be under the env's pipelines zone, the
+                   agent's scratch, or a project `directories[]` grant with `upload` and `exec`.
+                   A run_dir that already holds this pipeline is re-launched with `-resume`;
+                   one holding another render, part of this one, or a file or directory this
+                   launch writes (main.nf, bin/, work/, results/, …) is refused.
       samplesheet  local CSV, one row per sample, with the columns the pipeline reads
                    (`sample` first; paths absolute AT THE LOCUS). Required on the first
                    launch into a run_dir; omit on a re-launch.
