@@ -34,8 +34,10 @@ from agent.skills.outcomes import refused
 from agent.skills.pipeline_state import validation_covers as _validation_covers
 from agent.skills import workspace
 
-#: How long one self-test trial may run before the runner kills it.
-TRIAL_TIMEOUT_S = 600
+#: How long one command of a self-test trial may run before the runner kills it. Thirty
+#: minutes: a release-scale step on an emulated laptop runs for ten, and a self-test is a
+#: proof, not a race; the price is that a command which hangs costs this long to notice.
+TRIAL_TIMEOUT_S = 1800
 
 
 # ---------------------------------------------------------------------------
