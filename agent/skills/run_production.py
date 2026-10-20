@@ -1140,8 +1140,9 @@ def run_production_pipeline(project_name: str,
                                                        f"`download`, which cluster_job_status(run_dir=) needs"}),
                          "results": f"{results}/ — download(…) to fetch",
                          "run_records": f"{normed_dir}/runs/<stamp>/ (params.json, samples.csv, trace.txt, "
-                                        f"report.html, timeline.html, nextflow.log)",
-                         "manager_log": f"{normed_dir}/{record.name}-{job_id}.out"}
+                                        f"report.html, timeline.html, nextflow.log, the manager's .out and .err)",
+                         "manager_log": f"{normed_dir}/runs/<stamp>/{record.name}-{job_id}.out once the job "
+                                        f"starts; beside launcher.sh until then"}
             code = "run_production.submitted"
         else:
             launch = (f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}"

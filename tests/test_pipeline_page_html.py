@@ -450,9 +450,10 @@ class TestTheDirectory:
         files = _entries(_record())["runs/<timestamp>/"].files
         assert files == RUN_RECORDS
         assert [n for n, _, _ in files] == list(RUN_RECORD_FILES) == [
-            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log"]
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log",
+            "<pipeline>-<job id>.out", "<pipeline>-<job id>.err"]
         assert [by for _, _, by in files] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
-                                              "nextflow.config", "launcher.sh"]
+                                              "nextflow.config", "launcher.sh", "launcher.sh", "launcher.sh"]
         assert files[0][1] == "every param as resolved; re-runs as `-params-file`"
         assert files[1][1] == "a copy of the samplesheet as read"
 

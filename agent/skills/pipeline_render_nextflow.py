@@ -22,8 +22,9 @@ The file set
   samples.csv        `pipeline_record.render_samplesheet`, the ONE rendering; a CSV
                      cannot carry the leading comment the other files do (splitCsv
                      would read it as the header)
-  launcher.sh        the manager job: `sbatch launcher.sh` on the cluster. On a laptop the
-                     run is one line, `RUN_LOCAL`, which pipeline.html shows
+  launcher.sh        the manager job: `sbatch launcher.sh` on the cluster, its SLURM logs
+                     moved under runs/<stamp>/ once the stamp exists. On a laptop the run
+                     is one line, `RUN_LOCAL`, which pipeline.html shows
   bin/<script>       every authored script the how-to runs, verbatim from the record;
                      params.yaml points at it (`bin/<script>`, relative to the run
                      directory) and the stage stages it like any other path input
@@ -138,12 +139,26 @@ RUN_HPC = "sbatch launcher.sh"
 RUN_STAMP_LINE = "RUN_STAMP=$(date +%Y%m%d_%H%M%S)"
 RUN_HPC_NEXTFLOW = (_RUN_LINE.format(profile="slurm").replace("nextflow run", 'nextflow -log "runs/$RUN_STAMP/nextflow.log" run', 1)
                     + ' --run_stamp "$RUN_STAMP" "$@"')
+#: SLURM opens the manager's .out and .err beside launcher.sh as the job starts, before the
+#: stamp exists; once it does, the launcher moves them under the run's records, where a
+#: rename leaves an open file in place and the rest of the log lands with it. The names
+#: follow the sbatch header's `%x-%j`; a log the sbatch line sent elsewhere is not found
+#: and stays put, and outside SLURM the names are empty and nothing matches.
+MANAGER_LOG_LINES = (
+    'mkdir -p "runs/$RUN_STAMP"',
+    'for f in "${SLURM_JOB_NAME:-}-${SLURM_JOB_ID:-}".{out,err}; do',
+    '    if [ -e "$f" ]; then mv "$f" "runs/$RUN_STAMP/"; fi',
+    'done',
+)
+#: The manager's two SLURM logs, as the run-records table names them.
+MANAGER_LOG_NAMES = ("<pipeline>-<job id>.out", "<pipeline>-<job id>.err")
 #: What a run leaves under runs/<stamp>/: each file, what it holds, and which rendered
 #: file DEFINES it — params.yaml for the two the workflow writes as it opens (every param
 #: as resolved, the samplesheet as read), nextflow.config for the three observers,
 #: launcher.sh for Nextflow's own log (a laptop run keeps it at .nextflow.log unless
-#: started with the same `-log`). The workflow block, the config, the launcher and the
-#: page name these six from here.
+#: started with the same `-log`) and for the manager's two SLURM logs, which exist only
+#: on a cluster (MANAGER_LOG_LINES moves them under the stamp). The workflow block, the
+#: config, the launcher and the page name these from here.
 RUN_RECORDS = (
     ("params.json", "every param as resolved; re-runs as `-params-file`", "params.yaml"),
     ("samples.csv", "a copy of the samplesheet as read", "params.yaml"),
@@ -151,6 +166,10 @@ RUN_RECORDS = (
     ("report.html", "Nextflow's run report", "nextflow.config"),
     ("timeline.html", "Nextflow's timeline", "nextflow.config"),
     ("nextflow.log", "Nextflow's own log — through the launcher, or a laptop run started with `-log`",
+     "launcher.sh"),
+    (MANAGER_LOG_NAMES[0], "the manager job's SLURM log (a cluster run): what Nextflow printed; the launcher "
+                           "moves it here once the stamp exists", "launcher.sh"),
+    (MANAGER_LOG_NAMES[1], "the manager job's SLURM error log (a cluster run), moved here with the .out",
      "launcher.sh"),
 )
 RUN_RECORD_FILES = tuple(name for name, _, _ in RUN_RECORDS)
@@ -1103,11 +1122,13 @@ def _render_launcher(record: PipelineRecord, ctx: _Context) -> str:
           "# nextflow.config so Nextflow's own log can join the run records: -log is read before",
           "# anything else, and --run_stamp hands the same stamp to nextflow.config and main.nf.",
           RUN_STAMP_LINE,
+          "# SLURM opened this job's .out and .err beside launcher.sh, before the stamp existed. Moved",
+          "# under the run's records they keep filling: a rename leaves an open file in place.",
+          *MANAGER_LOG_LINES,
           "",
           "# -resume re-runs only the stages whose inputs or parameters changed; drop it for a",
           "# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,",
-          "# report.html, timeline.html, nextflow.log), never overwritten; this job's .out file is",
-          "# the manager's log.",
+          "# report.html, timeline.html, nextflow.log, this job's .out and .err), never overwritten.",
           '# "$@" forwards whatever follows launcher.sh on the sbatch line to Nextflow: a value there',
           "# wins over params.yaml for that one run only (sbatch launcher.sh --<param> <value>); to",
           "# change what this directory runs, edit params.yaml.",
@@ -1178,6 +1199,6 @@ def run_lines(record: PipelineRecord, locus: str) -> list[str]:
 
 
 __all__ = ["render_nextflow", "bound_commands", "run_lines", "RUN_LOCAL", "RUN_HPC", "RUN_HPC_NEXTFLOW",
-           "RUN_STAMP_LINE",
+           "RUN_STAMP_LINE", "MANAGER_LOG_LINES", "MANAGER_LOG_NAMES",
            "STRICT_MODE_LINE", "SAMPLESHEET_PARAM", "OUTDIR_PARAM", "RUN_RECORDS", "RUN_RECORD_FILES",
            "RUN_RECORD_CONFIG", "RUN_RECORD_BLOCK"]

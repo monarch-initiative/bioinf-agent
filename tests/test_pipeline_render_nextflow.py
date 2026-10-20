@@ -25,6 +25,7 @@ from agent.skills import pipeline_record as pr
 from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_HPC_NEXTFLOW, RUN_LOCAL, RUN_RECORD_BLOCK,
                                                    RUN_RECORD_CONFIG, RUN_STAMP_LINE,
                                                    RUN_RECORD_FILES, RUN_RECORDS, STRICT_MODE_LINE, TRACE_FIELDS,
+                                                   MANAGER_LOG_LINES, MANAGER_LOG_NAMES,
                                                    bound_commands, render_nextflow, run_lines)
 
 #: A compute env block the way projects_access.yaml declares one: SLURM policy,
@@ -471,13 +472,15 @@ class TestLaunchRecord:
         for name, _, defined_in in RUN_RECORDS:
             by_block = f"'{name}'" in wf                                         # the block writes it
             by_observer = f'file = "runs/${{params.run_stamp}}/{name}"' in files["nextflow.config"]
-            by_launcher = f'-log "runs/$RUN_STAMP/{name}"' in launcher
+            by_launcher = (f'-log "runs/$RUN_STAMP/{name}"' in launcher
+                           or (name in MANAGER_LOG_NAMES and "\n".join(MANAGER_LOG_LINES) in launcher))
             assert (by_block, by_observer, by_launcher) == (
                 defined_in == "params.yaml", defined_in == "nextflow.config", defined_in == "launcher.sh"), name
         assert RUN_RECORD_FILES == tuple(n for n, _, _ in RUN_RECORDS) == (
-            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log")
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log",
+            "<pipeline>-<job id>.out", "<pipeline>-<job id>.err")
         assert [d for _, _, d in RUN_RECORDS] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
-                                                  "nextflow.config", "launcher.sh"]
+                                                  "nextflow.config", "launcher.sh", "launcher.sh", "launcher.sh"]
 
     def test_the_two_blocks_are_one_standard_verbatim_in_every_rendered_pipeline(self):
         assert RUN_RECORD_BLOCK + "\n" == LAUNCH_RECORD                  # the blank line after it is the join's
@@ -490,8 +493,49 @@ class TestLaunchRecord:
     def test_the_launcher_comment_names_the_run_records(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
         assert ("# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,\n"
-                "# report.html, timeline.html, nextflow.log), never overwritten; this job's .out file is\n"
-                "# the manager's log.\n") in sh
+                "# report.html, timeline.html, nextflow.log, this job's .out and .err), never overwritten.\n") in sh
+
+    def test_the_launcher_moves_slurms_logs_for_the_manager_under_the_run_records(self):
+        """SLURM opens %x-%j.out and %x-%j.err beside launcher.sh as the job starts, before
+        the launcher has taken the stamp. Once it has, the launcher moves both under
+        runs/<stamp>/, so the run's directory is the one place that documents the launch;
+        cluster_job_status reads the manager's log from there first."""
+        sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
+        assert "#SBATCH --output=%x-%j.out\n#SBATCH --error=%x-%j.err\n" in sh
+        block = "\n".join(MANAGER_LOG_LINES)
+        assert sh.index(RUN_STAMP_LINE) < sh.index(block) < sh.index(RUN_HPC_NEXTFLOW)
+        assert ("# SLURM opened this job's .out and .err beside launcher.sh, before the stamp existed. Moved\n"
+                "# under the run's records they keep filling: a rename leaves an open file in place.\n"
+                + block + "\n") in sh
+        assert MANAGER_LOG_LINES[0] == 'mkdir -p "runs/$RUN_STAMP"'      # before the move, before Nextflow
+        assert '"${SLURM_JOB_NAME:-}-${SLURM_JOB_ID:-}".{out,err}' in MANAGER_LOG_LINES[1], \
+            "the names follow the sbatch header's %x-%j; unset outside SLURM, not unbound"
+
+    def test_the_move_runs_under_strict_mode_and_the_open_log_keeps_filling(self, tmp_path):
+        """The block as bash runs it, under the launcher's strict mode: with SLURM's names set
+        and the files there, both move and a handle still open on the .out keeps writing
+        into the moved file; with the files elsewhere (an sbatch line that set --output),
+        or outside SLURM, nothing matches and the script goes on."""
+        script = "\n".join([STRICT_MODE_LINE, "RUN_STAMP=20260101_000000", *MANAGER_LOG_LINES, "echo DONE"])
+        slurm = {**os.environ, "SLURM_JOB_NAME": "demo", "SLURM_JOB_ID": "7"}
+        d = tmp_path / "launched"; d.mkdir()
+        (d / "demo-7.err").write_text("")
+        with open(d / "demo-7.out", "a") as log:
+            log.write("run records: runs/20260101_000000/\n"); log.flush()
+            r = subprocess.run(["bash", "-c", script], cwd=d, capture_output=True, text=True, env=slurm)
+            assert (r.returncode, r.stdout.strip()) == (0, "DONE"), r.stderr
+            log.write("later\n")
+        moved = d / "runs" / "20260101_000000"
+        assert sorted(p.name for p in moved.iterdir()) == ["demo-7.err", "demo-7.out"]
+        assert (moved / "demo-7.out").read_text() == "run records: runs/20260101_000000/\nlater\n"
+        assert not (d / "demo-7.out").exists() and not (d / "demo-7.err").exists()
+        elsewhere = tmp_path / "elsewhere"; elsewhere.mkdir()
+        r = subprocess.run(["bash", "-c", script], cwd=elsewhere, capture_output=True, text=True, env=slurm)
+        assert (r.returncode, r.stdout.strip()) == (0, "DONE"), r.stderr
+        no_slurm = {k: v for k, v in os.environ.items() if not k.startswith("SLURM_")}
+        r = subprocess.run(["bash", "-c", script], cwd=elsewhere, capture_output=True, text=True, env=no_slurm)
+        assert (r.returncode, r.stdout.strip()) == (0, "DONE"), r.stderr
+        assert list((elsewhere / "runs" / "20260101_000000").iterdir()) == []
 
     def test_the_launcher_says_what_the_dollar_at_forwards_right_above_the_line_that_uses_it(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
@@ -903,6 +947,7 @@ class TestLauncher:
                             "module load apptainer/1.5.0 nextflow/25.04.7",
                             'export NXF_HOME="$PWD/.nextflow_home"',
                             RUN_STAMP_LINE,
+                            *MANAGER_LOG_LINES,
                             RUN_HPC_NEXTFLOW]
         assert "cd " not in body and "RUN_ID" not in body and "cp " not in body
         assert "nextflow clean -f" in sh and "never cleaned for you" in sh
