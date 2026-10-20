@@ -15,8 +15,10 @@ They pin:
   - the run directory contract: first launch copies + requires a samplesheet; a
     directory that exists holding nothing the launch writes (the granted directory
     itself) is filled, its other files left alone; the same render again re-launches
-    without copying and refuses a second samplesheet; another render in the directory,
-    or a name the launch writes, is refused; the template itself is never run in
+    without copying and refuses a second samplesheet; an earlier render of the same
+    pipeline is refreshed in place (the changed files rewritten, the run's own kept) and
+    resumed, unless a hand-edited file would be written over; another pipeline in the
+    directory, or a name the launch writes, is refused; the template itself is never run in
   - the launch: the exact nextflow line locally (overrides on the line), the sbatch
     tokens on the cluster, the manifest, the follow-up
   - the data pins: a rebound reference launches as `degraded`, a matching one proven
@@ -33,7 +35,7 @@ import yaml
 from agent.models.core_data import WorkflowSpec
 from agent.skills import cluster_jobs, run_production, stage_apptainer, submit_workflow, transfer, workspace
 from agent.skills.pipeline_record import derive_pipeline_record
-from agent.skills.pipeline_render import MANIFEST_PATH, render_pipeline_dir
+from agent.skills.pipeline_render import MANIFEST_PATH, RECORD_PATH, parse_manifest, render_pipeline_dir
 from pipeline_fixtures import sealed_rnaseq_spec
 
 
@@ -42,7 +44,7 @@ from pipeline_fixtures import sealed_rnaseq_spec
 # ===========================================================================
 
 def _render(tmp_path: Path, name: str = "rnaseq_counts", *, compute_env=None, sif_paths=None,
-            spec=None) -> Path:
+            spec=None, resources=None, overwrite=False) -> Path:
     """A rendered pipeline under the (sandboxed) pipelines zone. Its sealed spec is
     written where the record points so the data-pin check can read it."""
     spec = spec if spec is not None else sealed_rnaseq_spec()
@@ -50,11 +52,11 @@ def _render(tmp_path: Path, name: str = "rnaseq_counts", *, compute_env=None, si
     spec_path.write_text(yaml.safe_dump(spec.model_dump()))
     record = derive_pipeline_record(
         spec, name=name, spec_path=str(spec_path),
-        sif_paths=sif_paths, compute_env=compute_env,
+        sif_paths=sif_paths, compute_env=compute_env, resources=resources,
         modules=["apptainer/1.5.0", "nextflow/25.04.7"] if compute_env else None,
         local_runtime=_local_runtime(tmp_path))
     out = workspace.pipelines_dir() / name
-    render_pipeline_dir(record, out)
+    render_pipeline_dir(record, out, overwrite=overwrite)
     return out
 
 
@@ -605,6 +607,57 @@ class TestLocalLaunch:
         assert r["code"] == "run_production.run_dir_holds_another_render"
 
     @pytest.mark.integration
+    def test_a_re_render_of_the_same_pipeline_relaunches_in_place(self, tmp_path, local_ok):
+        """A pipeline evolves — a script fixed, a stage re-sized — and its run directory
+        takes the new render: the files the render changed are rewritten, the run's own
+        params.yaml and samples.csv stay, and -resume does the rest."""
+        pdir = _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap, params={"stranded": "yes"})["success"]
+        params_before = (d / "run1" / "params.yaml").read_text()
+        launcher = d / "run1" / "launcher.sh"
+        launcher.write_text(launcher.read_text() + "# mine\n")       # the run's own file, kept
+        # a key the run's params.yaml lacks (as when the new render added a parameter) is
+        # appended as the render writes it, comment included; the run's values stay
+        lacking = "".join(ln for ln in params_before.splitlines(keepends=True)
+                          if not ln.startswith("gtf:") and not ln.startswith("# GTF "))
+        assert "gtf:" not in lacking and lacking != params_before
+        (d / "run1" / "params.yaml").write_text(lacking)
+        _render(tmp_path, resources={"HISAT2": {"cpus": 8, "mem": "16G", "time": "01:00:00"}}, overwrite=True)
+        assert (pdir / "nextflow.config").read_text() != (d / "run1" / "nextflow.config").read_text()
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert r["outcome"] in ("proven", "degraded") and r["reused_run_dir"] is True, r
+        assert "nextflow.config" in r["render_refreshed"] and MANIFEST_PATH in r["render_refreshed"]
+        assert (d / "run1" / "nextflow.config").read_text() == (pdir / "nextflow.config").read_text()
+        assert (d / "run1" / MANIFEST_PATH).read_text() == (pdir / MANIFEST_PATH).read_text()
+        assert r["params_added"] == ["gtf"] and r["files_rewritten"] == ["params.yaml"]
+        after = (d / "run1" / "params.yaml").read_text()
+        assert after.startswith(lacking) and after.endswith("gtf: " + r["params"]["gtf"] + "\n")
+        assert "\n# GTF " in after and "\nstranded: 'yes'\n" in after
+        assert launcher.read_text().endswith("# mine\n") and r["edited_since_render"] == ["launcher.sh"]
+        again = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert "render_refreshed" not in again and "params_added" not in again
+        assert again["reused_run_dir"] is True and again["files_rewritten"] == []
+
+    @pytest.mark.integration
+    def test_a_hand_edited_file_the_re_render_would_write_over_is_refused(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap)["success"]
+        cfg = d / "run1" / "nextflow.config"
+        cfg.write_text(cfg.read_text() + "// mine\n")
+        _render(tmp_path, resources={"HISAT2": {"cpus": 8, "mem": "16G", "time": "01:00:00"}}, overwrite=True)
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.run_dir_edited"), r
+        assert "nextflow.config" in r["error"] and cfg.read_text().endswith("// mine\n")
+
+    @pytest.mark.integration
     def test_the_template_itself_is_never_run_in(self, tmp_path, local_ok):
         pdir = _render(tmp_path)
         fq = tmp_path / "r1.fq"; fq.write_text("x")
@@ -683,7 +736,7 @@ class _Remote:
                     "sums": self.run_state.get("sums", {})}
         monkeypatch.setattr(run_production, "_remote_run_dir_state", run_dir_state)
         monkeypatch.setattr(run_production, "_write_remote",
-                            lambda env, run_dir, texts, *, timeout: self.writes.update(
+                            lambda env, run_dir, texts, *, timeout, modes=None: self.writes.update(
                                 {f"{run_dir}/{rel}": text for rel, text in texts.items()}))
         monkeypatch.setattr(run_production, "_observe_cluster",
                             lambda env, paths, *, timeout: {p: {"exists": True, "sha256": ""} for p in paths})
@@ -954,6 +1007,37 @@ class TestClusterLaunch:
         assert again["outcome"] == "proven" and again["files_rewritten"] == ["launcher.sh", "params.yaml"]
         assert "\nstranded: reverse\n" in remote.writes["/work/pipelines/run1/params.yaml"]
         assert "\n#SBATCH --time=12:00:00\n" in remote.writes["/work/pipelines/run1/launcher.sh"]
+
+    @pytest.mark.integration
+    def test_a_re_render_is_written_into_the_remote_run_directory(self, tmp_path, monkeypatch):
+        """The run directory on the cluster holds an earlier render of this pipeline: the
+        files the new render changed are rewritten there (the manifest among them), the
+        run's own params.yaml is left alone, nothing is uploaded, and the run resumes."""
+        pdir = _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        old = {rel: (pdir / rel).read_text() for rel in (MANIFEST_PATH, RECORD_PATH, "launcher.sh", "params.yaml")}
+        old_sums = {rel: hashlib.sha256((pdir / rel).read_bytes()).hexdigest()
+                    for rel in parse_manifest(old[MANIFEST_PATH]) if (pdir / rel).is_file()}
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF, overwrite=True,
+                resources={"HISAT2": {"cpus": 8, "mem": "16G", "time": "01:00:00"}})
+        assert (pdir / MANIFEST_PATH).read_text() != old[MANIFEST_PATH], "the re-render changed the pipeline"
+        texts = {**old, "samples.csv": "sample,reads\nS1,/data/r1.fq\n"}
+        remote = _Remote(existing={"/work/pipelines", "/data/r1.fq"} | _REFS, sifs=set(_SIF.values()),
+                         run_state={"exists": True, "missing": [], "samplesheet": True, "texts": texts,
+                                    "sums": old_sums}).install(monkeypatch)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1")
+        assert r["outcome"] in ("proven", "degraded") and r["reused_run_dir"] is True, r
+        assert remote.uploads == [] and remote.sbatch["dir"] == "/work/pipelines/run1"
+        assert "nextflow.config" in r["render_refreshed"] and MANIFEST_PATH in r["render_refreshed"]
+        assert remote.writes["/work/pipelines/run1/nextflow.config"] == (pdir / "nextflow.config").read_text()
+        assert remote.writes[f"/work/pipelines/run1/{MANIFEST_PATH}"] == (pdir / MANIFEST_PATH).read_text()
+        assert "/work/pipelines/run1/params.yaml" not in remote.writes
+        manifest = __import__("json").loads(Path(r["manifest_path"]).read_text())
+        assert manifest["render_refreshed"] == r["render_refreshed"]
+        # another pipeline in the directory is still refused, before anything is written
+        remote.writes.clear()
+        _render(tmp_path, "other", compute_env="hpc", sif_paths=_SIF)
+        o = _run_ssh(tmp_path, "other", "/work/pipelines/run1")
+        assert o["code"] == "run_production.run_dir_holds_another_render" and remote.writes == {}
 
     @pytest.mark.integration
     def test_a_run_the_scheduler_still_holds_is_never_launched_over(self, tmp_path, monkeypatch):

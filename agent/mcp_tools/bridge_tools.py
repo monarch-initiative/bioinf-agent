@@ -446,9 +446,13 @@ def run_production_pipeline(project_name: str,
                    holds nothing the launch writes — the granted directory itself, say — with
                    its other files left alone. It may be under the env's pipelines zone, the
                    agent's scratch, or a project `directories[]` grant with `upload` and `exec`.
-                   A run_dir that already holds this pipeline is re-launched with `-resume`;
-                   one holding another render, part of this one, or a file or directory this
-                   launch writes (main.nf, bin/, work/, results/, …) is refused.
+                   A run_dir that already holds this pipeline is re-launched with `-resume`:
+                   nothing copied for the same render; for an earlier render of it (a script
+                   fixed, a stage re-sized) the files the render changed are rewritten first,
+                   `render_refreshed`, and -resume re-runs only the stages that read one. One
+                   holding another pipeline, part of this one, a file or directory this launch
+                   writes (main.nf, bin/, work/, results/, …), or a hand-edited file the render
+                   would write over is refused.
       samplesheet  local CSV, one row per sample, with the columns the pipeline reads
                    (`sample` first; paths absolute AT THE LOCUS). Required on the first
                    launch into a run_dir; omit on a re-launch.

@@ -1614,6 +1614,21 @@ def write_pipeline_record(record: PipelineRecord, out_dir: Path) -> Path:
     return path
 
 
+def record_identity(text: str) -> Optional[tuple[str, str]]:
+    """The (name, sealed_workflow) a pipeline record's text names, read without
+    validating the whole record, so a run directory rendered by an earlier version of
+    this system still says which pipeline it holds; None when the text is not a record
+    naming both."""
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    name, sealed = raw.get("name"), raw.get("sealed_workflow")
+    return (name, sealed) if isinstance(name, str) and isinstance(sealed, str) else None
+
+
 def load_pipeline_record(path: Path) -> PipelineRecord:
     """THE typed reader for a pipeline record — a malformed file fails here, loudly."""
     raw = yaml.safe_load(Path(path).read_text())
