@@ -65,6 +65,9 @@ _SAMPLE_NAMES = frozenset({"SAMPLE", "SAMPLE_ID", "SAMPLE_NAME", "ID"})
 #: A how-to input declared with this format is a THREAD SLOT (see the vocabulary).
 THREADS_FORMAT = "threads"
 #: A how-to input declared with this format is a SAMPLESHEET SLOT (see the vocabulary).
+#: A how-to input declared with this format is a VALUE however it is spelled: a URL or a
+#: path inside the image is passed as text, never staged as a file.
+VALUE_FORMAT = "value"
 SAMPLESHEET_FORMAT = "samplesheet"
 #: Where an authored script lands in the rendered directory (Nextflow's own convention).
 SCRIPT_DIR = "bin"
@@ -786,7 +789,10 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             continue
         kind, why = classify(ph)
         given = [v for v in values if v != ""]
-        value_kind = "path" if any(core_data.is_path_like(v) for v in given) else "value"
+        # a declared `format: value` is a value whatever it looks like (a URL, a bucket
+        # address, a path inside the image); otherwise a slash makes it a path to stage
+        value_kind = ("value" if fmt_declared == VALUE_FORMAT
+                      else "path" if any(core_data.is_path_like(v) for v in given) else "value")
         if value_kind == "path" and len(given) < len(values):
             raise PipelineDerivationError(
                 "pipeline.optional_path",

@@ -1433,3 +1433,31 @@ class TestRealNextflowResolvedSample:
         assert run.returncode == 0, run.stdout + run.stderr
         cfg = _nextflow(d, "config", "-flat", "-profile", "local")
         assert "process.withName:RESOLVE.cache = false" in cfg.stdout.replace("'", ""), cfg.stdout
+
+
+class TestDeclaredValueFormat:
+    """`format: value` is authoritative: a URL, a bucket address or a path inside the
+    image is passed as text, never staged as a file; without the format a slash still
+    makes the value a path to stage."""
+
+    @staticmethod
+    def _rec(fmt):
+        spec = probe_spec(["fetch -r {RELEASE_LIST} -o {OUTPUT_DIR}/list.json"],
+                          [("one", {"RELEASE_LIST": "https://example.org/alpha/releases.json"})],
+                          [{"name": "list", "files": ["list.json"]}],
+                          inputs=[{"name": "RELEASE_LIST", **({"format": fmt} if fmt else {})}],
+                          step_outputs=lambda ti, run, subs: [f"{run}/list.json"])
+        return pr.derive_pipeline_record(spec, name="fetch")
+
+    def test_a_declared_value_is_passed_as_text(self):
+        rec = self._rec("value")
+        assert rec.param("RELEASE_LIST").value_kind == "value"
+        main = render_nextflow(rec)["main.nf"]
+        assert _script_lines(main, "FETCH") == ["fetch -r ${params.release_list} -o list.json"]
+        assert "file(params.release_list)" not in main
+        assert "params.release_list = 'https://example.org/alpha/releases.json'" in main
+
+    def test_without_the_format_a_slash_is_a_path_to_stage(self):
+        rec = self._rec(None)
+        assert rec.param("RELEASE_LIST").value_kind == "path"
+        assert "file(params.release_list)" in _workflow_block(render_nextflow(rec)["main.nf"])
