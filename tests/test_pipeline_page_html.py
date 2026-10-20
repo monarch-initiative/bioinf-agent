@@ -293,7 +293,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
         sealed_workflow_path="", sealed_workflow_sha256=None, env_digests=["sha256:" + "b" * 64],
         params=list(params.values()), samplesheet=_key_sheet("S1", "S2"), output_slots=["OUTPUT_DIR"],
         compute_env=None, modules=[], local_runtime=None, stages=stages, provenance_steps=[], unmatched_steps=[],
-        scripts=[], cohort_workflows=[], defaults=[], notes=[])
+        scripts=[], cohort_workflows=[], resolved=[], defaults=[], notes=[])
 
 
 def _with_cohort(rec: pr.PipelineRecord, *names: str) -> pr.PipelineRecord:
