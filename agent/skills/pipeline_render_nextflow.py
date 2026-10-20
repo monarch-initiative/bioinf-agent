@@ -38,6 +38,10 @@ The binding table — how a how-to placeholder reaches a process script
   per-sample path column     {READS}         ->  ${reads}        `path(reads)` inside the meta tuple
   per-sample value column    {SAMPLE}        ->  ${meta.sample}  (a row that stages no path
                                                  takes `val(meta)` alone: a tuple needs two)
+  resolved value             {KG_DATE}       ->  ${meta.kg_date} looked up at run time (resolve=): the
+                                                 first line of a file a stage writes, which also names
+                                                 the sample; that stage runs on every launch, and the
+                                                 stages after it read `rows_named`
   thread slot                {THREADS}       ->  ${task.cpus}    the stage's cpus request
                                                  (format: threads; the sealed count unless sized;
                                                  locally at most this machine's cpus)
@@ -398,6 +402,16 @@ class _Context:
         # samplesheet (placeholder == name) stays in samples.csv alone
         self.value_cols = [c for c in cols if c.value_kind == "value" and c.name != "sample"
                            and c.placeholder != c.name]
+        # a value looked up at run time: the stage that writes its file; every stage after it
+        # reads `rows_named`, the metas renamed by what that stage wrote
+        self.resolved = record.resolved[0] if record.resolved else None
+        self.resolver_index = record.stage(self.resolved.stage).index if self.resolved else None
+
+    def rows_of(self, stage: PipelineStage) -> str:
+        """The rows channel as `stage` reads it: `rows_named` after the stage that looked
+        the sample's name up, `rows` before and at it."""
+        return ("rows_named" if self.resolver_index is not None and stage.index > self.resolver_index
+                else "rows")
 
     def param(self, name: str) -> PipelineParam:
         return self.record.param(name)
@@ -418,6 +432,8 @@ class _Context:
             if p.value_kind == "value":
                 return "${meta." + self.col_of[ph] + "}"
             return "${" + self.col_of[ph] + "}"
+        if p.kind == "resolved":
+            return "${meta." + low + "}"
         if p.value_kind == "value":
             return "${params." + low + "}"
         if p.value_kind == "prefix":
@@ -501,6 +517,11 @@ def _param_default_expr(p: PipelineParam) -> str:
 def _render_params_block(record: PipelineRecord, ctx: _Context) -> str:
     lines: list[str] = []
     for p in record.params:
+        if p.kind == "resolved":
+            r = next(x for x in record.resolved if x.placeholder == p.name)
+            lines.append(f"// {p.name} — looked up at run time: the first line of {r.artifact} as {r.stage} writes it "
+                         f"(${{meta.{p.name.lower()}}}); it names the sample, results/<sample>/, and is not a parameter.")
+            continue
         if p.kind != "shared":
             continue                                  # a samplesheet column, a thread slot or a sheet slot, not a param
         lines.append(f"// {_param_comment(record, p)}.")
@@ -560,14 +581,14 @@ def _producer_slug(stage: PipelineStage, inp, ctx: _Context) -> str:
     return slug
 
 
-def _rows_expr(path_cols: list, ctx: _Context) -> str:
+def _rows_expr(path_cols: list, ctx: _Context, var: str = "rows") -> str:
     """The rows channel as a stage consumes it: as-is when the stage uses every path
     column, projected to the ones it uses otherwise."""
     if [c.name for c in path_cols] == [c.name for c in ctx.path_cols]:
-        return "rows"
+        return var
     all_names = ", ".join(["meta"] + [c.name for c in ctx.path_cols])
     keep = ", ".join(["meta"] + [c.name for c in path_cols])
-    return f"rows.map {{ {all_names} -> tuple({keep}) }}"
+    return f"{var}.map {{ {all_names} -> tuple({keep}) }}"
 
 
 def _stage_call(stage: PipelineStage, ctx: _Context) -> tuple[str, Optional[str]]:
@@ -586,10 +607,11 @@ def _stage_call(stage: PipelineStage, ctx: _Context) -> tuple[str, Optional[str]
             what = " + ".join(f"every row's {ctx.words(i.artifact or i.name)} from {i.from_stage}" for i in io["collects"])
             comment = f"runs once, after {what}"
     else:
+        rows_var = ctx.rows_of(stage)
         chans = [f"{i.from_stage}.out.{_producer_slug(stage, i, ctx)}" for i in io["artifacts"]]
         items = [[i.artifact or i.name] for i in io["artifacts"]]
         if io["path_cols"]:
-            chans.append(_rows_expr(io["path_cols"], ctx))
+            chans.append(_rows_expr(io["path_cols"], ctx, rows_var))
             items.append([c.name for c in io["path_cols"]])
         if chans:
             primary = chans[0] + "".join(f".join({c})" for c in chans[1:])
@@ -598,9 +620,9 @@ def _stage_call(stage: PipelineStage, ctx: _Context) -> tuple[str, Optional[str]
                 joined = ", ".join(x for it in items for x in it)
                 comment = ".join() on meta: " + " + ".join(shapes) + f" -> (meta, {joined})"
         elif ctx.path_cols:
-            primary = "rows.map { it[0] }"
+            primary = f"{rows_var}.map {{ it[0] }}"
         else:
-            primary = "rows"
+            primary = rows_var
         args.append(primary)
     args += [f"file(params.{SAMPLESHEET_PARAM[0]}, checkIfExists: true)" for _ in io["sheets"]]
     for p in io["shared_paths"]:
@@ -746,8 +768,40 @@ def _render_workflow_block(record: PipelineRecord, ctx: _Context) -> str:
     for s in record.stages:
         call, comment = _stage_call(s, ctx)
         lines.append(_INDENT + call + (f"   // {comment}" if comment else ""))
+        if ctx.resolved and s.name == ctx.resolved.stage:
+            lines += _rows_named_lines(ctx)
     lines.append("}")
     return "\n".join(lines)
+
+
+#: What a looked-up value may name results/<sample>/ with: the row-key rule.
+SAMPLE_NAME_RE = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+
+
+def _rows_named_lines(ctx: _Context) -> list[str]:
+    """`rows_named`: the rows channel after the stage that looked the sample's name up,
+    every meta renamed by the first line of the file it wrote, the placeholder filled
+    from the same line, the row's files (if any) joined back on the row's own meta."""
+    r = ctx.resolved
+    st = ctx.record.stage(r.stage)
+    slug = ctx.slugs[(st.name, r.artifact)]
+    key = r.placeholder.lower()
+    files = [c.name for c in ctx.path_cols]
+    read = "def v = f.text.readLines()[0]?.trim() ?: ''"
+    check = (f"if (!(v ==~ /{SAMPLE_NAME_RE}/)) error \"{st.name} wrote '${{v}}' to {r.artifact}, "
+             f"which cannot name results/<sample>/\"")
+    renamed = f"meta + [sample: v, {key}: v]"
+    L = [f"{_INDENT}// the sample's name and {r.placeholder}: the first line of {r.artifact} as {st.name} wrote it;",
+         f"{_INDENT}// every later stage runs under that name, and results/ is named by it",
+         f"{_INDENT}rows_named = {st.name}.out.{slug}"]
+    if files:
+        fl = ", ".join(files)
+        L += [f"{_INDENT * 2}.map {{ meta, f -> {read}; {check}; tuple(meta, v) }}",
+              f"{_INDENT * 2}.join(rows)   // .join() on meta: back with the row's files",
+              f"{_INDENT * 2}.map {{ meta, v, {fl} -> tuple({renamed}, {fl}) }}"]
+    else:
+        L.append(f"{_INDENT * 2}.map {{ meta, f -> {read}; {check}; {renamed} }}")
+    return L
 
 
 #: The helper a stage's `saveAs` asks; main.nf defines it when a stage publishes part,
@@ -956,8 +1010,15 @@ def _render_config(record: PipelineRecord, ctx: _Context) -> str:
     L += ["process {",
           f"{_INDENT}// One failing sample stops nothing already running: in-flight tasks complete, nothing",
           f"{_INDENT}// new is submitted, and -resume re-runs the failed tasks and what follows them.",
-          f"{_INDENT}errorStrategy = 'finish'",
-          "}", ""]
+          f"{_INDENT}errorStrategy = 'finish'"]
+    if ctx.resolved:
+        L += [f"{_INDENT}// {ctx.resolved.stage} looks the sample's name up ({ctx.resolved.artifact}): it runs on every",
+              f"{_INDENT}// launch, never from the cache, so a new value is seen; the stages after it re-run",
+              f"{_INDENT}// only when the value changed.",
+              f"{_INDENT}withName: '{ctx.resolved.stage}' {{",
+              f"{_INDENT * 2}cache = false",
+              f"{_INDENT}}}"]
+    L += ["}", ""]
 
     L.append(RUN_RECORD_CONFIG)
     return "\n".join(L) + "\n"
@@ -993,6 +1054,11 @@ def _render_params_yaml(record: PipelineRecord, ctx: _Context) -> str:
          "# Every value is what the sealed run was validated with. WHERE the pipeline runs — which",
          "# image, on which machine — is nextflow.config's business, never this file's."]
     for p in record.params:
+        if p.kind == "resolved":
+            r = next(x for x in record.resolved if x.placeholder == p.name)
+            L.append(f"# {p.name} — looked up at run time by {r.stage}, the first line of {r.artifact}; it names "
+                     f"results/<sample>/ and is not set here.")
+            continue
         if p.kind != "shared":
             continue                                  # a samplesheet column or a thread slot
         L.append(f"# {_param_comment(record, p)}")

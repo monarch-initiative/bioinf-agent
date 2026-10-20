@@ -419,7 +419,8 @@ def run_production_pipeline(project_name: str,
                             run_dir: str,
                             samplesheet: str = "",
                             params: dict = {},
-                            walltime: str = "") -> dict:
+                            walltime: str = "",
+                            launch_params: dict = {}) -> dict:
     """Run a RENDERED pipeline in production on whichever compute env you name — ONE verb,
     swap `compute_env_name`. The pipeline directory `render_pipeline` wrote is copied into
     `run_dir` on that env, your samplesheet becomes its samples.csv, and the run starts the
@@ -453,6 +454,10 @@ def run_production_pipeline(project_name: str,
                    launch, by this tool or by hand, runs the same. A path, a word or a number.
       walltime     the manager job's SLURM time, written into the run directory's launcher.sh.
                    ssh envs only.
+      launch_params {params.yaml key: value} for THIS launch only, on the launcher's command line
+                   (`sbatch launcher.sh --key value`), where Nextflow lets it win over params.yaml
+                   for that run; never written into the run directory, which keeps its defaults.
+                   Validated like params=; recorded in the manifest as `launch_params`.
 
     Returns `{success, locus, pipeline, run_dir, job_id, samplesheet, params, launch,
     manifest_path, reference_check, follow_up, …}`; refusals name their remedy.
@@ -461,7 +466,7 @@ def run_production_pipeline(project_name: str,
     return run_production.run_production_pipeline(
         project_name=project_name, compute_env_name=compute_env_name,
         pipeline=pipeline, run_dir=run_dir, samplesheet=samplesheet or "",
-        params=dict(params or {}), walltime=walltime or "",
+        params=dict(params or {}), walltime=walltime or "", launch_params=dict(launch_params or {}),
         access_path=_resolve_access_path(),
     )
 

@@ -450,6 +450,31 @@ class TestLocalLaunch:
         assert "check_job" in r["follow_up"]["poll"]
 
     @pytest.mark.integration
+    def test_launch_params_ride_the_command_line_and_leave_params_yaml_alone(self, tmp_path, local_ok):
+        """A value for THIS launch only goes on the launcher's line (`--key value`), where
+        Nextflow lets it win over params.yaml for that run; the run directory keeps its
+        defaults, and the manifest says which values rode the line."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        jm = _FakeJobManager()
+        r = run_production.run_production_pipeline(
+            project_name="demo", compute_env_name="laptop", pipeline="rnaseq_counts", run_dir=str(d / "run1"),
+            samplesheet=_sheet(tmp_path, [str(fq)]), params=_refs(tmp_path), launch_params={"stranded": "yes"},
+            access_path=_local_access(tmp_path, str(d)), _job_manager=jm)
+        assert r["code"] == "run_production.values_unproven", r       # the seal never ran stranded=yes
+        assert jm.calls[0]["command"].endswith("-params-file params.yaml -resume --stranded yes")
+        assert "\nstranded: reverse\n" in (d / "run1" / "params.yaml").read_text()   # the directory's own default
+        assert r["params"]["stranded"] == "yes" and r["launch_params"] == {"stranded": "yes"}
+        manifest = __import__("json").loads(Path(r["manifest_path"]).read_text())
+        assert manifest["launch_params"] == {"stranded": "yes"} and "stranded" not in manifest["params_overridden"]
+        bad = run_production.run_production_pipeline(
+            project_name="demo", compute_env_name="laptop", pipeline="rnaseq_counts", run_dir=str(d / "run2"),
+            samplesheet=_sheet(tmp_path, [str(fq)]), params=_refs(tmp_path), launch_params={"not_a_param": 1},
+            access_path=_local_access(tmp_path, str(d)), _job_manager=jm)
+        assert bad["code"] == "run_production.unknown_param"
+
+    @pytest.mark.integration
     def test_a_value_the_seal_never_ran_is_named_beside_the_launch(self, tmp_path, local_ok):
         """The sealed self-test ran STRANDED=reverse only: a launch in another mode is a
         legitimate run of a how-to that was never proven in it, and the result says so
@@ -637,10 +662,10 @@ class _Remote:
             return {"remote_abs_path": remote_abs_path}
         monkeypatch.setattr(transfer, "upload", upload)
 
-        def sbatch(env, workflow_dir, *, timeout=300, sbatch_args=()):
-            self.sbatch = {"dir": workflow_dir, "sbatch_args": list(sbatch_args)}
+        def sbatch(env, workflow_dir, *, timeout=300, sbatch_args=(), launcher_args=()):
+            self.sbatch = {"dir": workflow_dir, "sbatch_args": list(sbatch_args), "launcher_args": list(launcher_args)}
             return {"job_id": "4242", "launcher": f"{workflow_dir}/launcher.sh",
-                    "sbatch_command": f"sbatch --parsable {' '.join(sbatch_args)} launcher.sh"}
+                    "sbatch_command": " ".join(["sbatch", "--parsable", *sbatch_args, "launcher.sh", *launcher_args])}
         monkeypatch.setattr(submit_workflow, "sbatch_via_ssh", sbatch)
         return self
 
@@ -788,7 +813,7 @@ class TestClusterLaunch:
         assert params_yaml.startswith("# rendered from sealed workflow"), "comments are kept"
         launcher = remote.sent["/work/pipelines/run1/launcher.sh"].decode()
         assert "\n#SBATCH --time=1-00:00:00\n" in launcher
-        assert remote.sbatch == {"dir": "/work/pipelines/run1", "sbatch_args": []}
+        assert remote.sbatch == {"dir": "/work/pipelines/run1", "sbatch_args": [], "launcher_args": []}
         assert r["params"]["stranded"] == "reverse"
         assert "run_dir='/work/pipelines/run1'" in r["follow_up"]["poll"]
         assert r["samplesheet"]["rows"] == 2

@@ -1320,3 +1320,116 @@ class TestRealNextflowValueOnlyRow:
                         "--run_stamp", "preview_local")
         assert run.returncode == 0, run.stdout + run.stderr
         assert "must define at least two elements" not in run.stdout + run.stderr
+
+
+# ===========================================================================
+# A sample named at run time (resolve=)
+# ===========================================================================
+
+
+def _resolved_record(**kw):
+    """A release how-to: the first command looks the graph version up and writes it,
+    the second builds under it. The version is looked up at run time (resolve=): the
+    first line of that file fills KG_DATE and names the sample."""
+    def wrote(ti, run, subs):
+        return ([f"{run}/kg_version.txt"] if ti == 0
+                else [f"{run}/release/{subs['KG_DATE']}/tables.parquet"])
+    spec = probe_spec(["resolve '{KG_VERSION}' > {OUTPUT_DIR}/kg_version.txt",
+                       "build -p {OUTPUT_DIR} -g {KG_DATE} -n {N_TRIALS}"],
+                      [("release", {"KG_VERSION": "latest", "KG_DATE": "2026-03-06", "N_TRIALS": "1"})],
+                      [{"name": "release", "files": ["release/*/*"]}],
+                      inputs=[{"name": "KG_VERSION", "format": "value"}, {"name": "KG_DATE", "format": "value"},
+                              {"name": "N_TRIALS", "format": "value"}],
+                      step_outputs=wrote)
+    return pr.derive_pipeline_record(spec, name="release", **{"resolve": {"KG_DATE": "kg_version.txt"}, **kw})
+
+
+class TestResolvedSample:
+    def test_the_value_is_read_from_the_file_and_names_the_sample(self):
+        rec = _resolved_record()
+        assert [r.model_dump() for r in rec.resolved] == [
+            {"placeholder": "KG_DATE", "artifact": "kg_version.txt", "stage": "RESOLVE"}]
+        assert rec.param("KG_DATE").kind == "resolved" and rec.param("KG_DATE").source == "resolve:kg_version.txt"
+        assert rec.param("KG_VERSION").kind == "shared" and rec.param("KG_VERSION").default == "latest"
+        assert [c.name for c in rec.samplesheet.columns] == ["sample"]
+        # the stage that looks the name up publishes nothing; what it wrote names the sample
+        assert [o.published for o in rec.stage("RESOLVE").outputs] == [False]
+        assert any("RESOLVE publishes nothing: kg_version.txt names the sample" in n for n in rec.notes)
+        assert rec.stage("BUILD").inputs[0].model_dump() == {
+            "name": "KG_DATE", "origin": "resolve", "from_stage": "RESOLVE", "artifact": "kg_version.txt"}
+        assert any(d.key == "resolve" and d.source == "caller" for d in rec.defaults)
+
+    def test_the_files_carry_the_lookup(self):
+        files = render_nextflow(_resolved_record())
+        main = files["main.nf"]
+        assert "publishDir" not in _process_block(main, "RESOLVE")
+        assert "tuple val(meta), path('kg_version.txt'), emit: kg_version_txt" in _process_block(main, "RESOLVE")
+        wf = _workflow_block(main)
+        assert "    RESOLVE(rows)\n" in wf
+        assert "    rows_named = RESOLVE.out.kg_version_txt\n" in wf
+        assert ("        .map { meta, f -> def v = f.text.readLines()[0]?.trim() ?: ''; "
+                "if (!(v ==~ /[A-Za-z0-9][A-Za-z0-9._-]*/)) error \"RESOLVE wrote '${v}' to kg_version.txt, "
+                "which cannot name results/<sample>/\"; meta + [sample: v, kg_date: v] }\n") in wf
+        assert "    BUILD(rows_named)\n" in wf
+        assert _script_lines(main, "BUILD") == ["build -p . -g ${meta.kg_date} -n ${params.n_trials}"]
+        assert "params.kg_date" not in main and "params.kg_version = 'latest'" in main
+        assert ("// KG_DATE — looked up at run time: the first line of kg_version.txt as RESOLVE writes it "
+                "(${meta.kg_date}); it names the sample, results/<sample>/, and is not a parameter.") in main
+        cfg = files["nextflow.config"]
+        assert ("    errorStrategy = 'finish'\n"
+                "    // RESOLVE looks the sample's name up (kg_version.txt): it runs on every\n"
+                "    // launch, never from the cache, so a new value is seen; the stages after it re-run\n"
+                "    // only when the value changed.\n"
+                "    withName: 'RESOLVE' {\n"
+                "        cache = false\n"
+                "    }\n"
+                "}\n") in cfg
+        params = files["params.yaml"]
+        assert "kg_date:" not in params and "kg_version: latest\n" in params
+        assert "# KG_DATE — looked up at run time by RESOLVE, the first line of kg_version.txt; " in params
+        # the rendered commands still match the sealed how-to, binding for binding
+        from agent.skills.pipeline_render import render_pipeline_files
+        render_pipeline_files(_resolved_record())
+
+    @pytest.mark.parametrize("resolve, code", [
+        ({"NOT_A_SLOT": "kg_version.txt"}, "pipeline.resolve_unknown_placeholder"),
+        ({"KG_DATE": "nothing.txt"}, "pipeline.resolve_unknown_artifact"),
+        ({"KG_DATE": "release/x"}, "pipeline.resolve_artifact_name"),
+        ({"KG_VERSION": "kg_version.txt"}, "pipeline.resolve_used_before"),
+        ({"KG_DATE": "kg_version.txt", "N_TRIALS": "kg_version.txt"}, "pipeline.resolve_one"),
+    ])
+    def test_a_lookup_the_seal_cannot_support_is_refused(self, resolve, code):
+        with pytest.raises(pr.PipelineDerivationError) as e:
+            _resolved_record(resolve=resolve)
+        assert e.value.code == code
+
+    def test_a_placeholder_cannot_be_both_looked_up_and_a_column(self):
+        with pytest.raises(pr.PipelineDerivationError) as e:
+            _resolved_record(per_sample=["KG_DATE"])
+        assert e.value.code == "pipeline.resolve_kind"
+
+    def test_the_stage_that_names_the_sample_hands_on_no_files(self):
+        """A later stage consuming a file the lookup stage wrote would join a renamed
+        meta with the row's own; refused, with the move that fixes it."""
+        def wrote(ti, run, subs):
+            return ([f"{run}/kg_version.txt", f"{run}/kg.json"] if ti == 0 else [f"{run}/out.txt"])
+        spec = probe_spec(["resolve '{KG_VERSION}' > {OUTPUT_DIR}/kg_version.txt",
+                           "build -g {KG_DATE} {OUTPUT_DIR}/kg.json > {OUTPUT_DIR}/out.txt"],
+                          [("release", {"KG_VERSION": "latest", "KG_DATE": "2026-03-06"})],
+                          [{"name": "out", "files": ["out.txt"]}],
+                          inputs=[{"name": "KG_VERSION", "format": "value"}, {"name": "KG_DATE", "format": "value"}],
+                          step_outputs=wrote)
+        with pytest.raises(pr.PipelineDerivationError) as e:
+            pr.derive_pipeline_record(spec, name="release", resolve={"KG_DATE": "kg_version.txt"})
+        assert e.value.code == "pipeline.resolve_stage_consumed"
+
+
+@needs_nextflow
+class TestRealNextflowResolvedSample:
+    def test_the_lookup_parses_and_previews(self, tmp_path):
+        d = _write(render_nextflow(_resolved_record()), tmp_path / "pipe")
+        run = _nextflow(d, "run", "main.nf", "-profile", "local", "-params-file", "params.yaml", "-preview",
+                        "--run_stamp", "preview_local")
+        assert run.returncode == 0, run.stdout + run.stderr
+        cfg = _nextflow(d, "config", "-flat", "-profile", "local")
+        assert "process.withName:RESOLVE.cache = false" in cfg.stdout.replace("'", ""), cfg.stdout

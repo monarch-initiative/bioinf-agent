@@ -118,9 +118,10 @@ class IndexFile(BaseModel):
 class PipelineParam(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str                                  # placeholder, e.g. STRANDED
-    kind: Literal["shared", "per_sample", "cpus", "samplesheet", "collected"]
+    kind: Literal["shared", "per_sample", "cpus", "samplesheet", "collected", "resolved"]
     #   cpus: a thread slot, bound to the stage's CPU request · samplesheet: the pipeline's own
-    #   samples.csv · collected: every row's copy of a per-sample artifact (a cohort stage's fan-in)
+    #   samples.csv · collected: every row's copy of a per-sample artifact (a cohort stage's fan-in) ·
+    #   resolved: looked up at run time, the first line of a file a stage writes (resolve=)
     value_kind: Literal["path", "prefix", "value"]   # prefix: names a FAMILY of files (an aligner index)
     default: Optional[str]                     # the sealed trial's value for a shared param; None for a per-sample one, whose values are the samplesheet's rows
     source: str                                # usage_input | literal | test_data:<key> | reference_database:<name> | sealed_step:<n> | authored_artifact:<name> | collect:<artifact>
@@ -134,11 +135,12 @@ class PipelineParam(BaseModel):
 class StageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str                                  # a placeholder, or an artifact name
-    origin: Literal["param", "column", "stage", "request", "samplesheet", "collect"]
+    origin: Literal["param", "column", "stage", "request", "samplesheet", "collect", "resolve"]
     #   request: the stage's own cpus (a thread slot) · samplesheet: the pipeline's samples.csv ·
-    #   collect: every row's copy of a per-sample artifact, from `from_stage`
+    #   collect: every row's copy of a per-sample artifact, from `from_stage` ·
+    #   resolve: a value `from_stage` looked up at run time, the first line of `artifact`
     from_stage: Optional[str]
-    artifact: Optional[str]                    # origin=stage|collect: the artifact (templated basename or glob)
+    artifact: Optional[str]                    # origin=stage|collect|resolve: the artifact (templated basename or glob)
 
 
 class StageOutput(BaseModel):
@@ -259,6 +261,15 @@ class LocalRuntime(BaseModel):
     nextflow: Optional[str]                    # the nextflow binary it puts on PATH; None when absent at render time
 
 
+class ResolvedValue(BaseModel):
+    """A placeholder whose value the pipeline looks up at run time: the first line of
+    the file `stage` writes fills it for every later stage and names the sample."""
+    model_config = ConfigDict(extra="forbid")
+    placeholder: str
+    artifact: str                              # the file, as the how-to spells it under the output slot
+    stage: str                                 # the stage that writes it; it runs on every launch
+
+
 class PipelineRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -279,6 +290,7 @@ class PipelineRecord(BaseModel):
     unmatched_steps: list[int]
     scripts: list[PipelineScript]              # authored scripts the how-to runs, rendered into bin/
     cohort_workflows: list[CohortWorkflow]     # the sealed workflows attached as cohort stages, with their fan-in
+    resolved: list[ResolvedValue]              # values looked up at run time (resolve=), at most one
     defaults: list[PipelineDefault]
     notes: list[str]
 
@@ -607,6 +619,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                            samplesheet_files: Optional[Mapping[str, str]] = None,
                            index_files: Optional[Mapping[str, list[str]]] = None,
                            cohort: Optional[list[CohortRequest]] = None,
+                           resolve: Optional[Mapping[str, str]] = None,
                            _collected: Optional[Mapping[str, str]] = None) -> PipelineRecord:
     """Derive the pipeline record from a sealed WorkflowSpec. Raises
     PipelineDerivationError (a refusal with a remedy) when the seal cannot support
@@ -617,9 +630,13 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     found beside it]}` for the paths they bound that are on the caller's machine (see
     `index_candidates`) — the caller reads the disk, this stays pure.
     `cohort` attaches further sealed workflows as cohort stages (see the vocabulary).
+    `resolve` is `{PLACEHOLDER: file}`: the placeholder's value is looked up at run time,
+    the first line of that file as the stage that writes it wrote it; it fills the
+    placeholder for every later stage and names the sample (see the vocabulary).
     `_collected` is the attachment's own: the cohort how-to's fan-in placeholders."""
     notes: list[str] = []
     collected_set = dict(_collected or {})
+    resolved_set = {str(k): str(v) for k, v in (resolve or {}).items()}
     usage = getattr(spec, "usage", None)
     if usage is None:
         raise PipelineDerivationError(
@@ -676,6 +693,29 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             "pipeline.unknown_placeholder",
             f"{sorted(unknown)} are not placeholders of the how-to ({in_placeholders})",
             "name a placeholder the how-to uses")
+    if len(resolved_set) > 1:
+        raise PipelineDerivationError(
+            "pipeline.resolve_one",
+            f"resolve= names {sorted(resolved_set)}; one value is looked up per pipeline",
+            "declare one placeholder; the stage that looks it up may write what the rest need as files")
+    for ph, art in resolved_set.items():
+        if ph not in in_placeholders:
+            raise PipelineDerivationError(
+                "pipeline.resolve_unknown_placeholder",
+                f"resolve= names {ph!r}, not a placeholder of the how-to ({in_placeholders})",
+                "name a placeholder a later command uses")
+        if ph in per_sample_set | shared_set | set(collected_set):
+            raise PipelineDerivationError(
+                "pipeline.resolve_kind",
+                f"{ph} is looked up at run time (resolve=); it cannot also be a samplesheet column, "
+                f"a params.yaml value or a collected input",
+                "drop it from per_sample= / shared= / collect=, or from resolve=")
+        if not art or "/" in art or placeholders(art) or any(c in art for c in "*?"):
+            raise PipelineDerivationError(
+                "pipeline.resolve_artifact_name",
+                f"resolve= reads {ph} from {art!r}, which is not one fixed file name under the output slot",
+                "name the file as the how-to writes it, `{OUTPUT_DIR}/<name>`: no directory, glob or placeholder")
+    caller_named |= set(resolved_set)
     test_paths = set(core_data.test_data_paths(spec_d.get("test_data") or {}).values())
     ref_dbs = [rd for rd in (spec_d.get("reference_databases") or []) if isinstance(rd, dict)]
     step_ds = _step_dicts(spec)
@@ -734,6 +774,15 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 reason=f"declared collect=: every sample's {collected_set[ph]}, staged into one directory; "
                        f"the sealed run read {v0}", index_files=[]))
             notes.append(f"{ph}: collected ({params[-1].reason})")
+            continue
+        if ph in resolved_set:
+            di = declared_inputs.get(ph) or {}
+            params.append(PipelineParam(
+                name=ph, kind="resolved", value_kind="value", default=v0, source=f"resolve:{resolved_set[ph]}",
+                format=di.get("format"), description=di.get("description"), used_by=[],
+                reason=f"declared resolve=: the first line of {resolved_set[ph]}, written at run time, fills it "
+                       f"and names the sample; the sealed run bound {v0}", index_files=[]))
+            notes.append(f"{ph}: resolved ({params[-1].reason})")
             continue
         kind, why = classify(ph)
         given = [v for v in values if v != ""]
@@ -1112,6 +1161,22 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             stage_in_copy=any(_producer_before(tok, i) not in g for i in g for tok in rewrites[i]),
             resources=res))
 
+    # the stage that looks a resolved value up: the last writer of its file
+    resolver_of: dict[str, int] = {}                 # placeholder -> index of the stage that writes its file
+    for ph, art in resolved_set.items():
+        if art not in history:
+            raise PipelineDerivationError(
+                "pipeline.resolve_unknown_artifact",
+                f"resolve= reads {ph} from {art!r}, which no command writes under the output slot "
+                f"(written: {sorted(history)})",
+                "write the value with a command of the how-to, `> {OUTPUT_DIR}/<name>`, and re-seal")
+        resolver_of[ph] = stage_of_template[history[art][-1]]
+    resolver_stages = set(resolver_of.values())
+
+    def _from_resolver(tok: str, ti: int) -> bool:
+        src = _producer_before(tok, ti)
+        return src is not None and stage_of_template[src] in resolver_stages
+
     # ── wire inputs / outputs at stage level ───────────────────────────────
     # each declared pattern, and its reading with the slots kept (for an artifact no step observed)
     declared_forms = [(str(f), output_pattern(str(f), {})) for o in declared_outputs for f in (o.get("files") or [])]
@@ -1129,16 +1194,25 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                 p = next(pp for pp in params if pp.name == ph)
                 p.used_by.append(st.name)
                 origin = {"per_sample": "column", "cpus": "request", "samplesheet": "samplesheet",
-                          "collected": "collect"}.get(p.kind, "param")
+                          "collected": "collect", "resolved": "resolve"}.get(p.kind, "param")
+                if p.kind == "resolved" and st.index <= resolver_of[ph]:
+                    raise PipelineDerivationError(
+                        "pipeline.resolve_used_before",
+                        f"{ph} is looked up by {stage_recs[resolver_of[ph]].name} (it writes {resolved_set[ph]}), "
+                        f"but {st.name} uses it no later than that",
+                        "look the value up in a command before every command that uses it")
                 st.inputs.append(StageInput(
-                    name=ph, origin=origin, from_stage=None,
-                    artifact=collected_set.get(ph) if p.kind == "collected" else None))
+                    name=ph, origin=origin,
+                    from_stage=stage_recs[resolver_of[ph]].name if p.kind == "resolved" else None,
+                    artifact=(collected_set.get(ph) if p.kind == "collected"
+                              else resolved_set.get(ph) if p.kind == "resolved" else None)))
             wanted = list(template_tokens[i])
             if template_bare[i]:
                 # the command names the output directory itself: in the self-test it ran in
                 # the one directory every earlier command wrote into, so everything written
-                # before it is staged in
-                wanted += [tok for tok in history if tok not in wanted]
+                # before it is staged in — except what a stage that looks a value up wrote:
+                # that stage hands on the value (in the row's meta), never files
+                wanted += [tok for tok in history if tok not in wanted and not _from_resolver(tok, i)]
             for tok in wanted:
                 src = _producer_before(tok, i)
                 if src is None or stage_of_template[src] == st.index:
@@ -1203,6 +1277,43 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                      + ("every output is published" if pending and not declared
                         else "nothing is published for it"))
 
+    # ── a value looked up at run time: the stage that writes it names the sample ──
+    resolved_recs: list[ResolvedValue] = []
+    for ph, art in resolved_set.items():
+        producer = stage_recs[resolver_of[ph]]
+        if producer.scope != "per_sample":
+            raise PipelineDerivationError(
+                "pipeline.resolve_cohort_stage",
+                f"{art} is written by {producer.name}, a cohort stage; a sample's name is looked up per row",
+                "look the value up in a per-sample stage")
+        mine = next(o for o in producer.outputs if o.artifact == art)
+        if mine.directory:
+            raise PipelineDerivationError(
+                "pipeline.resolve_directory",
+                f"{art} is a directory {producer.name} writes a tree into; the value is a file's first line",
+                "write the value to one file under the output slot")
+        consumed = sorted(o.artifact for o in producer.outputs if o.consumed_by)
+        if consumed:
+            raise PipelineDerivationError(
+                "pipeline.resolve_stage_consumed",
+                f"{producer.name} looks {ph} up, and a later stage consumes what it writes ({consumed}); the "
+                f"stage that names the sample hands on the value, not files",
+                "move what later commands read into the command after it, or look the value up in a command of its own")
+        index_of = {s.name: s.index for s in stage_recs}
+        for st in stage_recs:
+            before = sorted({i.from_stage for i in st.inputs if i.origin == "stage" and i.from_stage
+                             and index_of[i.from_stage] < producer.index})
+            if st.index > producer.index and before:
+                raise PipelineDerivationError(
+                    "pipeline.resolve_join",
+                    f"{st.name} runs under the name {producer.name} looks up, but consumes files from {before}, "
+                    f"which ran before it under the row's own name; the two cannot be joined",
+                    "look the value up in the first command, or move the consumed command after it")
+        for o in producer.outputs:
+            o.published = False
+        notes.append(f"{producer.name} publishes nothing: {art} names the sample (resolve=); it runs on every launch")
+        resolved_recs.append(ResolvedValue(placeholder=ph, artifact=art, stage=producer.name))
+
     # ── samplesheet: always — `sample` (the row key) first, one row per trial ──
     # The key's placeholder is the how-to's own sample identifier when it has one, so
     # the renderer binds that placeholder to the `sample` column; a how-to with no
@@ -1265,6 +1376,11 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         PipelineDefault(key="resources", value="per-stage requests; measurements quoted, never used as the request",
                         source="caller" if resources else "default"),
     ]
+    if resolved_recs:
+        defaults.append(PipelineDefault(
+            key="resolve", source="caller",
+            value="; ".join(f"{r.placeholder}: the first line of {r.artifact}, written by {r.stage} on every launch, "
+                            f"names the sample and fills the placeholder" for r in resolved_recs)))
 
     record = PipelineRecord(
         name=name, version="1",
@@ -1276,7 +1392,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         output_slots=sorted(out_slots), compute_env=compute_env, modules=list(modules or []),
         local_runtime=local_runtime,
         stages=stage_recs, provenance_steps=provenance,
-        unmatched_steps=unmatched_steps, scripts=scripts, cohort_workflows=[],
+        unmatched_steps=unmatched_steps, scripts=scripts, cohort_workflows=[], resolved=resolved_recs,
         defaults=defaults, notes=notes)
     for req in (cohort or []):
         _attach_cohort(record, req, resources=resources, env_names=env_names, sif_paths=sif_paths,

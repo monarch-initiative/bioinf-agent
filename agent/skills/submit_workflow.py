@@ -227,11 +227,13 @@ def render_workflow_files(*, tool_name: str, command: str,
 
 def sbatch_via_ssh(env: dict, workflow_dir: str, *,
                    timeout: int = 300,
-                   sbatch_args: tuple[str, ...] | list[str] = ()) -> dict:
+                   sbatch_args: tuple[str, ...] | list[str] = (),
+                   launcher_args: tuple[str, ...] | list[str] = ()) -> dict:
     """ssh into `env`, cd to `workflow_dir`, run `sbatch --parsable [sbatch_args]
-    launcher.sh`, parse and return the SLURM job_id. `sbatch_args` are options for
-    sbatch itself, pre-validated by the caller; every token is shell-quoted here
-    regardless.
+    launcher.sh [launcher_args]`, parse and return the SLURM job_id. `sbatch_args` are
+    options for sbatch itself and `launcher_args` what the launcher forwards to
+    Nextflow (`--key value`), both pre-validated by the caller; every token is
+    shell-quoted here regardless.
 
     Auth-agnostic: callers MUST have already authorized `workflow_dir`
     for the operation they're performing. run_production_pipeline authorizes
@@ -243,7 +245,7 @@ def sbatch_via_ssh(env: dict, workflow_dir: str, *,
     included so the caller can surface where the rendered files
     landed for forensics)."""
     launcher = f"{workflow_dir}/launcher.sh"
-    parts = ["sbatch", "--parsable", *[str(a) for a in sbatch_args], "launcher.sh"]
+    parts = ["sbatch", "--parsable", *[str(a) for a in sbatch_args], "launcher.sh", *[str(a) for a in launcher_args]]
     body = (_SEEN_FN + f"seen {shlex.quote(workflow_dir)}; cd {shlex.quote(workflow_dir)} && "
             f"{' '.join(shlex.quote(x) for x in parts)}")
     sbatch_cmd = _login_shell(body)

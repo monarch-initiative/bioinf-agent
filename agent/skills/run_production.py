@@ -179,6 +179,12 @@ def _with_params(text: str, overrides: Optional[Mapping], where: str) -> tuple[s
 _TIME_LINE_RE = re.compile(r"(?m)^#SBATCH --time=(\S*)")
 
 
+def _launcher_args(over: Mapping[str, str]) -> list[str]:
+    """The launcher's command line for this launch's values: `--key value` pairs, which
+    launcher.sh forwards to Nextflow, where they win over params.yaml for that run."""
+    return [a for k, v in over.items() for a in (f"--{k}", v)]
+
+
 def _with_walltime(launcher: str, walltime: str, where: str) -> str:
     """launcher.sh with the manager job's time limit set to `walltime`."""
     text, n = _TIME_LINE_RE.subn(f"#SBATCH --time={walltime}", launcher, count=1)
@@ -821,6 +827,7 @@ def run_production_pipeline(project_name: str,
                             samplesheet: str = "",
                             params: Optional[Mapping] = None,
                             walltime: str = "",
+                            launch_params: Optional[Mapping] = None,
                             access_path: Optional[str] = None,
                             timeout: int = 300,
                             _job_manager=None) -> dict:
@@ -840,6 +847,10 @@ def run_production_pipeline(project_name: str,
                  launch, by this tool or by hand, runs the same. A path, a word or a number.
     walltime:    the manager job's SLURM time limit, written into the run directory's
                  launcher.sh header the same way. ssh envs only.
+    launch_params: {params.yaml key: value} for THIS launch only: on the launcher's command line
+                 (`launcher.sh --key value`), where Nextflow lets it win over params.yaml for that
+                 run; never written into the run directory, which keeps its defaults. Validated
+                 like params=.
     """
     try:
         if walltime and not _WALLTIME_RE.match(str(walltime)):
@@ -878,6 +889,8 @@ def run_production_pipeline(project_name: str,
         if samplesheet:
             header, rows = _read_samplesheet(samplesheet, record)
         _check_params(params, (pdir / _PARAMS_FILE).read_text(), str(pdir / _PARAMS_FILE))
+        _check_params(launch_params, (pdir / _PARAMS_FILE).read_text(), str(pdir / _PARAMS_FILE))
+        launch_over = {str(k): str(v) for k, v in (launch_params or {}).items()}
 
         # ─── The run directory, and the configuration that runs there ──
         # params= and walltime= are written into the run's own params.yaml and launcher.sh
@@ -908,6 +921,7 @@ def run_production_pipeline(project_name: str,
                 else {rel: (pdir / rel).read_text() for rel in (_PARAMS_FILE, _LAUNCHER)})
         where = {rel: f"{normed_dir}/{rel}" if reused else str(pdir / rel) for rel in base}
         params_text, effective = _with_params(base[_PARAMS_FILE], params, where[_PARAMS_FILE])
+        effective = {**effective, **launch_over}      # this launch's command-line values win, as Nextflow reads them
         config = {_PARAMS_FILE: params_text,
                   _LAUNCHER: (_with_walltime(base[_LAUNCHER], walltime, where[_LAUNCHER]) if walltime
                               else base[_LAUNCHER])}
@@ -953,7 +967,8 @@ def run_production_pipeline(project_name: str,
         # ─── Launch ─────────────────────────────────────────────────────
         submitted_at = datetime.now(timezone.utc).isoformat()
         if env_type == "ssh":
-            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout)
+            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout,
+                                                launcher_args=_launcher_args(launch_over))
             if "error" in sb:
                 return {**sb, **placed}
             job_id = sb["job_id"]
@@ -974,7 +989,8 @@ def run_production_pipeline(project_name: str,
                          "manager_log": f"{normed_dir}/{record.name}-{job_id}.out"}
             code = "run_production.submitted"
         else:
-            launch = f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}"
+            launch = (f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}"
+                      + "".join(f" {shlex.quote(a)}" for a in _launcher_args(launch_over)))
             started = jm.start(command=launch, job_id=f"pipeline_{record.name}_{_stamp()}",
                                working_dir=normed_dir, tool="run_production_pipeline")
             if "error" in started:
@@ -998,6 +1014,7 @@ def run_production_pipeline(project_name: str,
             "samplesheet": ({"source": samplesheet, "rows": len(rows), "columns": header} if samplesheet
                             else {"source": f"{normed_dir}/{SAMPLESHEET_FILENAME} (already there)"}),
             "params": effective, "params_overridden": {str(k): str(v) for k, v in (params or {}).items()},
+            "launch_params": launch_over,
             "walltime": (time_line.group(1) if time_line and env_type == "ssh" else None), "launch": launch,
             "edited_since_render": edited, "reference_check": dict(reference_check),
             "value_check": value_check,
@@ -1010,7 +1027,7 @@ def run_production_pipeline(project_name: str,
                         pipeline=record.name, run_dir=normed_dir, job_id=job_id,
                         reused_run_dir=placed["reused"],
                         **{k: v for k, v in placed.items() if k != "reused"},
-                        samplesheet=manifest_record["samplesheet"], params=effective,
+                        samplesheet=manifest_record["samplesheet"], params=effective, launch_params=launch_over,
                         launch=launch, submitted_at=submitted_at, manifest_path=manifest_path,
                         edited_since_render=edited, follow_up=follow_up)
         return _disclose(result, reference_check, value_check)
