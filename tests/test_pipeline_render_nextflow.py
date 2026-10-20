@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, sealed_rnaseq_spec
+from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, probe_spec, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
 from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_HPC_NEXTFLOW, RUN_LOCAL, RUN_RECORD_BLOCK,
@@ -1276,3 +1276,47 @@ class TestDirectoryArtifacts:
         wf = _workflow_block(main)
         assert "FDR(LN.out.species_data.join(TRIALS.out.random_trials).join(PHENOLOGS.out.phenologs_results))" in wf
         assert "REPORT(LN.out.species_data.join(TRIALS.out.random_trials).join(FDR.out.phenologs_results))" in wf
+
+
+# ===========================================================================
+# A row that stages no path: a samplesheet of values only
+# ===========================================================================
+
+
+def _value_only_record():
+    """One how-to whose only per-sample input is a VALUE (a graph version), its files
+    from the image: the samplesheet has no path column, so the row's tuple would hold
+    the meta alone."""
+    def wrote(ti, run, subs):
+        return [f"{run}/release/{subs['GRAPH_VERSION']}/tables.parquet"]
+    spec = probe_spec(["build -p {OUTPUT_DIR} -g {GRAPH_VERSION} -n {N_TRIALS}"],
+                      [("kg_2026-03-06", {"GRAPH_VERSION": "2026-03-06", "N_TRIALS": "1"})],
+                      [{"name": "release", "files": ["release/*/*"]}],
+                      inputs=[{"name": "GRAPH_VERSION", "format": "value"}, {"name": "N_TRIALS", "format": "value"}],
+                      step_outputs=wrote)
+    return pr.derive_pipeline_record(spec, name="release", per_sample=["GRAPH_VERSION"])
+
+
+class TestValueOnlyRow:
+    def test_a_row_that_stages_no_path_takes_the_meta_alone(self):
+        """A Nextflow `tuple` needs two elements: with no path in the row the input is
+        `val(meta)`, never a one-element tuple the parser refuses."""
+        rec = _value_only_record()
+        assert [c.name for c in rec.samplesheet.columns] == ["sample", "graph_version"]
+        main = render_nextflow(rec)["main.nf"]
+        block = _process_block(main, "BUILD")
+        assert "    input:\n    val(meta)\n" in block
+        assert "tuple val(meta)\n" not in block
+        assert "tuple val(meta), path('release'), emit: release" in block
+        assert "build -p . -g ${meta.graph_version} -n ${params.n_trials}" in _script_lines(main, "BUILD")
+        assert "BUILD(rows)" in _workflow_block(main)
+
+
+@needs_nextflow
+class TestRealNextflowValueOnlyRow:
+    def test_the_value_only_row_parses_and_previews(self, tmp_path):
+        d = _write(render_nextflow(_value_only_record()), tmp_path / "pipe")
+        run = _nextflow(d, "run", "main.nf", "-profile", "local", "-params-file", "params.yaml", "-preview",
+                        "--run_stamp", "preview_local")
+        assert run.returncode == 0, run.stdout + run.stderr
+        assert "must define at least two elements" not in run.stdout + run.stderr

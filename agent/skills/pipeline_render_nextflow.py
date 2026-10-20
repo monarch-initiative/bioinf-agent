@@ -36,7 +36,8 @@ The binding table — how a how-to placeholder reaches a process script
                                                  staged: `path hisat2_index_files`
                                                          <- files("${params.hisat2_index}*")
   per-sample path column     {READS}         ->  ${reads}        `path(reads)` inside the meta tuple
-  per-sample value column    {SAMPLE}        ->  ${meta.sample}
+  per-sample value column    {SAMPLE}        ->  ${meta.sample}  (a row that stages no path
+                                                 takes `val(meta)` alone: a tuple needs two)
   thread slot                {THREADS}       ->  ${task.cpus}    the stage's cpus request
                                                  (format: threads; the sealed count unless sized;
                                                  locally at most this machine's cpus)
@@ -676,7 +677,9 @@ def _render_process(record: PipelineRecord, stage: PipelineStage, ctx: _Context)
         parts = ["val(meta)"]
         parts += [f"path({staged(i)})" for i in io["artifacts"]]
         parts += [f"path({c.name})" for c in io["path_cols"]]
-        ins.append("tuple " + ", ".join(parts))
+        # a Nextflow tuple needs two elements: a stage that stages no path with its row
+        # (a samplesheet of values only, its files from bin/ or shared params) takes the meta alone
+        ins.append("tuple " + ", ".join(parts) if len(parts) > 1 else parts[0])
     ins += [f"path {i.name.lower()}" + " " * max(1, 28 - len(i.name) - 5)
             + "// the samplesheet itself, as this run read it" for i in io["sheets"]]
     for p in io["shared_paths"]:
