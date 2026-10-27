@@ -590,10 +590,16 @@ def _run_one_trial(
         }
 
     ran: list[str] = []
+    images: list[str] = []            # where each command ran: the runner's image, else the host env
+    image_runner = bool(getattr(env_manager, "is_image_runner", False))
     for i, raw in enumerate(commands, start=1):
         command = fill_slots(raw, subs)
         ran.append(command)
-        result = env_manager.run_in_env(env_name, command, timeout=TRIAL_TIMEOUT_S, watch_dir=str(scratch))
+        # An image runner takes the command's index: a chain whose commands ran as steps
+        # in different frozen images is self-tested command by command in those images.
+        result = env_manager.run_in_env(env_name, command, timeout=TRIAL_TIMEOUT_S, watch_dir=str(scratch),
+                                        **({"command_index": i} if image_runner else {}))
+        images.append(str(result.get("image") or env_name))
         rc = result.get("returncode")
         if rc != 0:
             # Stop at the first failure — a later command must never be allowed to
@@ -603,7 +609,7 @@ def _run_one_trial(
             failed = {
                 "name": trial_name, "ok": False,
                 "reason": f"{step} execution failed (rc={rc})",
-                "command_run": command, "commands_run": ran,
+                "command_run": command, "commands_run": ran, "images_run": images,
                 "failed_index": i, "scratch_dir": str(scratch),
                 "stderr_tail": (result.get("stderr") or "")[-500:],
                 "substitutions": subs, "output_slots": output_slots,
@@ -676,7 +682,7 @@ def _run_one_trial(
             "missing_outputs": missing_outputs,
             "produced_files": produced[:20],
             "recognized_output_slots": recognized,
-            "command_run": command_run, "commands_run": ran, "scratch_dir": str(scratch),
+            "command_run": command_run, "commands_run": ran, "images_run": images, "scratch_dir": str(scratch),
             "substitutions": subs, "output_slots": output_slots,
         }
         if not produced:
@@ -718,13 +724,13 @@ def _run_one_trial(
                 "failed_validations": failed[:10],
                 "validation_results": validation_results[:20],
                 "produced_files": produced[:20],
-                "command_run": command_run, "commands_run": ran, "scratch_dir": str(scratch),
+                "command_run": command_run, "commands_run": ran, "images_run": images, "scratch_dir": str(scratch),
                 "substitutions": subs, "output_slots": output_slots,
             }
 
     return {
         "name": trial_name, "ok": True,
-        "command_run": command_run, "commands_run": ran, "substitutions": subs,
+        "command_run": command_run, "commands_run": ran, "images_run": images, "substitutions": subs,
         "output_slots": output_slots,
         "produced_files": produced[:20], "scratch_dir": str(scratch),
         "validation_results": validation_results[:20],

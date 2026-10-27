@@ -340,6 +340,64 @@ def _names_bare_slot(template: str, out_slots: set[str]) -> bool:
     return any(re.search(r"\{" + slot + r"\}(?!/)", template) for slot in out_slots)
 
 
+def match_steps_to_templates(templates: list[str], rows: list[dict], steps: list[dict],
+                             out_slots: set[str]) -> tuple[dict[int, list[tuple[int, dict]]], dict[int, list[str]]]:
+    """Which sealed step ran each how-to command for each row — THE one matching, read by
+    the record derivation and by the seal (to self-test a command in its own step's image).
+
+    Returns `(matched, wrote_into)`: `matched[template index]` is the `(row index, step)`
+    pairs whose recorded command is the template with that row's input values bound
+    (output slots are wildcards: the step and the self-test wrote to different
+    directories), each step claimed once; `wrote_into[step number]` is the output
+    directories the matched command named."""
+    matched: dict[int, list[tuple[int, dict]]] = {i: [] for i in range(len(templates))}
+    wrote_into: dict[int, list[str]] = {}
+    claimed: set[int] = set()
+    for ti, tmpl in enumerate(templates):
+        for ri, r in enumerate(rows):
+            pat = _template_regex(tmpl, r.get("substitutions") or {}, out_slots)
+            for s in steps:
+                n = int(s.get("step", 0))
+                if n in claimed:
+                    continue
+                hit = pat.fullmatch(_ws(s.get("command", "")))
+                if hit:
+                    matched[ti].append((ri, s))
+                    wrote_into[n] = [v for v in hit.groupdict().values() if v]
+                    claimed.add(n)
+                    break
+    return matched, wrote_into
+
+
+def match_steps_to_templates(templates: list[str], rows: list[dict], steps: list[dict],
+                             out_slots: set[str]) -> tuple[dict[int, list[tuple[int, dict]]], dict[int, list[str]]]:
+    """Which sealed step ran each how-to command for each row — THE one matching, read by
+    the record derivation and by the seal (to self-test a command in its own step's image).
+
+    Returns `(matched, wrote_into)`: `matched[template index]` is the `(row index, step)`
+    pairs whose recorded command is the template with that row's input values bound
+    (output slots are wildcards: the step and the self-test wrote to different
+    directories), each step claimed once; `wrote_into[step number]` is the output
+    directories the matched command named."""
+    matched: dict[int, list[tuple[int, dict]]] = {i: [] for i in range(len(templates))}
+    wrote_into: dict[int, list[str]] = {}
+    claimed: set[int] = set()
+    for ti, tmpl in enumerate(templates):
+        for ri, r in enumerate(rows):
+            pat = _template_regex(tmpl, r.get("substitutions") or {}, out_slots)
+            for s in steps:
+                n = int(s.get("step", 0))
+                if n in claimed:
+                    continue
+                hit = pat.fullmatch(_ws(s.get("command", "")))
+                if hit:
+                    matched[ti].append((ri, s))
+                    wrote_into[n] = [v for v in hit.groupdict().values() if v]
+                    claimed.add(n)
+                    break
+    return matched, wrote_into
+
+
 def _template_regex(template: str, subs: Mapping[str, str], out_slots: set[str]) -> re.Pattern:
     """A pattern that matches the literal command the how-to produces for one row:
     input placeholders bound to the row's values, output slots left as wildcards
@@ -881,22 +939,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     cpus_of = {p.name: int(p.default or 0) for p in params if p.kind == "cpus"}
 
     # ── match sealed steps to (template, row) ──────────────────────────────
-    matched: dict[int, list[tuple[int, dict]]] = {i: [] for i in range(len(templates))}
-    wrote_into: dict[int, list[str]] = {}      # step number -> the output directories its command named
-    claimed: set[int] = set()
-    for ti, tmpl in enumerate(templates):
-        for ri, r in enumerate(rows):
-            pat = _template_regex(tmpl, r.get("substitutions") or {}, out_slots)
-            for s in ok_steps:
-                n = int(s.get("step", 0))
-                if n in claimed:
-                    continue
-                hit = pat.fullmatch(_ws(s.get("command", "")))
-                if hit:
-                    matched[ti].append((ri, s))
-                    wrote_into[n] = [v for v in hit.groupdict().values() if v]
-                    claimed.add(n)
-                    break
+    matched, wrote_into = match_steps_to_templates(templates, rows, ok_steps, out_slots)
+    claimed = {int(s.get("step", 0)) for hits in matched.values() for _ri, s in hits}
     unmatched = [s for s in ok_steps if int(s.get("step", 0)) not in claimed]
 
     # provenance: unmatched steps that produced a shared param's value
