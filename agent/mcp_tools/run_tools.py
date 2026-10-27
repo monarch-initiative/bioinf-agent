@@ -24,9 +24,7 @@ from agent.skills.backgroundable import backgroundable
 from agent.skills.outcomes import proven, refused, broke, last_informative_line
 
 
-# Filename → validator type moved to the validator itself, next to the dispatch
-# it mirrors, because it existed twice (here and run_cluster_step._infer_etype)
-# and the copies disagreed on `x.sorted.bam` — see infer_validator_type's docstring.
+# Filename → validator type is output_validator.infer_validator_type: import it, never copy it.
 from agent.validators.output_validator import infer_validator_type as _infer_validator_type
 from agent.skills import workspace as _workspace
 

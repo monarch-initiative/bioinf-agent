@@ -33,6 +33,7 @@ from agent.skills.outcomes import refused
 # + outcomes, so this stays cycle-free.
 from agent.skills.pipeline_state import validation_covers as _validation_covers
 from agent.skills import workspace
+from agent.validators.output_validator import infer_validator_type
 
 #: How long one command of a self-test trial may run before the runner kills it. Thirty
 #: minutes: a release-scale step on an emulated laptop runs for ten, and a self-test is a
@@ -694,17 +695,15 @@ def _run_one_trial(
             )
         return out
 
-    # Step 2: type-aware validation on each matched file. Skips when the
-    # validator wasn't passed in (legacy path / unit tests), but with the
-    # MCP server wired up, validator is always supplied so this is the
-    # mainline.
+    # Step 2: type-aware validation on each matched file (when a validator is
+    # supplied; the server always supplies one).
     validation_results: list[dict] = []
     if validator is not None:
         for pat, matches in matched_files.items():
             for produced_rel, declared_type in matches:
                 abs_path = str(scratch / produced_rel)
-                # Resolve expected type: declared > extension inference > "any".
-                etype = declared_type or _infer_type_from_basename(Path(produced_rel).name)
+                # Expected type: declared, else the validator's own filename reading.
+                etype = declared_type or infer_validator_type(Path(produced_rel).name)
                 v = validator.validate(abs_path, etype, env_name=env_name)
                 validation_results.append({
                     "pattern":       pat,
@@ -735,22 +734,6 @@ def _run_one_trial(
         "validation_results": validation_results[:20],
         "description": plan.get("description"),
     }
-
-
-def _infer_type_from_basename(basename: str) -> str:
-    """Map a basename to a validator type. Mirrors _infer_validator_type in
-    mcp_server.py; kept here to avoid the import cycle."""
-    name = basename.lower()
-    if name.endswith(".gz"):
-        name = name[:-3]
-    last = name.rsplit(".", 1)[-1]
-    for known in ("bam", "sam", "bai", "vcf", "bcf", "fasta", "fastq",
-                  "bed", "bigwig", "gtf", "gff", "gfa", "tsv", "csv", "txt",
-                  "html", "json", "jsonl", "fq"):
-        if last == known:
-            # validator dispatches on "fasta" not "fa", "fastq" not "fq"
-            return "fastq" if known == "fq" else known
-    return "any"
 
 
 def check_invariants(spec: dict) -> list[dict]:

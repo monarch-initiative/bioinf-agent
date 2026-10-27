@@ -2461,7 +2461,7 @@ def usage_output_validations(spec: Any) -> list[dict]:
     """THE one reading of *what the I4 self-test validated each produced file AS*.
 
     `_run_one_trial` resolves an expected type for every matched output —
-    `declared_type or _infer_type_from_basename(...)` — runs the type-aware
+    `declared_type or infer_validator_type(...)` — runs the type-aware
     validator against it, and records `{pattern, file, expected_type, passed,
     method}`. So the record knows the type of every file the how-to produced,
     including the ones the author never declared a type for.
