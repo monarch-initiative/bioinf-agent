@@ -790,3 +790,36 @@ class TestNextflowMemoryNormalization:
             slurm={"time": "1:00:00", "mem": mem}, workflow_name="m",
         )["nextflow.config"]
         assert f"memory = {expected}" in cfg
+
+
+# ===========================================================================
+# The container is invoked the way a rendered pipeline's tasks invoke it
+# ===========================================================================
+
+class TestMountParity:
+    @pytest.mark.integration
+    def test_main_nf_gives_the_step_the_mounts_a_pipeline_task_gets(self):
+        """Nextflow runs a task as `apptainer exec --no-home --pid -B <work dir> …` with the
+        inputs' directories auto-mounted; a validation run with the home directory mounted
+        passed a check whose production task then crashed, so the two must agree."""
+        nf = _demo_render()["main.nf"]
+        line = next(l for l in nf.splitlines() if "apptainer exec" in l)
+        assert "--no-home --pid" in line
+        assert '--bind "\\$PWD"' in line, "the work directory is bound explicitly, as Nextflow binds it"
+        binds = [tok for tok in line.split() if tok.startswith("--bind")]
+        assert len(binds) == 2, f"only the work directory and the input's parent are bound: {line}"
+        assert "// The container is invoked the way a rendered pipeline's tasks are" in nf
+
+    @pytest.mark.integration
+    def test_a_hyphenated_tool_name_renders_a_process_nextflow_can_parse(self):
+        """`process run_google-cloud-sdk {` is not a Nextflow identifier and the job died at
+        parse time on the cluster; the name is sanitized the way the pipeline renderer's is."""
+        out = render_workflow(
+            tool_name="google-cloud-sdk", command="gcloud info > ${report}", inputs={},
+            outputs={"report": "info.txt"}, apptainer_sif=_DEMO_SIF,
+            apptainer_module="apptainer/1.4.1", nextflow_module="nextflow/25.04.7",
+            slurm=_DEMO_SLURM, workflow_name="gcloud_check")
+        assert out["process_name"] == "run_google_cloud_sdk"
+        assert "process run_google_cloud_sdk {" in out["main.nf"]
+        assert "    run_google_cloud_sdk()" in out["main.nf"]
+        assert "run_google-cloud-sdk" not in out["main.nf"]

@@ -14,9 +14,11 @@ This is the agent's per-project renderer per
      command, substitutes the params, and re-runs the step from a
      terminal. If they can't, the renderer is wrong.
   3. The tool comes from a frozen apptainer .sif (staged to the env's
-     container_upload_target). The process runs `apptainer exec <sif> <cmd>`. The
-     .sif path is a top-level param so swapping versions is a one-line
-     change to main.nf.
+     container_upload_target). The process runs `apptainer exec <sif> <cmd>` the
+     way a rendered pipeline's tasks run it (`--no-home --pid`, the work directory
+     and the inputs' directories bound, nothing else), so a check here stands in
+     for the pipeline. The .sif path is a top-level param so swapping versions is
+     a one-line change to main.nf.
 
 The renderer is pure: strings in, strings out. Filesystem writes,
 ssh, and sbatch live in `submit_workflow` (sbatch_via_ssh) and its callers.
@@ -453,21 +455,19 @@ def render_workflow(*,
     _check_safe_token("nextflow_config_filename", nextflow_config_filename)
 
     # ─── Render main.nf ──────────────────────────────────────────────────
-    process_name = f"run_{tool_name}"
+    # A Nextflow process name is an identifier; a tool name may carry `-` or `.`.
+    process_name = "run_" + re.sub(r"[^A-Za-z0-9_]+", "_", tool_name)
 
-    # The shell command Nextflow will execute. Apptainer is invoked
-    # explicitly so the .sif path can change per-run without rebuilding
-    # the workflow; the bind mounts of $PWD + the input dirs come for
-    # free from apptainer's defaults.
+    # The shell command Nextflow will execute. Apptainer is invoked explicitly so
+    # the .sif path can change per-run without rebuilding the workflow, with the
+    # mounts a rendered pipeline's task gets: the work directory and the parent
+    # directory of each input, and no home directory.
     bind_dirs = sorted({
-        # The parent dir of each input file — apptainer auto-binds $PWD,
-        # but inputs live elsewhere on the host so we bind their parents
-        # explicitly to make them readable inside the container.
         "/".join(p.split("/")[:-1]) or "/"
         for p in inputs.values()
     })
     bind_flags = " ".join(
-        f"--bind {shlex.quote(d)}" for d in bind_dirs)
+        ['--bind "\\$PWD"'] + [f"--bind {shlex.quote(d)}" for d in bind_dirs])
 
     # --nv when the job asked for GPUs. Without it this renderer allocated a GPU and
     # then hid it: the launcher emits `#SBATCH --gres=gpu:N` so the job LANDS on a GPU
@@ -518,6 +518,9 @@ def render_workflow(*,
         f"\n"
         f"{param_block}\n"
         f"\n"
+        f"// The container is invoked the way a rendered pipeline's tasks are (--no-home --pid;\n"
+        f"// the work directory and the inputs' directories bound), so this check stands in\n"
+        f"// for a pipeline run.\n"
         f"process {process_name} {{\n"
         f"    publishDir \".\", mode: 'copy'\n"
         f"\n"
@@ -536,7 +539,7 @@ def render_workflow(*,
         # The command is ONE shell-quoted `bash -c` argument. Groovy still interpolates
         # `${params.x}` inside the quotes (it does not know shell quoting), and the
         # resolved value lands inside them, where bash takes it literally.
-        f"    apptainer exec {nv_flag}--cleanenv {bind_flags} ${{params.apptainer_sif}} "
+        f"    apptainer exec {nv_flag}--cleanenv --no-home --pid {bind_flags} ${{params.apptainer_sif}} "
         f"bash -c {shlex.quote(script_body)}\n"
         f"    \"\"\"\n"
         f"}}\n"
