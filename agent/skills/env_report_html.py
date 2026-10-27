@@ -238,9 +238,8 @@ margin-right:4px}
 /* The third badge state, for a fact that is neither a pass nor a failure —
    "declared none, but the image carries cuda 12.8". Without its own compound rule it
    would inherit `.badge` box styling with `.warn`'s text colour and no border, which
-   reads as a styling slip rather than a deliberate third state. Same lesson as the
-   coverage-state note below: a state that renders like another state IS that state,
-   to the only reader who matters. */
+   reads as a styling slip rather than a deliberate third state: a state that renders
+   like another state IS that state, to the only reader who matters. */
 .badge.warn{background:var(--surface-2);color:var(--warn);border:1px solid var(--warn)}
 .note{color:var(--muted);font-size:12.5px;margin:6px 0}
 /* A caveat that must not read as small print. The RUN dashboard uses it for

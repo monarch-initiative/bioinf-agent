@@ -197,13 +197,8 @@ class EnvBuild:
         self.captured_versions = self.cb.probe_versions(
             image, {s.get("tool", ""): s.get("version_probe", "")
                     for s in self.cb.longtail if s.get("version_probe")})
-        # The control experiment, on THIS path too. It was written for the agent-
-        # authored `freeze_from_image` and wired only there — so the container-native
-        # path, which is the busy one, had a string rule and nothing behind it. Phase D
-        # walked straight through: `exomiser --help 2>&1 | head -20` exits 0 in a stock
-        # debian image that has no exomiser, and a freeze registered `proven` on it.
-        # Imported rather than reimplemented — a second copy of a check is how the
-        # first copy stops being the truth (audit: every lesson applied at one site).
+        # The control experiment, on this path too: imported, not reimplemented, so
+        # there is one copy of the check.
         from agent.skills.freeze_from_image import _evidence_discriminates
 
         records, vacuous = [], []

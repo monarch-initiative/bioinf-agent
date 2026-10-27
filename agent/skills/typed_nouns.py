@@ -21,8 +21,8 @@ docstring is the measured version of that story). This registry is that state:
   * mode=ENFORCED — the write funnel RAISES on a malformed record (`enforced_at` names
     the function that does), and the walk clauses in `retires` are deleted once EVERY
     noun claiming them is enforced. Enforce-and-retire happen in the SAME change —
-    separate PRs are the grandfathering trap (a gate at only one end, the tier-5
-    lesson), and the lint below holds the line.
+    separate PRs are the grandfathering trap (a gate at only one end), and the lint
+    below holds the line.
 
 `tests/test_typed_noun_registry.py` fails the build when this table and reality drift:
 a walk clause deleted while a claimant noun is still SHADOW, a clause still present

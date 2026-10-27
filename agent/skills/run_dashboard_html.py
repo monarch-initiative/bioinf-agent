@@ -48,10 +48,9 @@ from agent.models import core_data as _core_data
 from agent.models.core_data import (RESOURCES_AUTHORITATIVE as _RES_AUTHORITATIVE,
                                     RESOURCES_EMULATED as _RES_EMULATED,
                                     RESOURCES_UNRECORDED as _RES_UNRECORDED,
-                                    USAGE_LABELS,
                                     resource_usage_authority as _resource_usage_authority,
                                     step_is_validated, step_validation_failed,
-                                    usage_commands, usage_output_type,
+                                    human_size, usage_commands, usage_label, usage_output_type,
                                     usage_status)
 from agent.skills.env_report_html import (
     _badge, _close_page, _created_line, _e, _empty, _header_banner, _kv_table, _open_page,
@@ -149,15 +148,7 @@ def _method_words(method: str) -> str:
 
 def _fmt_bytes(n) -> str:
     """33706193 → `33.7 MB`; anything unparseable is printed as recorded."""
-    try:
-        v = float(n)
-    except (TypeError, ValueError):
-        return _e(n)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if v < 1024 or unit == "TB":
-            return f"{v:.0f} {unit}" if unit == "B" else f"{v:.1f} {unit}"
-        v /= 1024
-    return _e(n)
+    return _e(human_size(n) if n is not None else n)
 
 
 def _step_digest(step: dict) -> Optional[str]:
@@ -460,11 +451,6 @@ def _usage_status(spec: dict) -> str:
     markdown guide) print the bare bool and disagree with the page. Same rule as
     `usage_commands` — one field, one reading, in a leaf."""
     return usage_status(spec)
-
-
-#: How each I4 state reads in a one-line summary cell.
-#: Wording lives in core_data.USAGE_LABELS — see there for why it is not local.
-_USAGE_LABEL = USAGE_LABELS
 
 
 def _seal_outcome_html(spec: dict) -> str:
@@ -1141,7 +1127,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
                             + (f' <span class="pill bad">{len(failed)} FAILED</span>'
                                if failed else "")),
         ("Docker image", f'<code>{_e(s.get("env_image","—"))}</code>' if s.get("env_image") else "—"),
-        ("Usage self-tested", _e(_USAGE_LABEL.get(_usage_status(s), _usage_status(s)))),
+        ("Usage self-tested", _e(usage_label(s))),
     ]
     if s.get("description"):
         head_rows.insert(0, ("Workflow", _e(s["description"])))

@@ -210,9 +210,7 @@ def write_workflow_spec(workflow: dict, config: dict, env_name: str | None = Non
     """Validate + write a Layer-2 WorkflowSpec as YAML.
 
     The human-facing how-to is rendered as HTML into {name}.RUN.html by the seal
-    (run_dashboard_html), NOT a markdown guide — the markdown GUIDE.md is retired.
-    Any legacy `user_guide` markdown on the workflow dict is dropped here (never
-    inlined in the YAML, never written to disk)."""
+    (run_dashboard_html)."""
     # (helper below is module-level; see _shape_fix_hint)
     from agent.models.core_data import WorkflowSpec
 
@@ -253,8 +251,6 @@ def write_workflow_spec(workflow: dict, config: dict, env_name: str | None = Non
     # STATE. `exclude_none` un-states it. Explicit `null`s cost some YAML noise and
     # buy a spec that round-trips, which is the whole point of a sealed artifact.
     data = wf.model_dump()
-    data.pop("user_guide", None)        # retired markdown guide — never persist it
-    data.pop("user_guide_path", None)
     yaml_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
     return {"workflow_spec_path": str(yaml_path)}
 
@@ -279,9 +275,9 @@ def load_workflow_spec(path: Any) -> Any:
     (``agent_status``, ``resources.list_pipelines``, ``pipeline_state.spec_sealed``).
     That scrape is harmless for an orientation SUMMARY — but re-running a RECORDED
     step means pulling a command we are about to EXECUTE in the shipped image out of
-    that dict, which is exactly the read where a scrape is dangerous: the
-    bcftools-1.23.1 lesson is that a ``.get``/regex over a record returns the wrong
-    field under a confident name, and "the wrong command in the right container" is a
+    that dict, which is exactly the read where a scrape is dangerous: a
+    ``.get``/regex over a record returns the wrong field under a confident name, and
+    "the wrong command in the right container" is a
     silent, ground-truthed lie. So any consumer that ACTS on a sealed spec reads it
     back through THIS typed seam — a malformed artifact fails HERE, loudly
     (``pydantic.ValidationError``), rather than surfacing as a bad command deep in a

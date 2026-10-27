@@ -191,7 +191,8 @@ def render_pipeline(sealed_workflow: str,
     env was named, and every derivation ``note``. Open ``page`` first.
     """
     from agent.skills.pipeline_record import (CohortRequest, LocalRuntime, PipelineDerivationError,
-                                              derive_pipeline_record, sha256_of)
+                                              derive_pipeline_record)
+    from agent.models.core_data import sha256_file_or_none
     from agent.skills.pipeline_render import render_pipeline_dir
     from agent.skills.spec_writer import load_workflow_spec
 
@@ -267,7 +268,7 @@ def render_pipeline(sealed_workflow: str,
         sheet_files.update(_samplesheet_files(cspec))
         index_files.update(_index_files(cspec))
         requests.append(CohortRequest(
-            spec=cspec, spec_path=str(cpath), spec_sha256=sha256_of(cpath),
+            spec=cspec, spec_path=str(cpath), spec_sha256=sha256_file_or_none(cpath),
             collect={str(k): str(v) for k, v in entry["collect"].items()},
             stages=cgroups, stage_names=list(entry["stage_names"]) if entry.get("stage_names") else None,
             shared=list(entry["shared"]) if entry.get("shared") else None))
@@ -284,7 +285,7 @@ def render_pipeline(sealed_workflow: str,
     runtime = _local_runtime()
     try:
         record = derive_pipeline_record(
-            spec, name=pipeline_name, spec_path=str(spec_path), spec_sha256=sha256_of(spec_path),
+            spec, name=pipeline_name, spec_path=str(spec_path), spec_sha256=sha256_file_or_none(spec_path),
             stages=groups, stage_names=list(stage_names) if stage_names else None,
             per_sample=list(per_sample) if per_sample else None,
             shared=list(shared) if shared else None,

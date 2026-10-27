@@ -24,7 +24,7 @@ import platform
 import re
 import shlex
 from pathlib import PurePath as _PurePath
-from typing import Annotated, Any, Optional
+from typing import Optional
 
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
 # so test monkeypatching on mcp_server reaches us.
@@ -1446,7 +1446,7 @@ def install_pip_package(
     doesn't-run is a FAILED install) and is recorded as install_method.
     functional_evidence, so freeze's VALIDATED_IN_IMAGE proves the package RAN,
     not merely imported — the pip analog of install_r_package's functional_check
-    (the GAPIT/snpStats lesson: import success is not run success).
+    (import success is not run success).
 
     `pip_flags` (NEW): extra flags passed verbatim to pip install. Use for
     `--no-binary :all:` (force source compile), `--no-build-isolation`,
@@ -1556,14 +1556,6 @@ def install_pip_package(
     return _ms._shrink_stdio_for_response(
         _install_outcome(result, "env_manager.pip_installed", "env_manager.pip_install_failed"),
         label=f"pip.{env_name}.{name}")
-
-
-# download_reference_database moved to agent.mcp_tools.data_tools
-
-
-# run_pipeline_step / run_step_in_container / verify_installation / run_in_env
-# / validate_output (plus helpers _infer_validator_type / _stamp_i7_authority)
-# moved to agent.mcp_tools.run_tools
 
 
 # ---------------------------------------------------------------------------

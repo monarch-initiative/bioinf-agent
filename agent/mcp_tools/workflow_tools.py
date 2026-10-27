@@ -13,7 +13,7 @@ import re
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 # IMPORT-BINDING NOTE: singletons that tests monkeypatch (the L5 conftest
 # swaps `_pipeline_state` to a tmp-rooted instance per test) MUST be reached

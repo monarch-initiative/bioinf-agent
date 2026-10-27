@@ -104,10 +104,9 @@ def download_reference_database(
 
     DEFAULT (compute_env=""): download to the LOCAL agent machine, at `local_path`
     when given, else into the local common-data zone, `<workspace>/common_data/<name>/`.
-    Uses run_in_background internally — agent doesn't have to remember to wrap
-    the curl in async, doesn't have to worry about --silent / -q traps that
-    killed the original Exomiser install. Auto-records a ReferenceDatabase
-    entry in the draft when pipeline_id is supplied.
+    Uses run_in_background internally, so the agent does not have to wrap the curl
+    in async. Auto-records a ReferenceDatabase entry in the draft when pipeline_id
+    is supplied.
 
     REGISTER (url="" and `local_path` names an existing file or directory): a
     reference you BUILT or STAGED on this machine — an aligner index from

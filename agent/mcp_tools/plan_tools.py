@@ -6,7 +6,7 @@ goal as a JSON `ExecutionPlan`, it validates that decomposition against the sche
 returns the plan gate's verdict (I8 lifted to authoring time) plus the topological walk
 order and where to start.
 
-ADVISORY, DISPATCHES NOTHING (Phase 4). Exactly like `interpret_request`: this changes
+ADVISORY, DISPATCHES NOTHING. Exactly like `interpret_request`: this changes
 no existing behaviour. It hands you a validated, gated itinerary; YOU walk it, calling
 the existing single-purpose primitives (freeze / run_step_in_container /
 run_step_on_cluster / seal_workflow) one node at a time in topo order, observing each

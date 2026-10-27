@@ -8,8 +8,7 @@ Invoked by `backgroundable.spawn_detached` as:
 `result_path` — where the tool's real return value lands, for `check_job` to
                 inline once the job exits.
 
-Generalized from `freeze_runner`, which did exactly this for one tool. Its
-lessons are kept verbatim and now apply to every backgroundable tool:
+Three rules:
 
   * A script, not `python -c`. Results are deeply nested dicts; serializing one
     back through shell quoting is fragile, and a script gives a place to catch a
@@ -21,9 +20,8 @@ lessons are kept verbatim and now apply to every backgroundable tool:
   * `os._exit()` at the end. `import agent.mcp_server` pulls in FastMCP and its
     providers, which spawn NON-DAEMON threads (Docker SDK pools, component
     watchers). Those keep the interpreter alive after the work is done, and the
-    parent keys job state off `proc.poll()` — a 0.3 s adopt-by-digest freeze was
-    once observed lingering ~9.5 min with check_job stuck on 'running'. The
-    result file is closed and both streams are flushed first, so nothing is lost.
+    parent keys job state off `proc.poll()`. The result file is closed and both
+    streams are flushed first, so nothing is lost.
 
 Progress markers go to stdout, which is the JobManager log — `check_job`'s
 `log_tail` is the only visibility into a detached run while it is in flight.

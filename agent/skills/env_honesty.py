@@ -991,9 +991,8 @@ def _clause_license(result: dict) -> tuple[ClauseCoverage, list[dict]]:
     name their license(s). The procedural firewall against republishing a gated
     artifact (cellranger, dorado, AlphaFold params, …).
 
-    Reads gatedness through `core_data.record_is_gated`, NOT a local `.get("license_gated")`:
-    records on disk carry the legacy `gated` key, and a one-key read let those pass I13
-    unexamined.
+    Reads gatedness through `core_data.record_is_gated`, which also honours the `gated`
+    key a record on disk may carry.
 
     TWO WAYS TO BE GATED, and both arm the clause. `license_gated` is the agent's
     DECLARATION, and `redistributable` is derived from it (`not gated`,
@@ -1080,22 +1079,11 @@ _VII_COVERS = ("VALIDATED_IN_IMAGE.no_evidence",
                "VALIDATED_IN_IMAGE.evidence_passed")
 
 
-#: THE LAYER-1 ROSTER, AS DATA — the exact counterpart of `agent/skills/invariants.py`
-#: for Layer 2, and created for the same reason.
-#:
-#: `check_build` emits its clause names at runtime; nothing declared them, so anyone
-#: needing to TELL someone what the contract is had to hand-write the list. Two places
-#: did, and both went stale in the same direction. `install_pipeline_brief` — the brief
-#: handed to a subagent that installs WITHOUT SUPERVISION — listed three guarantees while
-#: this module enforced four, so a record with a malformed `shipped_binaries[]` is refused
-#: by a clause that brief never mentions. The irony was load-bearing: the comment beside
-#: that list explains that the hand-written LAYER-2 roster went stale and was replaced by
-#: registry derivation, and the LAYER-1 list immediately next to it was still hand-written
-#: and wrong in exactly the same way.
-#:
-#: `tests/test_invariant_registry.py` asserts every clause `check_build` actually emits is
-#: claimed by an entry here, so a fifth guarantee cannot appear without this roster
-#: learning about it.
+#: THE LAYER-1 ROSTER, AS DATA — the counterpart of `agent/skills/invariants.py` for
+#: Layer 2. `install_pipeline_brief` and the reports read this roster rather than
+#: hand-writing the list, and `tests/test_invariant_registry.py` asserts every clause
+#: `check_build` emits is claimed by an entry here, so a fifth guarantee cannot appear
+#: without this roster learning about it.
 LAYER1_GUARANTEES: tuple[tuple[str, str], ...] = (
     ("BUILT",
      "the env image + image_digest, recorded as the local Docker daemon reported them at "
@@ -1253,8 +1241,8 @@ def evaluate_build(result: dict) -> BuildContract:
     # -- WELL_FORMED -----------------------------------------------------
     # Layer-1's shape-sanity clause — the analog of Layer-2's I0, and asserted here
     # (the SERVING question) as well as at EnvCache.register (the WRITING question),
-    # because tier 5's lesson is that a gate only at the producer leaves every record
-    # frozen before it existed grandfathered in. A record whose sub-records don't
+    # because a gate only at the producer leaves every record frozen before it
+    # existed grandfathered in. A record whose sub-records don't
     # conform cannot be READ, so it cannot be honestly rendered or served: freeze /
     # run / stage / seal all refuse it and name this clause, and it is re-earned by a
     # re-freeze rather than a backfill ([[feedback-existing-installs-not-precious]]).
@@ -1471,12 +1459,8 @@ def evaluate_build(result: dict) -> BuildContract:
     # -- VALIDATED_IN_IMAGE.discriminates --------------------------------
     # THE SERVE-SIDE HALF of the control experiment. The two producers re-run each
     # PASSING evidence in a digest-pinned image that lacks the tool and refuse to
-    # register when it passes there too. That gate lives at the WRITER, and tier 5's
-    # lesson is that a writer-only gate grandfathers every record written before it
-    # existed. Measured when this landed: 9 of the 10 records in the EnvCache carried
-    # no `control` verdict at all, and every one of them served `contract_ok: true`
-    # with nothing behind it but the string rule the audit had already walked through
-    # (`true || samtools`, `true # samtools`, and the trailing pipe that started this).
+    # register when it passes there too. That gate lives at the WRITER, and a
+    # writer-only gate grandfathers every record written before it existed.
     #
     # This function is PURE — it cannot run a container, so it cannot re-run the
     # experiment. It can only report who asked. That asymmetry decides both verdicts:

@@ -49,7 +49,7 @@ from typing import Any, Optional
 
 _shq = shlex.quote
 
-from agent.models.core_data import ShippedBinary as _ShippedBinary
+from agent.models.core_data import ShippedBinary as _ShippedBinary, sha256_text
 from agent.skills import env_recipe, env_recipe_render
 from agent.skills.container_build import BASE_IMAGE as _CB_BASE_IMAGE
 from agent.skills import _proc
@@ -764,11 +764,6 @@ def _clone_url(repo: str) -> str:
 _PATCH_FIND_PREVIEW = 80
 
 
-def _sha256_text(text: str) -> str:
-    import hashlib
-    return hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
-
-
 def _apply_patches(checkout: Path, patches: list[dict]) -> dict:
     """Apply each `{file, find, replace, reason}` to the checkout, in order, and record
     what changed. Returns {"applied": [...]} on success, or a refusal dict naming the
@@ -834,8 +829,8 @@ def _apply_patches(checkout: Path, patches: list[dict]) -> dict:
         after = before.replace(find, replace, 1)
         target.write_text(after, encoding="utf-8", errors="surrogateescape")
         applied.append({"file": file, "find": find, "replace": replace, "reason": reason,
-                        "sha256_before": _sha256_text(before),
-                        "sha256_after": _sha256_text(after)})
+                        "sha256_before": sha256_text(before),
+                        "sha256_after": sha256_text(after)})
     return {"applied": applied}
 
 

@@ -1,6 +1,6 @@
-"""bridge_tools — HPC bridge actuator surface (Phase 2+).
+"""bridge_tools — HPC bridge actuator surface.
 
-Sibling to observability_tools.py (Phase 1's read-only `snapshot_project`).
+Sibling to observability_tools.py (the read-only `snapshot_project`).
 While observability is pure-read, this module's primitives push bytes,
 submit jobs, monitor them, and fetch results back — all under the same
 permission gate (`compute_access.check_permission`) and the same

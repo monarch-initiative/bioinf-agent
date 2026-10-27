@@ -84,7 +84,8 @@ from typing import Optional
 import yaml
 
 from agent.skills import compute_access, transfer, workspace
-from agent.models.core_data import frozen_image_ref, record_is_gated as _record_is_gated, sha256_file
+from agent.models.core_data import (frozen_image_ref, record_is_gated as _record_is_gated, sha256_file,
+                                    short_digest)
 from agent.skills.freeze import canon_platform as _canon_platform
 from agent.skills.outcomes import proven, refused, broke, loop
 from agent.skills.snapshot import _SEEN_FN, _login_shell, _ssh_argv, _ssh_failure_hint
@@ -93,10 +94,7 @@ from agent.skills.snapshot import _SEEN_FN, _login_shell, _ssh_argv, _ssh_failur
 def _short_digest(digest: str) -> str:
     """Take the first 12 hex chars of a sha256:abcd... digest so the
     filename stays readable while keeping enough entropy to dedupe."""
-    if not isinstance(digest, str) or ":" not in digest:
-        return "unknown"
-    hexdigest = digest.split(":", 1)[1]
-    return hexdigest[:12] if hexdigest else "unknown"
+    return short_digest(digest, missing="unknown")
 
 
 

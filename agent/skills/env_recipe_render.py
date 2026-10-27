@@ -23,7 +23,7 @@ Pure assembly — no docker, no network, no clock. Deterministic given its input
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Optional
 
 from agent.skills import freeze as _freeze
 from agent.skills.env_recipe import AUTHORS_METHODS as _AUTHORS_METHODS, requested_ref

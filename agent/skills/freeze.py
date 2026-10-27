@@ -360,11 +360,9 @@ def requested_conda_specs(spec: dict) -> list[str]:
             continue
         if st.get("tool") != "conda" or st.get("subcommand") != "install":
             continue
-        # rc==0 success; rc==None means no rc was recorded (treat as pass-through
-        # for backward compat with older drafts that didn't set it); rc != 0
-        # means the install failed — its installed_packages claim is unsafe to
-        # feed back to the engine as a request. The retry's rc==0 entry will
-        # supersede via move-to-end.
+        # rc==0 success; rc==None (none recorded) passes through; rc != 0 means the
+        # install failed — its installed_packages claim is unsafe to feed back to the
+        # engine as a request. The retry's rc==0 entry will supersede via move-to-end.
         rc = st.get("returncode")
         if rc is not None and rc != 0:
             continue
