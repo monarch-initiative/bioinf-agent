@@ -1319,13 +1319,22 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     # results/ gets the declared outputs and their sidecars (`x.bam.bai`, `x.bai` with
     # `x.bam`); a how-to that declares no output the run wrote names no result, so all
     declared = dict.fromkeys(kw["artifact"] for _st, kw in pending if kw["declared_pattern"])
+    published_dirs: set[str] = set()
     for st, kw in pending:
-        st.outputs.append(StageOutput(**kw, published=not declared or kw["declared_pattern"] is not None
-                                      or _sidecar_of(kw["artifact"], declared) is not None))
+        published = (not declared or kw["declared_pattern"] is not None
+                     or _sidecar_of(kw["artifact"], declared) is not None)
+        st.outputs.append(StageOutput(**kw, published=published))
+        if published and kw["directory"]:
+            published_dirs.add(kw["artifact"])
     for glob in sorted({g for g, _ in declared_forms} - {kw["declared_pattern"] for _st, kw in pending}):
-        notes.append(f"usage.outputs pattern {glob!r} names no output a stage writes; "
-                     + ("every output is published" if pending and not declared
-                        else "nothing is published for it"))
+        inside = next((d for d in sorted(published_dirs) if glob.startswith(d + "/")), None)
+        if inside:
+            # the file is published with the directory it sits in; nothing is lost
+            notes.append(f"usage.outputs pattern {glob!r} lies inside the published directory {inside!r}")
+        else:
+            notes.append(f"usage.outputs pattern {glob!r} names no output a stage writes; "
+                         + ("every output is published" if pending and not declared
+                            else "nothing is published for it"))
 
     # ── a value looked up at run time: the stage that writes it names the sample ──
     resolved_recs: list[ResolvedValue] = []
