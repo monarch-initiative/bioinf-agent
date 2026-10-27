@@ -427,10 +427,10 @@ def _local_mkdir_parent(remote_abs_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _synthesize_ad_hoc_project(access: dict) -> dict:
-    """Build the virtual one-off project. It can touch scratch +
-    common_data on every env in the YAML, with no project-specific
-    directories[]. The synthesized project never persists to disk; it
-    lives only for the duration of one call."""
+    """Build the virtual one-off project. It can touch the four env-implicit
+    zones (scratch, common_data, container_upload, pipelines) on every env in
+    the YAML, with no project-specific directories[]. The synthesized project
+    never persists to disk; it lives only for the duration of one call."""
     envs = access.get("compute_envs") or []
     compute_env_access = []
     for env in envs:
@@ -443,9 +443,9 @@ def _synthesize_ad_hoc_project(access: dict) -> dict:
         })
     return {
         "name":               AD_HOC_PROJECT_NAME,
-        "description":        ("synthesized virtual project — scratch + "
-                               "common_data on every env, no "
-                               "project-specific directories"),
+        "description":        ("synthesized virtual project — the env-implicit "
+                               "zones on every env, no project-specific "
+                               "directories"),
         "compute_env_access": compute_env_access,
     }
 

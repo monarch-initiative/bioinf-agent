@@ -68,22 +68,28 @@ def upload(project_name: str,
            local_path: str,
            remote_abs_path: str) -> dict:
     """Push a local file, or a whole directory, to an ABSOLUTE path on a
-    compute env. The auth family is auto-routed by where the path falls — agent scratch
-    sandbox, env's shared common_data zone, or one of the project's
-    explicit `directories[]` workspaces.
+    compute env. The zone is routed by where the path falls on that env: the
+    agent's scratch sandbox, the env's common_data, container_upload or
+    pipelines zone, or one of the project's explicit `directories[]`
+    workspaces.
 
     For ONE-OFF transfers (debug downloads, ad-hoc data inspection,
     quick uploads) pass `project_name="_ad_hoc"`. The _ad_hoc project
-    is synthesized on the fly with access to scratch + common_data on
-    every env. No YAML edit needed.
+    is synthesized on the fly with the four env-implicit zones on every
+    env and no `directories[]`. No YAML edit needed.
 
     Authorization routing:
-      - path under env.agent_scratch_target.path     → scratch zone
+      - path under env.agent_scratch_target.path      → scratch zone
         (env-implicit grant; path must be under
         `<scratch>/<project_name>/...` for multi-project isolation)
-      - path under env.agent_common_data_target.path → common_data zone
-        (env-implicit grant; shared across projects)
-      - anywhere else                                 → project_path zone
+      - path under env.agent_common_data_target.path  → common_data zone
+        (env-implicit grant; shared across projects; reference data only)
+      - path under env.container_upload_target.path   → container_upload zone
+        (env-implicit grant; where a staged `.sif` lands)
+      - path under env.agent_pipelines_target.path    → pipelines zone
+        (env-implicit grant; where a rendered pipeline runs and where its
+        run records are read back from)
+      - anywhere else                                  → project_path zone
         (longest-prefix match in project.directories[]; the matched
         entry MUST include `upload` in its permissions)
 
