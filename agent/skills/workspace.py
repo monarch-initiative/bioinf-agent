@@ -213,8 +213,8 @@ def common_data_dir() -> Path:
 
 def pipelines_dir() -> Path:
     """Rendered pipelines — one directory per pipeline (the typed record, the
-    stage scripts, main.nf/config when Nextflow was requested, the samplesheet
-    template, the explain page). An ARTIFACT: rendered from a sealed workflow,
+    stage scripts, main.nf and nextflow.config, the samplesheet template, the
+    explain page). An ARTIFACT: rendered from a sealed workflow,
     handed over as a directory, run without the agent."""
     return _zone(workspace_root() / "pipelines")
 

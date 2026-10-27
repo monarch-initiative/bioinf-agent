@@ -88,8 +88,8 @@ from experiment_report import render_index, write_report  # noqa: E402
 TIERS = ("C0", "C1", "C2", "C3")
 SHAREABLE = ("resources", "envs", "projects_access")
 CLEANABLE = ("images",)
-#: Repeats per code revision when a definition names none: three for a C1 scenario (the S
-#: and R scenarios are C1), two for the heavier tiers and for everything under hard/.
+#: Repeats per code revision when a definition names none: one per tier, two for
+#: everything under hard/.
 TIER_REPEATS = {"C0": 1, "C1": 1, "C2": 1, "C3": 1}
 HARD_DIR = "hard"
 HARD_REPEATS = 2

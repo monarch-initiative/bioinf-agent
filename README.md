@@ -10,8 +10,8 @@ An AI-driven bioinformatics assistant primarily designed to perform the followin
 - create data processing pipelines that leverage the previously installed and validated environments
 - intended to scale up bioinformatics workflows reliably via on rails agentic capabilities
 - work on your local machine should perform without issue, however only certain HPC features are supported. See below
-  - Globus connect for file transfers, scp as fallback
-  - SLURM, bash script as fallback
+  - Globus Connect for file transfers, or scp over the login node when Globus is not configured
+  - SLURM
   - Lmod (Lua-based environment module system)
     - apptainer module
     - nextflow module (will run nextflow through a slurm script, as nextflow itself is a management process)
@@ -147,7 +147,7 @@ Three ways to use the system (all use the same engine under the hood):
 
 - **A terminal** — `cd bioinf-agent && claude`, then simply ask/tell the agent about your 
   bioinformatics needs. Approve the `bioinf` server the first time it prompts.
-- **The VS Code extension** (recommended) — open the `bioinf_agent` folder and start a
+- **The VS Code extension** (recommended) — open the `bioinf-agent` folder and start a
   Claude Code session there. Identical to the terminal underneath; the IDE is just a
   window onto it.
 - **Headless, for scripting** — `claude -p "install samtools 1.21 and freeze it"
@@ -224,7 +224,7 @@ otherwise. (The last six rows need an external compute env defined in the config
 
 | Request | Default behaviour |
 |---|---|
-| *"Install samtools."* | Installs the latest version. Conda is tried first, and when the community already publishes a pre-built container for the tool, that image is used as-is (pinned by its digest) instead of building a new one. |
+| *"Install samtools."* | Installs the latest version. The authors' own published image is tried first, then conda; when the community already publishes a pre-built container for a conda package, that image is used as-is (pinned by its digest) instead of building a new one. |
 | *"Install samtools 1.21."* | Installs exactly 1.21. The report shows the version you asked for next to the version that actually went in, so a substitution can never slip by. |
 | *"Install samtools 1.21."* — when this machine solved that last month | Nothing is re-installed: the environment built last time is returned as-is, matched by its digest. You can also just ask *"what's already installed here?"* |
 | *"Install somalier 0.9.99."* — a version that was never released | Refused, and the refusal says where it looked. The system never swaps in a different version just to make the request succeed. |
@@ -234,7 +234,7 @@ otherwise. (The last six rows need an external compute env defined in the config
 | *"Install this tool from GitHub — it isn't packaged anywhere."* | Built from the authors' own repository, pinned to an exact commit — and every build command is recorded as either lifted verbatim from a named file of theirs or authored by the agent, so the recipe carries its own audit trail. |
 | *"Download the human reference genome"* | There is only so much the agent can infer, but will likely result in the latest release of the human genome (hg38.fa) from UCSC or Ensembl being downloaded to the common resources directory with a verifiable URL and traceable provenance. Alt contigs may or may not be included. More specific user supplied context and specification will allow the agent to make the proper decisions for your needs. | 
 | *"Install STAR and check that it actually works."* | The latest version will be installed and test read data run through it: a matching test dataset is picked from the bundled corpus and every input is checksummed. "Works" means every output exists, is non-empty, and the run exited cleanly — plus format-specific checks (BAM, VCF, …) where the format is known. |
-| *"Download the human reference genome onto the cluster."* | Here, the agent will do its best to avoid using the login node for downloading and or uploading. If a SLURM job manager is selected in the configuration menu, then the download runs through a script submitted to the scheduler (SLURM is only supported for now). If this is not configured, then the download will occur locally, and be pushed up to the cluster via Globus connect if it is configured, or the fallback is scp over the login node (checksum verified after the upload is complete). |
+| *"Download the human reference genome onto the cluster."* | The agent keeps the download off the login node: it runs as a job submitted to the scheduler (SLURM), so a compute node pulls the data straight onto the cluster and records its checksum. |
 | *"Upload these fastq files to the cluster."* | Copied up, then checksum-verified on the far side before the transfer is called done. Plain scp by default; if you configured Globus, every transfer uses it instead — and a really big one hands back a task id to check on later rather than blocking for hours. This is a generic request, but the more context here the better so the agent knows exactly what you need. |
 | *"Make sure this pipeline works on the cluster."* | The pipeline runs in the agent's own scratch area on the cluster — then the outputs are pulled back, validated, and the cluster-side proof goes on the record in the environment's directory. |
 | *"Run the pipeline over the data in my project directory."* | It writes a readable workflow plus a SLURM launcher, submits the job, saves a record of the submission, and gets out of the way. Ask later *"how's the job doing?"* for status, and *"grab the results"* to fetch the outputs back, verified. |
@@ -247,7 +247,7 @@ otherwise. (The last six rows need an external compute env defined in the config
 
 What the system does:
 
-- picks the best install route from a ranked ladder, conda first — and for a clean
+- picks the best install route from a ranked ladder, the authors' own image first, then conda — and for a clean
   conda tool like samtools it doesn't build anything: the community's pre-built
   container image is adopted, pinned by its digest
 - validates samtools **inside that exact image** — the check runs in the bytes that

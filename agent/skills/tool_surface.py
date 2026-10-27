@@ -52,9 +52,9 @@ from dataclasses import dataclass
 
 #: In CLAUDE.md's routing table. The agent's first-class menu — what it picks from.
 PRIMITIVE = "primitive"
-#: Named in the operator instructions (agent/operator_instructions.md) where it is used:
-#: the numbered protocol, the async pattern, the
-#: schema cheatsheet. Documented where it is used, so it needs no routing note.
+#: Named where it is used: the numbered protocol and the async pattern in the operator
+#: instructions (agent/operator_instructions.md), the schema cheatsheet in CLAUDE.md.
+#: Documented where it is used, so it needs no routing note.
 PROTOCOL = "protocol"
 #: Below the table. Reachable, sometimes correct, and easy to reach for WRONGLY — so it
 #: carries a generated guardrail in its own served description.
