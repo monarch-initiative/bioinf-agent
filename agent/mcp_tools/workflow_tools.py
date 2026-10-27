@@ -1213,9 +1213,21 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
 
 
 @mcp.tool()
-def discard_pipeline_draft(pipeline_id: str) -> dict:
+def discard_pipeline_draft(pipeline_id: str, step: int = 0) -> dict:
     """Delete a pipeline draft without finalizing. Use when you want to start
-    fresh with the same pipeline_name and don't want resume semantics."""
+    fresh with the same pipeline_name and don't want resume semantics.
+
+    `step=N` drops only step N instead, when that step FAILED (a recorded attempt you
+    abandon rather than retry; a draft seals as a failed run while it stays). A step
+    that ran clean is evidence and is never dropped — replace it with `step=N` on its
+    run primitive. Later steps are renumbered."""
+    if step:
+        r = _ms._pipeline_state.remove_step(pipeline_id, step)
+        if not r.get("ok"):
+            return refused("discard_draft.step_kept", success=False, pipeline_id=pipeline_id,
+                           step=step, error=r.get("reason", ""))
+        return proven("discard_draft.step_dropped", pipeline_id=pipeline_id, step=step,
+                      remaining_steps=r.get("remaining"))
     return _ms._pipeline_state.discard(pipeline_id)
 
 

@@ -374,6 +374,33 @@ class PipelineState:
         Returns the step number."""
         return self._add_to_step_list(pipeline_id, "install_steps", step_data, replace_step)
 
+    def remove_step(self, pipeline_id: str, step: int) -> dict:
+        """Drop pipeline_steps[step-1] when that step FAILED (rc != 0): a recorded attempt
+        the author abandons rather than retries. A step that ran clean is evidence and
+        stays — it is replaced through its run primitive (`step=N`), never dropped. Later
+        steps are renumbered so `step` stays 1-based and contiguous. Returns
+        `{ok, remaining}` or `{ok: False, reason}`."""
+        def _apply(draft):
+            steps = draft.get("pipeline_steps", [])
+            if step < 1 or step > len(steps):
+                return {"ok": False,
+                        "reason": f"the draft has {len(steps)} pipeline_steps; there is no step {step}"}
+            rc = steps[step - 1].get("returncode") if isinstance(steps[step - 1], dict) else None
+            if rc in (0, None):
+                return {"ok": False,
+                        "reason": (f"step {step} exited {rc}: a step that ran is evidence and is not "
+                                   f"dropped; re-run it with step={step} on its run primitive to "
+                                   f"replace it")}
+            del steps[step - 1]
+            for i, st in enumerate(steps, start=1):
+                if isinstance(st, dict):
+                    st["step"] = i
+            return {"ok": True, "remaining": len(steps)}
+        ok, hit = self._mutate(pipeline_id, _apply)
+        if not ok or hit is None:
+            return {"ok": False, "reason": f"unknown pipeline_id {pipeline_id!r}"}
+        return hit
+
     def _add_to_step_list(
         self,
         pipeline_id: str,

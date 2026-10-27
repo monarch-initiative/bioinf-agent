@@ -78,3 +78,23 @@ def test_a_missing_input_is_not_a_mount_to_invent(tmp_path):
     assert R._declared_dirs([str(tmp_path / "nowhere" / "x.txt"), "relative/x", 3]) == []
     (tmp_path / "d").mkdir()
     assert R._declared_dirs([str(tmp_path / "d" / "f.txt"), str(tmp_path / "d")]) == [(tmp_path / "d").resolve()]
+
+
+def test_a_move_of_a_mounted_directory_input_is_explained_and_the_failed_step_is_actionable(
+        _container_run, tmp_path, monkeypatch):
+    """A directory input is a bind mount point inside the container; `mv` on it fails
+    "Device or resource busy", which reads as the tool's own failure."""
+    from agent import mcp_server as m
+    moved = tmp_path / "release"
+    moved.mkdir()
+    (moved / "x.tsv").write_text("x")
+
+    def _busy(image, command, mounts=None, workdir=None, platform=None, timeout=None, **kw):
+        return {"returncode": 1, "stdout": "",
+                "stderr": f"mv: cannot move '{moved}' to '{tmp_path}/out/release': Device or resource busy",
+                "resource_usage": {"wall_seconds": 0.01, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0}}
+    monkeypatch.setattr(m._docker, "run_in_container", _busy)
+    out, _mounts = _container_run([{"path": str(moved)}], tmp_path / "out")
+    assert out["code"] == "run_container.step_failed"
+    assert "bind mount point" in out["hint"] and str(moved) in out["hint"]
+    assert "step=" in out["retry"] and "discard_pipeline_draft(" in out["retry"]
