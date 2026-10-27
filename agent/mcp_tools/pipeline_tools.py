@@ -120,6 +120,7 @@ def render_pipeline(sealed_workflow: str,
                     resources: Optional[dict[str, dict[str, Any]]] = None,
                     env: Optional[str] = None,
                     cohort: Optional[list[dict[str, Any]]] = None,
+                    resolve: Optional[dict[str, str]] = None,
                     overwrite: bool = False) -> dict:
     """**The PIPELINE layer.** Render a SEALED workflow as a runnable pipeline directory
     under ``<workspace>/pipelines/<name>/``. Executes nothing. The directory is a template:
@@ -164,6 +165,18 @@ def render_pipeline(sealed_workflow: str,
     stages publish flat under ``results/``. Per entry: ``stages`` / ``stage_names`` /
     ``shared`` as above.
 
+    **A sample named at run time.** ``resolve={"KG_DATE": "kg_version.txt"}`` declares that
+    the placeholder's value is looked up by the pipeline itself: the first line of that
+    file, as the stage that writes it wrote it, fills the placeholder for every later stage
+    (``${meta.kg_date}``) and names the sample, so ``results/<value>/`` is where that row
+    publishes; the samplesheet's row name is only the placeholder's stand-in. The stage that
+    writes the file runs on every launch, never from the cache, so the lookup is fresh (a
+    release that resolves ``latest`` to a date), and the stages after it re-run only when
+    the value changed. The placeholder is then no params.yaml entry. One value per
+    pipeline; refused when no command writes the file, when the stage that writes it is a
+    cohort stage or writes anything a later stage consumes as a file, or when a stage no
+    later than it uses the placeholder.
+
     **Refuses** (``refused``, with a remedy) when the seal cannot support the render: no
     how-to, no trial, a placeholder no trial binds, an artifact no sealed step was
     observed writing, a stage cut that mixes images, a fan-in not declared or naming an
@@ -174,8 +187,8 @@ def render_pipeline(sealed_workflow: str,
 
     Returns ``proven("pipeline.rendered")`` with ``dir``, ``page``, ``files``, the ``stages``
     (name, scope, commands, image digest, sized?), ``params``, ``samplesheet_columns``,
-    ``cohort_workflows`` and ``scripts`` when there are any, ``sif`` when an env was named,
-    and every derivation ``note``. Open ``page`` first.
+    ``cohort_workflows``, ``scripts`` and ``resolved`` when there are any, ``sif`` when an
+    env was named, and every derivation ``note``. Open ``page`` first.
     """
     from agent.skills.pipeline_record import (CohortRequest, LocalRuntime, PipelineDerivationError,
                                               derive_pipeline_record, sha256_of)
@@ -259,6 +272,13 @@ def render_pipeline(sealed_workflow: str,
             stages=cgroups, stage_names=list(entry["stage_names"]) if entry.get("stage_names") else None,
             shared=list(entry["shared"]) if entry.get("shared") else None))
 
+    if resolve is not None and (not isinstance(resolve, dict) or not resolve
+                                or not all(isinstance(k, str) and isinstance(v, str) and k and v
+                                           for k, v in resolve.items())):
+        return refused("pipeline.bad_resolve", success=False,
+                       error=f"resolve= must be {{PLACEHOLDER: <file the how-to writes>}}, got {resolve!r}",
+                       remedy='e.g. resolve={"KG_DATE": "kg_version.txt"}')
+
     pipeline_name = name or sealed_workflow
     out_dir = _workspace.pipelines_dir() / pipeline_name
     runtime = _local_runtime()
@@ -271,7 +291,8 @@ def render_pipeline(sealed_workflow: str,
             resources=resources, env_names=hints["env_names"], sif_paths=hints["sif_paths"],
             compute_env=env or None, modules=hints["modules"],
             local_runtime=LocalRuntime(**runtime) if runtime else None,
-            samplesheet_files=sheet_files, index_files=index_files, cohort=requests or None)
+            samplesheet_files=sheet_files, index_files=index_files, cohort=requests or None,
+            resolve=resolve or None)
         written = render_pipeline_dir(record, out_dir, env=env_block, overwrite=overwrite)
     except PipelineDerivationError as e:
         return refused(e.code, success=False, error=e.error, remedy=e.remedy,
@@ -293,6 +314,7 @@ def render_pipeline(sealed_workflow: str,
         cohort_workflows=[{"sealed_workflow": cw.sealed_workflow, "stages": cw.stages,
                            "collect": [c.model_dump() for c in cw.collect]} for cw in record.cohort_workflows],
         scripts=[f"bin/{sc.name}" for sc in record.scripts],
+        resolved=[r.model_dump() for r in record.resolved],
         compute_env=env or None, sif=sif,
         local_runtime=runtime,
         notes=record.notes,

@@ -19,12 +19,13 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, sealed_rnaseq_spec
+from pipeline_fixtures import DIGEST, GTF, INDEX, REQUEST_KEY, TEMPLATES, probe_spec, sealed_rnaseq_spec
 
 from agent.skills import pipeline_record as pr
 from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_HPC_NEXTFLOW, RUN_LOCAL, RUN_RECORD_BLOCK,
                                                    RUN_RECORD_CONFIG, RUN_STAMP_LINE,
                                                    RUN_RECORD_FILES, RUN_RECORDS, STRICT_MODE_LINE, TRACE_FIELDS,
+                                                   MANAGER_LOG_LINES, MANAGER_LOG_NAMES,
                                                    bound_commands, render_nextflow, run_lines)
 
 #: A compute env block the way projects_access.yaml declares one: SLURM policy,
@@ -471,13 +472,15 @@ class TestLaunchRecord:
         for name, _, defined_in in RUN_RECORDS:
             by_block = f"'{name}'" in wf                                         # the block writes it
             by_observer = f'file = "runs/${{params.run_stamp}}/{name}"' in files["nextflow.config"]
-            by_launcher = f'-log "runs/$RUN_STAMP/{name}"' in launcher
+            by_launcher = (f'-log "runs/$RUN_STAMP/{name}"' in launcher
+                           or (name in MANAGER_LOG_NAMES and "\n".join(MANAGER_LOG_LINES) in launcher))
             assert (by_block, by_observer, by_launcher) == (
                 defined_in == "params.yaml", defined_in == "nextflow.config", defined_in == "launcher.sh"), name
         assert RUN_RECORD_FILES == tuple(n for n, _, _ in RUN_RECORDS) == (
-            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log")
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log",
+            "<pipeline>-<job id>.out", "<pipeline>-<job id>.err")
         assert [d for _, _, d in RUN_RECORDS] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
-                                                  "nextflow.config", "launcher.sh"]
+                                                  "nextflow.config", "launcher.sh", "launcher.sh", "launcher.sh"]
 
     def test_the_two_blocks_are_one_standard_verbatim_in_every_rendered_pipeline(self):
         assert RUN_RECORD_BLOCK + "\n" == LAUNCH_RECORD                  # the blank line after it is the join's
@@ -490,8 +493,49 @@ class TestLaunchRecord:
     def test_the_launcher_comment_names_the_run_records(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
         assert ("# fresh run. Each run leaves its own runs/<timestamp>/ (params.json, samples.csv, trace.txt,\n"
-                "# report.html, timeline.html, nextflow.log), never overwritten; this job's .out file is\n"
-                "# the manager's log.\n") in sh
+                "# report.html, timeline.html, nextflow.log, this job's .out and .err), never overwritten.\n") in sh
+
+    def test_the_launcher_moves_slurms_logs_for_the_manager_under_the_run_records(self):
+        """SLURM opens %x-%j.out and %x-%j.err beside launcher.sh as the job starts, before
+        the launcher has taken the stamp. Once it has, the launcher moves both under
+        runs/<stamp>/, so the run's directory is the one place that documents the launch;
+        cluster_job_status reads the manager's log from there first."""
+        sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
+        assert "#SBATCH --output=%x-%j.out\n#SBATCH --error=%x-%j.err\n" in sh
+        block = "\n".join(MANAGER_LOG_LINES)
+        assert sh.index(RUN_STAMP_LINE) < sh.index(block) < sh.index(RUN_HPC_NEXTFLOW)
+        assert ("# SLURM opened this job's .out and .err beside launcher.sh, before the stamp existed. Moved\n"
+                "# under the run's records they keep filling: a rename leaves an open file in place.\n"
+                + block + "\n") in sh
+        assert MANAGER_LOG_LINES[0] == 'mkdir -p "runs/$RUN_STAMP"'      # before the move, before Nextflow
+        assert '"${SLURM_JOB_NAME:-}-${SLURM_JOB_ID:-}".{out,err}' in MANAGER_LOG_LINES[1], \
+            "the names follow the sbatch header's %x-%j; unset outside SLURM, not unbound"
+
+    def test_the_move_runs_under_strict_mode_and_the_open_log_keeps_filling(self, tmp_path):
+        """The block as bash runs it, under the launcher's strict mode: with SLURM's names set
+        and the files there, both move and a handle still open on the .out keeps writing
+        into the moved file; with the files elsewhere (an sbatch line that set --output),
+        or outside SLURM, nothing matches and the script goes on."""
+        script = "\n".join([STRICT_MODE_LINE, "RUN_STAMP=20260101_000000", *MANAGER_LOG_LINES, "echo DONE"])
+        slurm = {**os.environ, "SLURM_JOB_NAME": "demo", "SLURM_JOB_ID": "7"}
+        d = tmp_path / "launched"; d.mkdir()
+        (d / "demo-7.err").write_text("")
+        with open(d / "demo-7.out", "a") as log:
+            log.write("run records: runs/20260101_000000/\n"); log.flush()
+            r = subprocess.run(["bash", "-c", script], cwd=d, capture_output=True, text=True, env=slurm)
+            assert (r.returncode, r.stdout.strip()) == (0, "DONE"), r.stderr
+            log.write("later\n")
+        moved = d / "runs" / "20260101_000000"
+        assert sorted(p.name for p in moved.iterdir()) == ["demo-7.err", "demo-7.out"]
+        assert (moved / "demo-7.out").read_text() == "run records: runs/20260101_000000/\nlater\n"
+        assert not (d / "demo-7.out").exists() and not (d / "demo-7.err").exists()
+        elsewhere = tmp_path / "elsewhere"; elsewhere.mkdir()
+        r = subprocess.run(["bash", "-c", script], cwd=elsewhere, capture_output=True, text=True, env=slurm)
+        assert (r.returncode, r.stdout.strip()) == (0, "DONE"), r.stderr
+        no_slurm = {k: v for k, v in os.environ.items() if not k.startswith("SLURM_")}
+        r = subprocess.run(["bash", "-c", script], cwd=elsewhere, capture_output=True, text=True, env=no_slurm)
+        assert (r.returncode, r.stdout.strip()) == (0, "DONE"), r.stderr
+        assert list((elsewhere / "runs" / "20260101_000000").iterdir()) == []
 
     def test_the_launcher_says_what_the_dollar_at_forwards_right_above_the_line_that_uses_it(self):
         sh = render_nextflow(_record(), env=ENV)["launcher.sh"]
@@ -903,6 +947,7 @@ class TestLauncher:
                             "module load apptainer/1.5.0 nextflow/25.04.7",
                             'export NXF_HOME="$PWD/.nextflow_home"',
                             RUN_STAMP_LINE,
+                            *MANAGER_LOG_LINES,
                             RUN_HPC_NEXTFLOW]
         assert "cd " not in body and "RUN_ID" not in body and "cp " not in body
         assert "nextflow clean -f" in sh and "never cleaned for you" in sh
@@ -1276,3 +1321,188 @@ class TestDirectoryArtifacts:
         wf = _workflow_block(main)
         assert "FDR(LN.out.species_data.join(TRIALS.out.random_trials).join(PHENOLOGS.out.phenologs_results))" in wf
         assert "REPORT(LN.out.species_data.join(TRIALS.out.random_trials).join(FDR.out.phenologs_results))" in wf
+
+
+# ===========================================================================
+# A row that stages no path: a samplesheet of values only
+# ===========================================================================
+
+
+def _value_only_record():
+    """One how-to whose only per-sample input is a VALUE (a graph version), its files
+    from the image: the samplesheet has no path column, so the row's tuple would hold
+    the meta alone."""
+    def wrote(ti, run, subs):
+        return [f"{run}/release/{subs['GRAPH_VERSION']}/tables.parquet"]
+    spec = probe_spec(["build -p {OUTPUT_DIR} -g {GRAPH_VERSION} -n {N_TRIALS}"],
+                      [("kg_2026-03-06", {"GRAPH_VERSION": "2026-03-06", "N_TRIALS": "1"})],
+                      [{"name": "release", "files": ["release/*/*"]}],
+                      inputs=[{"name": "GRAPH_VERSION", "format": "value"}, {"name": "N_TRIALS", "format": "value"}],
+                      step_outputs=wrote)
+    return pr.derive_pipeline_record(spec, name="release", per_sample=["GRAPH_VERSION"])
+
+
+class TestValueOnlyRow:
+    def test_a_row_that_stages_no_path_takes_the_meta_alone(self):
+        """A Nextflow `tuple` needs two elements: with no path in the row the input is
+        `val(meta)`, never a one-element tuple the parser refuses."""
+        rec = _value_only_record()
+        assert [c.name for c in rec.samplesheet.columns] == ["sample", "graph_version"]
+        main = render_nextflow(rec)["main.nf"]
+        block = _process_block(main, "BUILD")
+        assert "    input:\n    val(meta)\n" in block
+        assert "tuple val(meta)\n" not in block
+        assert "tuple val(meta), path('release'), emit: release" in block
+        assert "build -p . -g ${meta.graph_version} -n ${params.n_trials}" in _script_lines(main, "BUILD")
+        assert "BUILD(rows)" in _workflow_block(main)
+
+
+@needs_nextflow
+class TestRealNextflowValueOnlyRow:
+    def test_the_value_only_row_parses_and_previews(self, tmp_path):
+        d = _write(render_nextflow(_value_only_record()), tmp_path / "pipe")
+        run = _nextflow(d, "run", "main.nf", "-profile", "local", "-params-file", "params.yaml", "-preview",
+                        "--run_stamp", "preview_local")
+        assert run.returncode == 0, run.stdout + run.stderr
+        assert "must define at least two elements" not in run.stdout + run.stderr
+
+
+# ===========================================================================
+# A sample named at run time (resolve=)
+# ===========================================================================
+
+
+def _resolved_record(**kw):
+    """A release how-to: the first command looks the graph version up and writes it,
+    the second builds under it. The version is looked up at run time (resolve=): the
+    first line of that file fills KG_DATE and names the sample."""
+    def wrote(ti, run, subs):
+        return ([f"{run}/kg_version.txt"] if ti == 0
+                else [f"{run}/release/{subs['KG_DATE']}/tables.parquet"])
+    spec = probe_spec(["resolve '{KG_VERSION}' > {OUTPUT_DIR}/kg_version.txt",
+                       "build -p {OUTPUT_DIR} -g {KG_DATE} -n {N_TRIALS}"],
+                      [("release", {"KG_VERSION": "latest", "KG_DATE": "2026-03-06", "N_TRIALS": "1"})],
+                      [{"name": "release", "files": ["release/*/*"]}],
+                      inputs=[{"name": "KG_VERSION", "format": "value"}, {"name": "KG_DATE", "format": "value"},
+                              {"name": "N_TRIALS", "format": "value"}],
+                      step_outputs=wrote)
+    return pr.derive_pipeline_record(spec, name="release", **{"resolve": {"KG_DATE": "kg_version.txt"}, **kw})
+
+
+class TestResolvedSample:
+    def test_the_value_is_read_from_the_file_and_names_the_sample(self):
+        rec = _resolved_record()
+        assert [r.model_dump() for r in rec.resolved] == [
+            {"placeholder": "KG_DATE", "artifact": "kg_version.txt", "stage": "RESOLVE"}]
+        assert rec.param("KG_DATE").kind == "resolved" and rec.param("KG_DATE").source == "resolve:kg_version.txt"
+        assert rec.param("KG_VERSION").kind == "shared" and rec.param("KG_VERSION").default == "latest"
+        assert [c.name for c in rec.samplesheet.columns] == ["sample"]
+        # the stage that looks the name up publishes nothing; what it wrote names the sample
+        assert [o.published for o in rec.stage("RESOLVE").outputs] == [False]
+        assert any("RESOLVE publishes nothing: kg_version.txt names the sample" in n for n in rec.notes)
+        assert rec.stage("BUILD").inputs[0].model_dump() == {
+            "name": "KG_DATE", "origin": "resolve", "from_stage": "RESOLVE", "artifact": "kg_version.txt"}
+        assert any(d.key == "resolve" and d.source == "caller" for d in rec.defaults)
+
+    def test_the_files_carry_the_lookup(self):
+        files = render_nextflow(_resolved_record())
+        main = files["main.nf"]
+        assert "publishDir" not in _process_block(main, "RESOLVE")
+        assert "tuple val(meta), path('kg_version.txt'), emit: kg_version_txt" in _process_block(main, "RESOLVE")
+        wf = _workflow_block(main)
+        assert "    RESOLVE(rows)\n" in wf
+        assert "    rows_named = RESOLVE.out.kg_version_txt\n" in wf
+        assert ("        .map { meta, f -> def v = f.text.readLines()[0]?.trim() ?: ''; "
+                "if (!(v ==~ /[A-Za-z0-9][A-Za-z0-9._-]*/)) error \"RESOLVE wrote '${v}' to kg_version.txt, "
+                "which cannot name results/<sample>/\"; meta + [sample: v, kg_date: v] }\n") in wf
+        assert "    BUILD(rows_named)\n" in wf
+        assert _script_lines(main, "BUILD") == ["build -p . -g ${meta.kg_date} -n ${params.n_trials}"]
+        assert "params.kg_date" not in main and "params.kg_version = 'latest'" in main
+        assert ("// KG_DATE — looked up at run time: the first line of kg_version.txt as RESOLVE writes it "
+                "(${meta.kg_date}); it names the sample, results/<sample>/, and is not a parameter.") in main
+        cfg = files["nextflow.config"]
+        assert ("    errorStrategy = 'finish'\n"
+                "    // RESOLVE looks the sample's name up (kg_version.txt): it runs on every\n"
+                "    // launch, never from the cache, so a new value is seen; the stages after it re-run\n"
+                "    // only when the value changed.\n"
+                "    withName: 'RESOLVE' {\n"
+                "        cache = false\n"
+                "    }\n"
+                "}\n") in cfg
+        params = files["params.yaml"]
+        assert "kg_date:" not in params and "kg_version: latest\n" in params
+        assert "# KG_DATE — looked up at run time by RESOLVE, the first line of kg_version.txt; " in params
+        # the rendered commands still match the sealed how-to, binding for binding
+        from agent.skills.pipeline_render import render_pipeline_files
+        render_pipeline_files(_resolved_record())
+
+    @pytest.mark.parametrize("resolve, code", [
+        ({"NOT_A_SLOT": "kg_version.txt"}, "pipeline.resolve_unknown_placeholder"),
+        ({"KG_DATE": "nothing.txt"}, "pipeline.resolve_unknown_artifact"),
+        ({"KG_DATE": "release/x"}, "pipeline.resolve_artifact_name"),
+        ({"KG_VERSION": "kg_version.txt"}, "pipeline.resolve_used_before"),
+        ({"KG_DATE": "kg_version.txt", "N_TRIALS": "kg_version.txt"}, "pipeline.resolve_one"),
+    ])
+    def test_a_lookup_the_seal_cannot_support_is_refused(self, resolve, code):
+        with pytest.raises(pr.PipelineDerivationError) as e:
+            _resolved_record(resolve=resolve)
+        assert e.value.code == code
+
+    def test_a_placeholder_cannot_be_both_looked_up_and_a_column(self):
+        with pytest.raises(pr.PipelineDerivationError) as e:
+            _resolved_record(per_sample=["KG_DATE"])
+        assert e.value.code == "pipeline.resolve_kind"
+
+    def test_the_stage_that_names_the_sample_hands_on_no_files(self):
+        """A later stage consuming a file the lookup stage wrote would join a renamed
+        meta with the row's own; refused, with the move that fixes it."""
+        def wrote(ti, run, subs):
+            return ([f"{run}/kg_version.txt", f"{run}/kg.json"] if ti == 0 else [f"{run}/out.txt"])
+        spec = probe_spec(["resolve '{KG_VERSION}' > {OUTPUT_DIR}/kg_version.txt",
+                           "build -g {KG_DATE} {OUTPUT_DIR}/kg.json > {OUTPUT_DIR}/out.txt"],
+                          [("release", {"KG_VERSION": "latest", "KG_DATE": "2026-03-06"})],
+                          [{"name": "out", "files": ["out.txt"]}],
+                          inputs=[{"name": "KG_VERSION", "format": "value"}, {"name": "KG_DATE", "format": "value"}],
+                          step_outputs=wrote)
+        with pytest.raises(pr.PipelineDerivationError) as e:
+            pr.derive_pipeline_record(spec, name="release", resolve={"KG_DATE": "kg_version.txt"})
+        assert e.value.code == "pipeline.resolve_stage_consumed"
+
+
+@needs_nextflow
+class TestRealNextflowResolvedSample:
+    def test_the_lookup_parses_and_previews(self, tmp_path):
+        d = _write(render_nextflow(_resolved_record()), tmp_path / "pipe")
+        run = _nextflow(d, "run", "main.nf", "-profile", "local", "-params-file", "params.yaml", "-preview",
+                        "--run_stamp", "preview_local")
+        assert run.returncode == 0, run.stdout + run.stderr
+        cfg = _nextflow(d, "config", "-flat", "-profile", "local")
+        assert "process.withName:RESOLVE.cache = false" in cfg.stdout.replace("'", ""), cfg.stdout
+
+
+class TestDeclaredValueFormat:
+    """`format: value` is authoritative: a URL, a bucket address or a path inside the
+    image is passed as text, never staged as a file; without the format a slash still
+    makes the value a path to stage."""
+
+    @staticmethod
+    def _rec(fmt):
+        spec = probe_spec(["fetch -r {RELEASE_LIST} -o {OUTPUT_DIR}/list.json"],
+                          [("one", {"RELEASE_LIST": "https://example.org/alpha/releases.json"})],
+                          [{"name": "list", "files": ["list.json"]}],
+                          inputs=[{"name": "RELEASE_LIST", **({"format": fmt} if fmt else {})}],
+                          step_outputs=lambda ti, run, subs: [f"{run}/list.json"])
+        return pr.derive_pipeline_record(spec, name="fetch")
+
+    def test_a_declared_value_is_passed_as_text(self):
+        rec = self._rec("value")
+        assert rec.param("RELEASE_LIST").value_kind == "value"
+        main = render_nextflow(rec)["main.nf"]
+        assert _script_lines(main, "FETCH") == ["fetch -r ${params.release_list} -o list.json"]
+        assert "file(params.release_list)" not in main
+        assert "params.release_list = 'https://example.org/alpha/releases.json'" in main
+
+    def test_without_the_format_a_slash_is_a_path_to_stage(self):
+        rec = self._rec(None)
+        assert rec.param("RELEASE_LIST").value_kind == "path"
+        assert "file(params.release_list)" in _workflow_block(render_nextflow(rec)["main.nf"])

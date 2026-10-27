@@ -428,6 +428,7 @@ def test_the_run_dir_probe_reads_what_the_cluster_holds_and_the_rewrite_is_exact
     env = {"host": "hpc.example.invalid", "user": "u"}
     state = rp._remote_run_dir_state(env, str(run), ["main.nf", "nextflow.config"], timeout=10)
     assert state["exists"] and state["missing"] == ["nextflow.config"] and state["live"] == ["77 PENDING"]
+    assert state["entries"] == ["launcher.sh", "main.nf", "params.yaml"]
     assert state["texts"]["params.yaml"] == (run / "params.yaml").read_text()
     assert state["texts"]["launcher.sh"] == "#SBATCH --time=01:00:00"
 
@@ -435,6 +436,10 @@ def test_the_run_dir_probe_reads_what_the_cluster_holds_and_the_rewrite_is_exact
     rp._write_remote(env, str(run), texts, timeout=10)
     assert {rel: (run / rel).read_text() for rel in texts} == texts
     assert not list(run.glob("*.tmp"))
+    # a refreshed script lands in a directory that was not there, executable as rendered
+    rp._write_remote(env, str(run), {"bin/x.sh": "#!/bin/sh\necho x\n"}, timeout=10, modes={"bin/x.sh": 0o755})
+    assert (run / "bin" / "x.sh").read_text() == "#!/bin/sh\necho x\n"
+    assert (run / "bin" / "x.sh").stat().st_mode & 0o777 == 0o755
 
 
 def test_a_value_reaches_nextflow_as_written():

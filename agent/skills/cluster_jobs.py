@@ -375,7 +375,8 @@ def _progress(status: dict) -> tuple:
 # ---------------------------------------------------------------------------
 #
 # The manager job prints `run records: runs/<stamp>/` to its SLURM log
-# (`<pipeline>-<jobid>.out` in the launch directory) before any task starts,
+# (`<pipeline>-<jobid>.out`: the launcher moves it under runs/<stamp>/ once the stamp
+# exists; it is beside launcher.sh until then, and in a run of an older render) before any task starts,
 # nextflow.config writes `runs/<stamp>/trace.txt` as tasks finish, and Nextflow's
 # own log (`runs/<stamp>/nextflow.log`) names each task's SLURM job id the moment
 # it submits it. One ssh hop reads all three; one sacct call then asks after the
@@ -392,7 +393,8 @@ TASK_DONE, TASK_FAILED = frozenset({"COMPLETED", "CACHED"}), "FAILED"
 
 def _build_pipeline_run_cmd(run_dir: str, job_id: str) -> str:
     q = shlex.quote
-    script = (_SEEN_FN + f'out=$(ls -1 {q(run_dir)}/*-{job_id}.out 2>/dev/null | head -n 1); '
+    script = (_SEEN_FN + f'out=$(ls -1 {q(run_dir)}/runs/*/*-{job_id}.out 2>/dev/null | head -n 1); '
+              f'if [ -z "$out" ]; then out=$(ls -1 {q(run_dir)}/*-{job_id}.out 2>/dev/null | head -n 1); fi; '
               f'if [ -z "$out" ]; then echo NOOUT; exit 0; fi; '
               f'echo "OUT=$out"; '
               # the stamp from the last line main.nf opens with `run records:` (a requeued
@@ -558,7 +560,8 @@ def _read_pipeline_run(env: dict, run_dir: str, job_id: str, manager_rows: list[
                        "the directory it was launched in" if manager_rows else
                        "the scheduler holds no record of the job either: check the job id and run_dir")
         return {"run_dir": run_dir, "verdict": verdict, "tasks": [], "task_summary": {},
-                "note": f"no manager log (<pipeline>-{job_id}.out) in {run_dir}: {note}"}
+                "note": f"no manager log (<pipeline>-{job_id}.out) under {run_dir}/runs/ or beside its "
+                        f"launcher.sh: {note}"}
     stamp = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("STAMP=")), "")
     out_log = next((ln.split("=", 1)[1] for ln in lines if ln.startswith("OUT=")), "")
     trace_rows = _parse_trace("\n".join(_block(lines, "TRACE")))

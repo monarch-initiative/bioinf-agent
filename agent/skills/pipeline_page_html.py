@@ -303,7 +303,19 @@ def picture_layout(record: PipelineRecord) -> _Layout:
                + (f" — {p.description}" if p.description else ""))
         params.append(_Node(id=f"p:{p.name}", kind="param", name=p.name, line1=_key(p),
                             line2=p.value_kind, tooltip=tip))
+    looked_up: list[_Node] = []
+    for p in record.params:
+        if p.kind != "resolved":
+            continue
+        r = next(x for x in record.resolved if x.placeholder == p.name)
+        looked_up.append(_Node(id=f"p:{p.name}", kind="param", name=p.name, line1=p.name.lower(),
+                               line2="looked up at run time",
+                               tooltip=f"{p.name} · the first line of {r.artifact} as {r.stage} writes it, on every "
+                                       f"launch; it names results/<sample>/ and is no params.yaml entry"
+                                       + (f" — {p.description}" if p.description else "")))
     groups: list[tuple[str, list[_Node]]] = [("samples.csv", cols), ("params.yaml", params)]
+    if looked_up:
+        groups.append(("looked up at run time", looked_up))
     left_nodes = [n for _, ns in groups for n in ns]
     left_by_name = {n.name: n for n in left_nodes}
     left_w = max([_node_w(n) for n in left_nodes]
@@ -330,7 +342,8 @@ def picture_layout(record: PipelineRecord) -> _Layout:
     collect_pairs: set[tuple[str, str]] = set()
     for st in record.stages:
         for i in st.inputs:
-            if i.origin in ("stage", "collect") and i.from_stage:
+            if i.origin in ("stage", "collect", "resolve") and i.from_stage:
+                # a looked-up value flows as the file that holds it (resolve=)
                 pair_artifacts.setdefault((i.from_stage, st.name), []).append(i.artifact or i.name)
                 if i.origin == "collect":
                     collect_pairs.add((i.from_stage, st.name))
@@ -429,7 +442,7 @@ def picture_layout(record: PipelineRecord) -> _Layout:
     # ── edges: column / param → stage (never the row key) ────────────────
     for st in record.stages:
         s = stage_node[st.name]
-        ins = [i for i in st.inputs if i.origin in ("param", "column")
+        ins = [i for i in st.inputs if i.origin in ("param", "column", "resolve")
                and i.name in left_by_name and i.name != key.placeholder]
         if any(i.origin == "samplesheet" for i in st.inputs):
             # a stage reading the sheet itself is wired from the columns it reads through it

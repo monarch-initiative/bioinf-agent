@@ -18,11 +18,18 @@ as a bare success; so does a value the seal's self-test never ran the how-to wit
 (`value_check`).
 
 A run directory is Nextflow's launch directory, and `-resume` only works from the same
-one. The first launch creates it (on a cluster, as one transfer of the whole directory);
-a second call naming a `run_dir` that holds all of this pipeline launches there again
-without re-copying (the samples.csv in place is the one used). Any other existing
-directory is refused: one holding a different render, one holding part of this one, or
-one holding no run at all.
+one. The first launch creates it (on a cluster, as one transfer of the whole directory),
+or fills one that exists and holds nothing the launch writes — the project's own
+directory, or an empty one made by hand — leaving its other files alone (on a cluster
+the transfer lands under a staging name inside it and is moved into place by name);
+a second call naming a `run_dir` that holds this pipeline launches there again without
+re-copying (the samples.csv in place is the one used); when the directory holds an
+EARLIER render of it — a script fixed, a stage re-sized — the files the render changed
+are rewritten first (never params.yaml, launcher.sh or samples.csv, the run's own), so
+`-resume` re-runs only the stages that read a changed file. Any other existing directory
+is refused: one holding a different pipeline, one holding part of this one, one holding a
+file or directory this launch would write, or one whose hand-edited file the new render
+would write over.
 """
 from __future__ import annotations
 
@@ -46,7 +53,7 @@ from agent.models import core_data
 from agent.skills import cluster_jobs, compute_access, data_pins, stage_apptainer, submit_workflow, transfer, workspace
 from agent.skills.container_build import image_present as _docker_image_present
 from agent.skills.outcomes import proven, refused, broke, degraded, loop
-from agent.skills.pipeline_record import _SAMPLE_NAMES, PipelineRecord, load_pipeline_record
+from agent.skills.pipeline_record import _SAMPLE_NAMES, PipelineRecord, load_pipeline_record, record_identity
 from agent.skills.pipeline_render import (MANIFEST_PATH, RECORD_PATH, SAMPLESHEET_FILENAME,
                                           _edited_since_render, parse_manifest)
 from agent.skills.pipeline_render_nextflow import OUTDIR_PARAM, RUN_LOCAL, SAMPLESHEET_PARAM, params_yaml_line
@@ -62,9 +69,18 @@ _SAMPLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _PARAMS_FILE = "params.yaml"
 _LAUNCHER = "launcher.sh"
 #: What a launch reads of a run directory beyond which files are there: the manifest
-#: that names its render, the two files a launch's params= and walltime= go into, and
-#: the samplesheet a re-launch runs.
-_RUN_TEXTS = (MANIFEST_PATH, _PARAMS_FILE, _LAUNCHER, SAMPLESHEET_FILENAME)
+#: that names its render, the record that names its pipeline, the two files a launch's
+#: params= and walltime= go into, and the samplesheet a re-launch runs.
+_RUN_TEXTS = (MANIFEST_PATH, RECORD_PATH, _PARAMS_FILE, _LAUNCHER, SAMPLESHEET_FILENAME)
+#: base64 sent per ssh hop by `_write_remote`: under the one-argument limit of a Linux
+#: command line (128 KiB) with room for the paths around it.
+_WRITE_HOP_BYTES = 96_000
+#: What a launch makes in a run directory beside the files it carries: Nextflow's own
+#: directories, the launcher's, and the published results (the rendered default).
+_LAUNCH_MAKES = ("work", "runs", ".nextflow", ".nextflow_home", OUTDIR_PARAM[1])
+#: Where a first launch into a directory that already exists lands on the cluster before
+#: its files are moved into place by name.
+_INCOMING = ".incoming"
 _REMOTE_CHECK_CHUNK = 400
 
 
@@ -176,7 +192,36 @@ def _with_params(text: str, overrides: Optional[Mapping], where: str) -> tuple[s
     return "".join(lines), _parse_params("".join(lines), where)
 
 
+def _params_with_new_keys(text: str, template: str, where: str) -> tuple[str, list[str]]:
+    """`text` (a run directory's params.yaml) with every key the rendered `template` has
+    and it lacks appended as the template writes it, the comment above it included, so
+    a run directory holding an earlier render takes a parameter the new render added;
+    returns the text and the keys added. The run's own values are never touched."""
+    have = set(_parse_params(text, where))
+    lines = template.splitlines()
+    added: list[str] = []
+    blocks: list[str] = []
+    for i, line in enumerate(lines):
+        if line.startswith("#") or not line.strip() or ":" not in line:
+            continue
+        key = line.split(":", 1)[0]
+        if key in have:
+            continue
+        comment = [lines[i - 1]] if i and lines[i - 1].startswith("#") else []
+        blocks.append("\n".join(comment + [line]))
+        added.append(key)
+    if not added:
+        return text, []
+    return text.rstrip("\n") + "\n" + "\n".join(blocks) + "\n", added
+
+
 _TIME_LINE_RE = re.compile(r"(?m)^#SBATCH --time=(\S*)")
+
+
+def _launcher_args(over: Mapping[str, str]) -> list[str]:
+    """The launcher's command line for this launch's values: `--key value` pairs, which
+    launcher.sh forwards to Nextflow, where they win over params.yaml for that run."""
+    return [a for k, v in over.items() for a in (f"--{k}", v)]
 
 
 def _with_walltime(launcher: str, walltime: str, where: str) -> str:
@@ -624,14 +669,16 @@ def _disclose(result: dict, reference_check: Mapping, value_check: Mapping) -> d
 # ---------------------------------------------------------------------------
 
 def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: int) -> dict:
-    """What `run_dir` holds on the cluster: whether it exists, which of the carried
-    files `rels` it lacks and the sha256 of those it holds, whether it holds a
-    samplesheet, and the text of each of `_RUN_TEXTS` there ("" when absent). One
-    ssh hop."""
+    """What `run_dir` holds on the cluster: whether it exists, the names at its top,
+    which of the carried files `rels` it lacks and the sha256 of those it holds, whether
+    it holds a samplesheet, and the text of each of `_RUN_TEXTS` there ("" when absent).
+    One ssh hop."""
     q = shlex.quote
     script = (_SEEN_FN + f'seen {q(run_dir)} && echo EXISTS=1 || echo EXISTS=0; '
               + "".join(f'seen {q(run_dir + "/" + rel)} || echo {q("MISSING=" + rel)}; ' for rel in rels)
               + f'seen {q(run_dir + "/" + SAMPLESHEET_FILENAME)} && echo SHEET=1 || echo SHEET=0; '
+              # what else is there: a first launch may fill a directory holding nothing it writes
+              + f"( cd {q(run_dir)} 2>/dev/null && ls -A1 | sed 's/^/ENTRY /' ); "
               # `echo` after `cat` ends a file that has no last newline before the END line
               + "".join(f'echo {q("BEGIN " + rel)}; cat {q(run_dir + "/" + rel)} 2>/dev/null; echo; '
                         f'echo {q("END " + rel)}; ' for rel in _RUN_TEXTS)
@@ -656,12 +703,14 @@ def _remote_run_dir_state(env: dict, run_dir: str, rels: list[str], *, timeout: 
                                    f"a launch must not start over one",
                              remedy="launch again in a minute; `squeue -u $USER` on the login node says "
                                     "whether the scheduler answers"))
+    head = lines[:lines.index(f"BEGIN {_RUN_TEXTS[0]}")]     # the markers come before any file's text
     texts = {}
     for rel in _RUN_TEXTS:
         a, b = lines.index(f"BEGIN {rel}"), lines.index(f"END {rel}")
         texts[rel] = "\n".join(lines[a + 1:b])
     sums = {m[2]: m[1] for m in (re.fullmatch(r"SUM ([0-9a-f]{64})  (.+)", ln) for ln in lines) if m}
     return {"exists": "EXISTS=1" in lines,
+            "entries": [ln[len("ENTRY "):] for ln in head if ln.startswith("ENTRY ")],
             "missing": [ln[len("MISSING="):] for ln in lines if ln.startswith("MISSING=")],
             "samplesheet": "SHEET=1" in lines, "texts": texts, "sums": sums,
             "live": live}
@@ -675,6 +724,7 @@ def _local_run_dir_state(run_dir: Path, rels: list[str], jobs: list[dict]) -> di
     live = [f"{j.get('job_id')} running" for j in jobs
             if j.get("working_dir") and Path(j["working_dir"]).resolve() == here]
     return {"exists": run_dir.exists(), "missing": [rel for rel in rels if not (run_dir / rel).is_file()],
+            "entries": sorted(p.name for p in run_dir.iterdir()) if run_dir.is_dir() else [],
             "samplesheet": (run_dir / SAMPLESHEET_FILENAME).is_file(),
             "texts": {rel: (run_dir / rel).read_text() if (run_dir / rel).is_file() else ""
                       for rel in _RUN_TEXTS},
@@ -683,31 +733,58 @@ def _local_run_dir_state(run_dir: Path, rels: list[str], jobs: list[dict]) -> di
             "live": live}
 
 
-def _write_remote(env: dict, run_dir: str, texts: Mapping[str, str], *, timeout: int) -> None:
-    """Rewrite files of a run directory on the cluster, in one ssh hop: each sent as
-    base64 (one line, so any login shell passes it intact), written beside the file
-    and moved over it, so a failed write never leaves a file half written."""
+def _write_remote(env: dict, run_dir: str, texts: Mapping[str, str], *, timeout: int,
+                  modes: Optional[Mapping[str, int]] = None) -> None:
+    """Write files of a run directory on the cluster: each sent as base64 (one line, so
+    any login shell passes it intact), written beside the file and moved over it, so a
+    failed write never leaves a file half written; a file in `modes` gets those
+    permission bits (a script that must stay executable). Files travel in ssh hops of
+    at most `_WRITE_HOP_BYTES` of base64 each."""
     if not texts:
         return
     q = shlex.quote
-    script = " && ".join(
-        f"printf %s {base64.b64encode(text.encode()).decode()} | base64 -d > {q(path + '.tmp')} && "
-        f"mv {q(path + '.tmp')} {q(path)} && echo {q('WROTE=' + rel)}"
-        for rel, text in texts.items() for path in [f"{run_dir}/{rel}"])
-    res = subprocess.run(_ssh_argv(env, _login_shell(script)), capture_output=True, text=True, timeout=timeout)
-    if res.returncode != 0:
-        wrote = [ln[len("WROTE="):] for ln in (res.stdout or "").splitlines() if ln.startswith("WROTE=")]
-        raise _Refusal(broke("run_production.config_write_failed",
-                             error=f"could not rewrite {sorted(set(texts) - set(wrote))} in {run_dir} "
-                                   f"(rc={res.returncode}): {(res.stderr or '').strip()[:300]}",
-                             rewritten=wrote))
+    hops: list[list[str]] = [[]]
+    size = 0
+    for rel, text in texts.items():
+        path = f"{run_dir}/{rel}"
+        b64 = base64.b64encode(text.encode()).decode()
+        if hops[-1] and size + len(b64) > _WRITE_HOP_BYTES:
+            hops.append([])
+            size = 0
+        size += len(b64)
+        chmod = f" && chmod {modes[rel]:o} {q(path)}" if modes and rel in modes else ""
+        hops[-1].append(f"mkdir -p {q(path.rsplit('/', 1)[0])} && printf %s {b64} | base64 -d > {q(path + '.tmp')} "
+                        f"&& mv {q(path + '.tmp')} {q(path)}{chmod} && echo {q('WROTE=' + rel)}")
+    wrote: list[str] = []
+    for hop in hops:
+        res = subprocess.run(_ssh_argv(env, _login_shell(" && ".join(hop))), capture_output=True, text=True,
+                             timeout=timeout)
+        wrote += [ln[len("WROTE="):] for ln in (res.stdout or "").splitlines() if ln.startswith("WROTE=")]
+        if res.returncode != 0:
+            raise _Refusal(broke("run_production.config_write_failed",
+                                 error=f"could not rewrite {sorted(set(texts) - set(wrote))} in {run_dir} "
+                                       f"(rc={res.returncode}): {(res.stderr or '').strip()[:300]}",
+                                 rewritten=wrote))
 
 
-def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: str, local: bool) -> bool:
-    """True when `run_dir` already holds all of THIS render (a re-launch, nothing
-    copied); False when it does not exist yet (the first launch creates it). Anything
-    else is refused, so a launch never writes over files it did not put there, and
-    never starts in a directory its first copy did not finish."""
+def _launch_names(rels: Collection[str]) -> set[str]:
+    """The top-level names a launch writes in a run directory: the carried files and the
+    directories holding them, the samplesheet, what Nextflow and the launcher make, and
+    the staging name a cluster launch lands under."""
+    return {rel.split("/", 1)[0] for rel in rels} | {SAMPLESHEET_FILENAME, _INCOMING, *_LAUNCH_MAKES}
+
+
+def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: str, local: bool,
+                     names: Collection[str], identity: tuple[str, str]) -> tuple[bool, list[str]]:
+    """(reused, refresh). reused is True when `run_dir` already holds a run of THIS
+    pipeline (`identity`: its name and sealed workflow): of this render, a re-launch with
+    nothing copied; or of an earlier render of it, and then `refresh` lists the carried
+    files the launch rewrites from this render before resuming — never params.yaml,
+    launcher.sh or samples.csv, which are the run's own. reused is False when the
+    directory does not exist yet, or exists holding none of `names` (the first launch
+    fills it, its other files untouched). Anything else is refused, so a launch never
+    writes over files it did not put there, and never starts in a directory its first
+    copy did not finish."""
     manifest = state["texts"][MANIFEST_PATH].strip()
     if state["live"]:
         job = state["live"][0].split()[0]
@@ -719,22 +796,50 @@ def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: st
                               f"wait for it (cluster_job_status(…, job_id={job!r}, wait_s=300)) or cancel it, "
                               f"then launch again"))
     if "main.nf" in state["missing"]:
-        if state["exists"]:
+        taken = sorted(set(state.get("entries", ())) & set(names)) if state["exists"] else []
+        if _INCOMING in taken:
             raise _refuse("run_production.run_dir_exists",
-                          f"{run_dir} already exists and holds no run of this pipeline",
-                          remedy="name a run directory that does not exist yet: the first launch creates it")
+                          f"{run_dir} holds {_INCOMING}, left by a launch whose copy did not finish",
+                          remedy=f"remove {run_dir}/{_INCOMING} (nothing of it was moved into place), "
+                                 f"then launch again")
+        if taken:
+            raise _refuse("run_production.run_dir_exists",
+                          f"{run_dir} already holds {taken}, which this launch writes",
+                          remedy="move them aside, or name a run directory the launch may fill: one that "
+                                 "does not exist yet, or one holding nothing the launch writes")
         if not samplesheet:
             raise _refuse("run_production.samplesheet_required",
                           f"{run_dir} holds no run yet and no samplesheet was given",
                           remedy="samplesheet=<local CSV>: one row per sample; it becomes the run's samples.csv")
-        return False
+        return False, []
+    refresh: list[str] = []
     if manifest and manifest != ours.strip():
-        raise _refuse("run_production.run_dir_holds_another_render",
-                      f"{run_dir} already holds a pipeline that is not this render",
-                      remedy="use a new run directory, or re-render the pipeline that lives there")
-    if state["missing"]:
+        try:
+            theirs = parse_manifest(manifest)
+        except ValueError:
+            theirs = None
+        if theirs is None or record_identity(state["texts"].get(RECORD_PATH, "")) != tuple(identity):
+            raise _refuse("run_production.run_dir_holds_another_render",
+                          f"{run_dir} already holds a pipeline that is not this one",
+                          remedy="use a new run directory, or re-render the pipeline that lives there")
+        # An earlier render of this pipeline: what this render changed is rewritten, and
+        # -resume re-runs only the stages that read a changed file. A file edited by hand
+        # since its render is never written over.
+        own = {_PARAMS_FILE, _LAUNCHER, SAMPLESHEET_FILENAME}
+        refresh = sorted(rel for rel, digest in parse_manifest(ours).items()
+                         if rel not in own and state["sums"].get(rel) != digest) + [MANIFEST_PATH]
+        edited = sorted(rel for rel in refresh
+                        if rel in theirs and rel in state["sums"] and state["sums"][rel] != theirs[rel])
+        if edited:
+            raise _refuse("run_production.run_dir_edited",
+                          f"{run_dir} holds {edited}, edited by hand since their render, which this "
+                          f"render would write over",
+                          remedy="put them back as rendered or move them aside, then launch again; "
+                                 "or carry the edit into the render")
+    missing = [rel for rel in state["missing"] if rel not in refresh]
+    if missing:
         raise _refuse("run_production.run_dir_incomplete",
-                      f"{run_dir} holds part of this pipeline: it lacks {state['missing'][:5]}",
+                      f"{run_dir} holds part of this pipeline: it lacks {missing[:5]}",
                       remedy="launch into a new run directory: a run directory holding part of a "
                              "pipeline is not one a launch can resume")
     if samplesheet:
@@ -746,7 +851,7 @@ def _reuse_or_refuse(state: Mapping, *, ours: str, run_dir: str, samplesheet: st
                       f"{run_dir} holds the pipeline but no {SAMPLESHEET_FILENAME}",
                       remedy="samplesheet=<local CSV> cannot be added to a directory that already holds a run; "
                              "put one there by hand, or use a new run directory")
-    return True
+    return True, refresh
 
 
 def _place_run_files(pdir: Path, rels: list[str], samplesheet: str, run_dir: Path,
@@ -766,43 +871,83 @@ def _place_run_files(pdir: Path, rels: list[str], samplesheet: str, run_dir: Pat
 
 def _materialize_remote(*, project_name: str, env: dict, env_name: str, run_dir: str, pdir: Path,
                         rels: list[str], samplesheet: str, reused: bool, changed: Mapping[str, str],
-                        access_path: Optional[str], timeout: int) -> dict:
+                        refresh: list[str], held: Optional[list[str]], access_path: Optional[str],
+                        timeout: int) -> dict:
+    """Put the run in `run_dir` on the cluster. A re-launch rewrites `changed` in place,
+    and `refresh` (the files an earlier render there lacks or had differently) from the
+    rendered directory, each with its permission bits. A
+    first launch assembles the run directory here and sends it as ONE transfer, which
+    creates it on the cluster, and only there, under the path the project is authorized
+    to write; when the directory is there already (`held` is what it holds, none of it a
+    name the launch writes) the transfer lands under `_INCOMING` inside it and the run's
+    files are then moved into place by name, never over anything."""
     if reused:
-        _write_remote(env, run_dir, changed, timeout=timeout)
-        return {"reused": True, "files_uploaded": [], "files_rewritten": sorted(changed)}
-    # The run directory is assembled here and sent as ONE transfer, which creates it on
-    # the cluster, and only there, under the path the project is authorized to write.
+        _write_remote(env, run_dir, {**{rel: (pdir / rel).read_text() for rel in refresh}, **changed},
+                      modes={rel: (pdir / rel).stat().st_mode & 0o777 for rel in refresh}, timeout=timeout)
+        return {"reused": True, "files_uploaded": [], "files_rewritten": sorted(changed),
+                **({"render_refreshed": list(refresh)} if refresh else {})}
+    into = f"{run_dir}/{_INCOMING}" if held is not None else run_dir
     staged = Path(tempfile.mkdtemp(prefix="run_", dir=transfer.staging_dir("cluster_render_staging")))
     tree = staged / "run"     # made with the usual mode; mkdtemp's 0700 would travel with `scp -p`
     placed = _place_run_files(pdir, rels, samplesheet, tree, changed)
     up = transfer.upload(project_name=project_name, compute_env_name=env_name, local_path=str(tree),
-                         remote_abs_path=run_dir, access_path=access_path, timeout=timeout)
+                         remote_abs_path=into, access_path=access_path, timeout=timeout)
     if up.get("outcome") == "loop":
         # The staged copy stays: the transfer may still be reading it.
+        then = (f"remove {into} (the copy, arrived late) and launch again with the same run_dir and samplesheet"
+                if held is not None else "launch again with the same run_dir and no samplesheet")
         raise _Refusal(loop("run_production.upload_still_running",
                             error=f"the run directory is not yet in place, so nothing was launched: {up['error']}",
                             staged=str(tree), task_id=up.get("task_id"),
                             remedy=f"{transfer.status_call(project_name, env_name, up.get('task_id'))} (it puts "
-                                   f"the directory in place, or says why it cannot), then launch again with "
-                                   f"the same run_dir and no samplesheet"))
+                                   f"the directory in place, or says why it cannot), then {then}"))
     if "error" in up:
         shutil.rmtree(staged, ignore_errors=True)
         raise _Refusal(broke("run_production.upload_failed",
                              error=f"the run directory did not arrive before launch: {up['error']}",
-                             remedy="launch again: the run directory was not created"))
+                             remedy="launch again: nothing was put in the run directory"))
     shutil.rmtree(staged)
-    return {"reused": False, "files_uploaded": [f"{run_dir}/{rel}" for rel in placed]}
+    out = {"reused": False, "files_uploaded": [f"{run_dir}/{rel}" for rel in placed]}
+    if held is not None:
+        _move_incoming_remote(env, run_dir, sorted({rel.split("/", 1)[0] for rel in placed}), timeout=timeout)
+        out["run_dir_held"] = held
+    return out
+
+
+def _move_incoming_remote(env: dict, run_dir: str, names: list[str], *, timeout: int) -> None:
+    """Move a first launch's files from `_INCOMING` into place in an existing `run_dir`,
+    by name and never over a file that is there (`mv -n`), then remove the emptied
+    staging directory; one ssh hop. A name that appeared meanwhile is left where it is,
+    the staging directory cannot be removed, and the launch stops there."""
+    q = shlex.quote
+    script = " && ".join([f"cd {q(run_dir)}"]
+                         + [f"mv -n {q(_INCOMING + '/' + n)} {q(n)} && echo {q('MOVED=' + n)}" for n in names]
+                         + [f"rmdir {q(_INCOMING)}"])
+    res = subprocess.run(_ssh_argv(env, _login_shell(script)), capture_output=True, text=True, timeout=timeout)
+    if res.returncode != 0:
+        moved = [ln[len("MOVED="):] for ln in (res.stdout or "").splitlines() if ln.startswith("MOVED=")]
+        raise _Refusal(broke("run_production.place_failed",
+                             error=f"the run's files arrived under {run_dir}/{_INCOMING} but were not all moved "
+                                   f"into place (rc={res.returncode}): {(res.stderr or '').strip()[:300]}",
+                             moved=moved,
+                             remedy=f"nothing was launched; remove {run_dir}/{_INCOMING} and "
+                                    f"{moved or 'nothing else'} from {run_dir}, then launch again"))
 
 
 def _materialize_local(*, run_dir: str, pdir: Path, rels: list[str], samplesheet: str, reused: bool,
-                       changed: Mapping[str, str]) -> dict:
+                       changed: Mapping[str, str], refresh: list[str], held: Optional[list[str]]) -> dict:
     rd = Path(run_dir)
     if reused:
+        for rel in refresh:
+            (rd / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pdir / rel, rd / rel)
         for rel, text in changed.items():
             (rd / rel).write_text(text)
-        return {"reused": True, "files_copied": [], "files_rewritten": sorted(changed)}
+        return {"reused": True, "files_copied": [], "files_rewritten": sorted(changed),
+                **({"render_refreshed": list(refresh)} if refresh else {})}
     return {"reused": False,
-            "files_copied": [str(rd / rel) for rel in _place_run_files(pdir, rels, samplesheet, rd, changed)]}
+            "files_copied": [str(rd / rel) for rel in _place_run_files(pdir, rels, samplesheet, rd, changed)],
+            **({"run_dir_held": held} if held is not None else {})}
 
 
 # ---------------------------------------------------------------------------
@@ -821,6 +966,7 @@ def run_production_pipeline(project_name: str,
                             samplesheet: str = "",
                             params: Optional[Mapping] = None,
                             walltime: str = "",
+                            launch_params: Optional[Mapping] = None,
                             access_path: Optional[str] = None,
                             timeout: int = 300,
                             _job_manager=None) -> dict:
@@ -828,10 +974,14 @@ def run_production_pipeline(project_name: str,
 
     pipeline:    a name under <workspace>/pipelines/, or a rendered directory's path.
     run_dir:     an absolute path on the env — the launch directory, created by the first
-                 launch (on the cluster, as one transfer); it may be in the env's pipelines
-                 zone, the agent's scratch, or a directory the project grants with `upload`
-                 and `exec`. A directory that already holds this pipeline is re-launched
-                 (`-resume`), nothing copied; any other existing directory is refused.
+                 launch (on the cluster, as one transfer), or filled by it when it exists
+                 and holds nothing the launch writes (its other files stay); it may be in
+                 the env's pipelines zone, the agent's scratch, or a directory the project
+                 grants with `upload` and `exec`. A directory that already holds this
+                 pipeline is re-launched (`-resume`): nothing copied for the same render,
+                 the changed files rewritten for an earlier render of it (`render_refreshed`);
+                 one holding another pipeline, part of this one, a name this launch writes,
+                 or a hand-edited file the render would write over is refused.
     samplesheet: a local CSV, one row per sample, with the columns the pipeline reads
                  (`sample` first); it becomes the run's samples.csv. Required on the first
                  launch into a directory; refused on a re-launch.
@@ -840,6 +990,10 @@ def run_production_pipeline(project_name: str,
                  launch, by this tool or by hand, runs the same. A path, a word or a number.
     walltime:    the manager job's SLURM time limit, written into the run directory's
                  launcher.sh header the same way. ssh envs only.
+    launch_params: {params.yaml key: value} for THIS launch only: on the launcher's command line
+                 (`launcher.sh --key value`), where Nextflow lets it win over params.yaml for that
+                 run; never written into the run directory, which keeps its defaults. Validated
+                 like params=.
     """
     try:
         if walltime and not _WALLTIME_RE.match(str(walltime)):
@@ -878,6 +1032,8 @@ def run_production_pipeline(project_name: str,
         if samplesheet:
             header, rows = _read_samplesheet(samplesheet, record)
         _check_params(params, (pdir / _PARAMS_FILE).read_text(), str(pdir / _PARAMS_FILE))
+        _check_params(launch_params, (pdir / _PARAMS_FILE).read_text(), str(pdir / _PARAMS_FILE))
+        launch_over = {str(k): str(v) for k, v in (launch_params or {}).items()}
 
         # ─── The run directory, and the configuration that runs there ──
         # params= and walltime= are written into the run's own params.yaml and launcher.sh
@@ -889,8 +1045,12 @@ def run_production_pipeline(project_name: str,
             from agent import mcp_server as _ms
             jm = _job_manager or _ms._job_manager
             state = _local_run_dir_state(Path(normed_dir), rels, jm.list_jobs(include_terminated=False))
-        reused = _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=normed_dir,
-                                  samplesheet=samplesheet, local=env_type != "ssh")
+        reused, refresh = _reuse_or_refuse(state, ours=(pdir / MANIFEST_PATH).read_text(), run_dir=normed_dir,
+                                           samplesheet=samplesheet, local=env_type != "ssh",
+                                           names=_launch_names(rels),
+                                           identity=(record.name, record.sealed_workflow))
+        # a first launch into a directory that is there already: what else it holds stays
+        held = sorted(state.get("entries", ())) if state["exists"] and not reused else None
         if reused:
             # a re-launch runs the samples.csv the run directory holds: held to the same rules
             header, rows = _check_samplesheet(state["texts"].get(SAMPLESHEET_FILENAME, ""), record,
@@ -902,16 +1062,23 @@ def run_production_pipeline(project_name: str,
                                != _TIME_LINE_RE.sub("", (pdir / _LAUNCHER).read_text()).strip())
             edited = sorted(rel for rel, digest in manifest.items()
                             if (rel == _LAUNCHER and launcher_edited)
-                            or (rel not in (_PARAMS_FILE, _LAUNCHER)
+                            or (rel not in (_PARAMS_FILE, _LAUNCHER) and rel not in refresh
                                 and rel in state["sums"] and state["sums"][rel] != digest))
         base = ({rel: state["texts"][rel] for rel in (_PARAMS_FILE, _LAUNCHER)} if reused
                 else {rel: (pdir / rel).read_text() for rel in (_PARAMS_FILE, _LAUNCHER)})
         where = {rel: f"{normed_dir}/{rel}" if reused else str(pdir / rel) for rel in base}
+        held_text = dict(base)                        # what the run directory holds now
+        params_added: list[str] = []
+        if refresh:
+            # the run's own params.yaml, plus any parameter this render added since the earlier one
+            base[_PARAMS_FILE], params_added = _params_with_new_keys(
+                base[_PARAMS_FILE], (pdir / _PARAMS_FILE).read_text(), where[_PARAMS_FILE])
         params_text, effective = _with_params(base[_PARAMS_FILE], params, where[_PARAMS_FILE])
+        effective = {**effective, **launch_over}      # this launch's command-line values win, as Nextflow reads them
         config = {_PARAMS_FILE: params_text,
                   _LAUNCHER: (_with_walltime(base[_LAUNCHER], walltime, where[_LAUNCHER]) if walltime
                               else base[_LAUNCHER])}
-        changed = {rel: text for rel, text in config.items() if text != base[rel]}
+        changed = {rel: text for rel, text in config.items() if text != held_text[rel]}
         results = _results_dir(normed_dir, effective)
         if not transfer._under(normed_dir, results):
             _authorize_outdir(project, env, results)
@@ -944,16 +1111,19 @@ def run_production_pipeline(project_name: str,
         if env_type == "ssh":
             placed = _materialize_remote(project_name=project_name, env=env, env_name=compute_env_name,
                                          run_dir=normed_dir, pdir=pdir, rels=rels, samplesheet=samplesheet,
-                                         reused=reused, changed=changed, access_path=access_path,
-                                         timeout=timeout)
+                                         reused=reused, changed=changed, refresh=refresh, held=held,
+                                         access_path=access_path, timeout=timeout)
         else:
             placed = _materialize_local(run_dir=normed_dir, pdir=pdir, rels=rels, samplesheet=samplesheet,
-                                        reused=reused, changed=changed)
+                                        reused=reused, changed=changed, refresh=refresh, held=held)
+        if params_added:
+            placed["params_added"] = params_added
 
         # ─── Launch ─────────────────────────────────────────────────────
         submitted_at = datetime.now(timezone.utc).isoformat()
         if env_type == "ssh":
-            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout)
+            sb = submit_workflow.sbatch_via_ssh(env, normed_dir, timeout=timeout,
+                                                launcher_args=_launcher_args(launch_over))
             if "error" in sb:
                 return {**sb, **placed}
             job_id = sb["job_id"]
@@ -970,11 +1140,13 @@ def run_production_pipeline(project_name: str,
                                                        f"`download`, which cluster_job_status(run_dir=) needs"}),
                          "results": f"{results}/ — download(…) to fetch",
                          "run_records": f"{normed_dir}/runs/<stamp>/ (params.json, samples.csv, trace.txt, "
-                                        f"report.html, timeline.html, nextflow.log)",
-                         "manager_log": f"{normed_dir}/{record.name}-{job_id}.out"}
+                                        f"report.html, timeline.html, nextflow.log, the manager's .out and .err)",
+                         "manager_log": f"{normed_dir}/runs/<stamp>/{record.name}-{job_id}.out once the job "
+                                        f"starts; beside launcher.sh until then"}
             code = "run_production.submitted"
         else:
-            launch = f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}"
+            launch = (f"source {shlex.quote(record.local_runtime.activate)} && {RUN_LOCAL}"
+                      + "".join(f" {shlex.quote(a)}" for a in _launcher_args(launch_over)))
             started = jm.start(command=launch, job_id=f"pipeline_{record.name}_{_stamp()}",
                                working_dir=normed_dir, tool="run_production_pipeline")
             if "error" in started:
@@ -998,6 +1170,7 @@ def run_production_pipeline(project_name: str,
             "samplesheet": ({"source": samplesheet, "rows": len(rows), "columns": header} if samplesheet
                             else {"source": f"{normed_dir}/{SAMPLESHEET_FILENAME} (already there)"}),
             "params": effective, "params_overridden": {str(k): str(v) for k, v in (params or {}).items()},
+            "launch_params": launch_over,
             "walltime": (time_line.group(1) if time_line and env_type == "ssh" else None), "launch": launch,
             "edited_since_render": edited, "reference_check": dict(reference_check),
             "value_check": value_check,
@@ -1010,7 +1183,7 @@ def run_production_pipeline(project_name: str,
                         pipeline=record.name, run_dir=normed_dir, job_id=job_id,
                         reused_run_dir=placed["reused"],
                         **{k: v for k, v in placed.items() if k != "reused"},
-                        samplesheet=manifest_record["samplesheet"], params=effective,
+                        samplesheet=manifest_record["samplesheet"], params=effective, launch_params=launch_over,
                         launch=launch, submitted_at=submitted_at, manifest_path=manifest_path,
                         edited_since_render=edited, follow_up=follow_up)
         return _disclose(result, reference_check, value_check)

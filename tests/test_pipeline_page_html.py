@@ -293,7 +293,7 @@ def _wide_record(n_stages: int = 12, n_params: int = 12) -> pr.PipelineRecord:
         sealed_workflow_path="", sealed_workflow_sha256=None, env_digests=["sha256:" + "b" * 64],
         params=list(params.values()), samplesheet=_key_sheet("S1", "S2"), output_slots=["OUTPUT_DIR"],
         compute_env=None, modules=[], local_runtime=None, stages=stages, provenance_steps=[], unmatched_steps=[],
-        scripts=[], cohort_workflows=[], defaults=[], notes=[])
+        scripts=[], cohort_workflows=[], resolved=[], defaults=[], notes=[])
 
 
 def _with_cohort(rec: pr.PipelineRecord, *names: str) -> pr.PipelineRecord:
@@ -450,9 +450,10 @@ class TestTheDirectory:
         files = _entries(_record())["runs/<timestamp>/"].files
         assert files == RUN_RECORDS
         assert [n for n, _, _ in files] == list(RUN_RECORD_FILES) == [
-            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log"]
+            "params.json", "samples.csv", "trace.txt", "report.html", "timeline.html", "nextflow.log",
+            "<pipeline>-<job id>.out", "<pipeline>-<job id>.err"]
         assert [by for _, _, by in files] == ["params.yaml", "params.yaml", "nextflow.config", "nextflow.config",
-                                              "nextflow.config", "launcher.sh"]
+                                              "nextflow.config", "launcher.sh", "launcher.sh", "launcher.sh"]
         assert files[0][1] == "every param as resolved; re-runs as `-params-file`"
         assert files[1][1] == "a copy of the samplesheet as read"
 

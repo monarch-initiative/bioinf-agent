@@ -102,7 +102,10 @@ def test_a_run_with_no_manager_log_reads_the_managers_own_row(monkeypatch):
 def test_the_remote_script_is_built_from_validated_tokens_only():
     cmd = cj._build_pipeline_run_cmd("/work/pipelines/run1", "4242")
     assert cmd.startswith("bash -lc ")
-    assert "/work/pipelines/run1/*-4242.out" in cmd and "trace.txt" in cmd
+    assert "/work/pipelines/run1/runs/*/*-4242.out" in cmd and "/work/pipelines/run1/*-4242.out" in cmd
+    assert cmd.index("/runs/*/*-4242.out") < cmd.index("/work/pipelines/run1/*-4242.out"), \
+        "the manager's log is read from under runs/<stamp>/ first, beside launcher.sh only when it is not there yet"
+    assert "trace.txt" in cmd
     assert "^run records: " in cmd, "the stamp is read off the line main.nf prints, nowhere else"
 
 

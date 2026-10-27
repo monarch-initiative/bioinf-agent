@@ -12,9 +12,13 @@ They pin:
     authorization wall (upload AND exec; never common_data / container zones), a
     parent that does not exist, the samplesheet's columns and path cells, an unknown
     or unsafe params override, a missing image, a missing bound path
-  - the run directory contract: first launch copies + requires a samplesheet; the
-    same render again re-launches without copying and refuses a second samplesheet;
-    another render in the directory is refused; the template itself is never run in
+  - the run directory contract: first launch copies + requires a samplesheet; a
+    directory that exists holding nothing the launch writes (the granted directory
+    itself) is filled, its other files left alone; the same render again re-launches
+    without copying and refuses a second samplesheet; an earlier render of the same
+    pipeline is refreshed in place (the changed files rewritten, the run's own kept) and
+    resumed, unless a hand-edited file would be written over; another pipeline in the
+    directory, or a name the launch writes, is refused; the template itself is never run in
   - the launch: the exact nextflow line locally (overrides on the line), the sbatch
     tokens on the cluster, the manifest, the follow-up
   - the data pins: a rebound reference launches as `degraded`, a matching one proven
@@ -31,7 +35,7 @@ import yaml
 from agent.models.core_data import WorkflowSpec
 from agent.skills import cluster_jobs, run_production, stage_apptainer, submit_workflow, transfer, workspace
 from agent.skills.pipeline_record import derive_pipeline_record
-from agent.skills.pipeline_render import MANIFEST_PATH, render_pipeline_dir
+from agent.skills.pipeline_render import MANIFEST_PATH, RECORD_PATH, parse_manifest, render_pipeline_dir
 from pipeline_fixtures import sealed_rnaseq_spec
 
 
@@ -40,7 +44,7 @@ from pipeline_fixtures import sealed_rnaseq_spec
 # ===========================================================================
 
 def _render(tmp_path: Path, name: str = "rnaseq_counts", *, compute_env=None, sif_paths=None,
-            spec=None) -> Path:
+            spec=None, resources=None, overwrite=False) -> Path:
     """A rendered pipeline under the (sandboxed) pipelines zone. Its sealed spec is
     written where the record points so the data-pin check can read it."""
     spec = spec if spec is not None else sealed_rnaseq_spec()
@@ -48,11 +52,11 @@ def _render(tmp_path: Path, name: str = "rnaseq_counts", *, compute_env=None, si
     spec_path.write_text(yaml.safe_dump(spec.model_dump()))
     record = derive_pipeline_record(
         spec, name=name, spec_path=str(spec_path),
-        sif_paths=sif_paths, compute_env=compute_env,
+        sif_paths=sif_paths, compute_env=compute_env, resources=resources,
         modules=["apptainer/1.5.0", "nextflow/25.04.7"] if compute_env else None,
         local_runtime=_local_runtime(tmp_path))
     out = workspace.pipelines_dir() / name
-    render_pipeline_dir(record, out)
+    render_pipeline_dir(record, out, overwrite=overwrite)
     return out
 
 
@@ -450,6 +454,31 @@ class TestLocalLaunch:
         assert "check_job" in r["follow_up"]["poll"]
 
     @pytest.mark.integration
+    def test_launch_params_ride_the_command_line_and_leave_params_yaml_alone(self, tmp_path, local_ok):
+        """A value for THIS launch only goes on the launcher's line (`--key value`), where
+        Nextflow lets it win over params.yaml for that run; the run directory keeps its
+        defaults, and the manifest says which values rode the line."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        jm = _FakeJobManager()
+        r = run_production.run_production_pipeline(
+            project_name="demo", compute_env_name="laptop", pipeline="rnaseq_counts", run_dir=str(d / "run1"),
+            samplesheet=_sheet(tmp_path, [str(fq)]), params=_refs(tmp_path), launch_params={"stranded": "yes"},
+            access_path=_local_access(tmp_path, str(d)), _job_manager=jm)
+        assert r["code"] == "run_production.values_unproven", r       # the seal never ran stranded=yes
+        assert jm.calls[0]["command"].endswith("-params-file params.yaml -resume --stranded yes")
+        assert "\nstranded: reverse\n" in (d / "run1" / "params.yaml").read_text()   # the directory's own default
+        assert r["params"]["stranded"] == "yes" and r["launch_params"] == {"stranded": "yes"}
+        manifest = __import__("json").loads(Path(r["manifest_path"]).read_text())
+        assert manifest["launch_params"] == {"stranded": "yes"} and "stranded" not in manifest["params_overridden"]
+        bad = run_production.run_production_pipeline(
+            project_name="demo", compute_env_name="laptop", pipeline="rnaseq_counts", run_dir=str(d / "run2"),
+            samplesheet=_sheet(tmp_path, [str(fq)]), params=_refs(tmp_path), launch_params={"not_a_param": 1},
+            access_path=_local_access(tmp_path, str(d)), _job_manager=jm)
+        assert bad["code"] == "run_production.unknown_param"
+
+    @pytest.mark.integration
     def test_a_value_the_seal_never_ran_is_named_beside_the_launch(self, tmp_path, local_ok):
         """The sealed self-test ran STRANDED=reverse only: a launch in another mode is a
         legitimate run of a how-to that was never proven in it, and the result says so
@@ -489,16 +518,51 @@ class TestLocalLaunch:
         assert "\nstranded: 'no'\n" in (d / "run1" / "params.yaml").read_text()
 
     @pytest.mark.integration
-    def test_an_existing_directory_that_holds_no_run_is_refused(self, tmp_path, local_ok):
+    def test_an_existing_directory_holding_nothing_the_launch_writes_takes_the_first_launch(self, tmp_path, local_ok):
+        """The granted directory itself, empty or holding its own files, is a run
+        directory: the first launch fills it, leaves its other files alone, and says
+        what it found there."""
         _render(tmp_path)
         d = tmp_path / "proj"; d.mkdir()
         fq = d / "r1.fq"; fq.write_text("x")
-        (d / "run1").mkdir()
-        (d / "run1" / "params.yaml").write_text("mine: 1\n")
-        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+        (d / "README.txt").write_text("mine\n")
+        (d / "data").mkdir()
+        ap = _local_access(tmp_path, str(d))
+        sheet = _sheet(tmp_path, [str(fq)])
+        jm = _FakeJobManager()
+        r = _run_local(tmp_path, "rnaseq_counts", d, samplesheet=sheet, access=ap, jm=jm)
+        assert r["outcome"] == "proven" and r["reused_run_dir"] is False, r
+        assert r["run_dir_held"] == ["README.txt", "data", "r1.fq"]
+        assert (d / "main.nf").is_file() and (d / "samples.csv").is_file()
+        assert (d / "README.txt").read_text() == "mine\n" and jm.calls[0]["working_dir"] == str(d)
+        empty = d / "empty"; empty.mkdir()
+        r = _run_local(tmp_path, "rnaseq_counts", empty, samplesheet=sheet, access=ap)
+        assert r["outcome"] == "proven" and r["run_dir_held"] == [] and (empty / "main.nf").is_file(), r
+        again = _run_local(tmp_path, "rnaseq_counts", d, access=ap)      # and from then on, a re-launch
+        assert again["reused_run_dir"] is True and "run_dir_held" not in again
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("name", ["params.yaml", "work", "results", ".incoming"])
+    def test_a_directory_holding_a_name_the_launch_writes_is_refused(self, tmp_path, local_ok, name):
+        """A launch never writes over files it did not put there: a directory with no run
+        of this pipeline but a name the launch makes is refused before anything is copied."""
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        run = d / "run1"; run.mkdir()
+        if name == "params.yaml":
+            (run / name).write_text("mine: 1\n")
+        else:
+            (run / name).mkdir()
+        r = _run_local(tmp_path, "rnaseq_counts", run, samplesheet=_sheet(tmp_path, [str(fq)]),
                        access=_local_access(tmp_path, str(d)))
         assert (r["outcome"], r["code"]) == ("refused", "run_production.run_dir_exists"), r
-        assert (d / "run1" / "params.yaml").read_text() == "mine: 1\n"
+        assert name in r["error"] and not (run / "main.nf").exists()
+        assert sorted(p.name for p in run.iterdir()) == [name]
+        if name == "params.yaml":
+            assert (run / name).read_text() == "mine: 1\n"
+        if name == ".incoming":
+            assert "did not finish" in r["error"] and f"{run}/.incoming" in r["remedy"]
 
     @pytest.mark.integration
     def test_a_directory_holding_part_of_this_render_is_refused(self, tmp_path, local_ok):
@@ -541,6 +605,57 @@ class TestLocalLaunch:
         assert _run_local(tmp_path, "a", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]), access=ap)["success"]
         r = _run_local(tmp_path, "b", d / "run1", access=ap)
         assert r["code"] == "run_production.run_dir_holds_another_render"
+
+    @pytest.mark.integration
+    def test_a_re_render_of_the_same_pipeline_relaunches_in_place(self, tmp_path, local_ok):
+        """A pipeline evolves — a script fixed, a stage re-sized — and its run directory
+        takes the new render: the files the render changed are rewritten, the run's own
+        params.yaml and samples.csv stay, and -resume does the rest."""
+        pdir = _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap, params={"stranded": "yes"})["success"]
+        params_before = (d / "run1" / "params.yaml").read_text()
+        launcher = d / "run1" / "launcher.sh"
+        launcher.write_text(launcher.read_text() + "# mine\n")       # the run's own file, kept
+        # a key the run's params.yaml lacks (as when the new render added a parameter) is
+        # appended as the render writes it, comment included; the run's values stay
+        lacking = "".join(ln for ln in params_before.splitlines(keepends=True)
+                          if not ln.startswith("gtf:") and not ln.startswith("# GTF "))
+        assert "gtf:" not in lacking and lacking != params_before
+        (d / "run1" / "params.yaml").write_text(lacking)
+        _render(tmp_path, resources={"HISAT2": {"cpus": 8, "mem": "16G", "time": "01:00:00"}}, overwrite=True)
+        assert (pdir / "nextflow.config").read_text() != (d / "run1" / "nextflow.config").read_text()
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert r["outcome"] in ("proven", "degraded") and r["reused_run_dir"] is True, r
+        assert "nextflow.config" in r["render_refreshed"] and MANIFEST_PATH in r["render_refreshed"]
+        assert (d / "run1" / "nextflow.config").read_text() == (pdir / "nextflow.config").read_text()
+        assert (d / "run1" / MANIFEST_PATH).read_text() == (pdir / MANIFEST_PATH).read_text()
+        assert r["params_added"] == ["gtf"] and r["files_rewritten"] == ["params.yaml"]
+        after = (d / "run1" / "params.yaml").read_text()
+        assert after.startswith(lacking) and after.endswith("gtf: " + r["params"]["gtf"] + "\n")
+        assert "\n# GTF " in after and "\nstranded: 'yes'\n" in after
+        assert launcher.read_text().endswith("# mine\n") and r["edited_since_render"] == ["launcher.sh"]
+        again = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert "render_refreshed" not in again and "params_added" not in again
+        assert again["reused_run_dir"] is True and again["files_rewritten"] == []
+
+    @pytest.mark.integration
+    def test_a_hand_edited_file_the_re_render_would_write_over_is_refused(self, tmp_path, local_ok):
+        _render(tmp_path)
+        d = tmp_path / "proj"; d.mkdir()
+        fq = d / "r1.fq"; fq.write_text("x")
+        ap = _local_access(tmp_path, str(d))
+        assert _run_local(tmp_path, "rnaseq_counts", d / "run1", samplesheet=_sheet(tmp_path, [str(fq)]),
+                          access=ap)["success"]
+        cfg = d / "run1" / "nextflow.config"
+        cfg.write_text(cfg.read_text() + "// mine\n")
+        _render(tmp_path, resources={"HISAT2": {"cpus": 8, "mem": "16G", "time": "01:00:00"}}, overwrite=True)
+        r = _run_local(tmp_path, "rnaseq_counts", d / "run1", access=ap)
+        assert (r["outcome"], r["code"]) == ("refused", "run_production.run_dir_edited"), r
+        assert "nextflow.config" in r["error"] and cfg.read_text().endswith("// mine\n")
 
     @pytest.mark.integration
     def test_the_template_itself_is_never_run_in(self, tmp_path, local_ok):
@@ -600,6 +715,8 @@ class _Remote:
         self.sent = {}      # what the uploads carried: {remote path: bytes}
         self.upload_error = ""
         self.upload_outcome = "loop"
+        self.moved = None       # (run_dir, names) a first launch into an existing directory moved into place
+        self.move_error = ""
         self.sbatch = None
 
     def install(self, monkeypatch):
@@ -619,7 +736,7 @@ class _Remote:
                     "sums": self.run_state.get("sums", {})}
         monkeypatch.setattr(run_production, "_remote_run_dir_state", run_dir_state)
         monkeypatch.setattr(run_production, "_write_remote",
-                            lambda env, run_dir, texts, *, timeout: self.writes.update(
+                            lambda env, run_dir, texts, *, timeout, modes=None: self.writes.update(
                                 {f"{run_dir}/{rel}": text for rel, text in texts.items()}))
         monkeypatch.setattr(run_production, "_observe_cluster",
                             lambda env, paths, *, timeout: {p: {"exists": True, "sha256": ""} for p in paths})
@@ -637,10 +754,17 @@ class _Remote:
             return {"remote_abs_path": remote_abs_path}
         monkeypatch.setattr(transfer, "upload", upload)
 
-        def sbatch(env, workflow_dir, *, timeout=300, sbatch_args=()):
-            self.sbatch = {"dir": workflow_dir, "sbatch_args": list(sbatch_args)}
+        def move(env, run_dir, names, *, timeout):
+            if self.move_error:
+                raise run_production._Refusal(run_production.broke(
+                    "run_production.place_failed", error=self.move_error, moved=[], remedy="x"))
+            self.moved = (run_dir, list(names))
+        monkeypatch.setattr(run_production, "_move_incoming_remote", move)
+
+        def sbatch(env, workflow_dir, *, timeout=300, sbatch_args=(), launcher_args=()):
+            self.sbatch = {"dir": workflow_dir, "sbatch_args": list(sbatch_args), "launcher_args": list(launcher_args)}
             return {"job_id": "4242", "launcher": f"{workflow_dir}/launcher.sh",
-                    "sbatch_command": f"sbatch --parsable {' '.join(sbatch_args)} launcher.sh"}
+                    "sbatch_command": " ".join(["sbatch", "--parsable", *sbatch_args, "launcher.sh", *launcher_args])}
         monkeypatch.setattr(submit_workflow, "sbatch_via_ssh", sbatch)
         return self
 
@@ -719,17 +843,54 @@ class TestClusterLaunch:
         assert remote.sbatch["dir"] == "/work/pipelines/new/run1"
 
     @pytest.mark.integration
-    def test_an_existing_directory_that_holds_no_run_is_refused(self, tmp_path, monkeypatch):
-        """A launch never writes over files it did not put there: an existing directory is
-        either this pipeline's run (a re-launch) or refused before a byte moves."""
+    def test_an_existing_directory_is_filled_through_a_staging_name(self, tmp_path, monkeypatch):
+        """The granted directory itself, holding nothing the launch writes, takes the
+        first launch: the run arrives as ONE transfer under .incoming inside it and is
+        moved into place by name; what the directory held is reported, and the launch
+        runs in the directory, not the staging name."""
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values()),
+                         run_state={"exists": True, "missing": None, "samplesheet": False, "texts": {},
+                                    "entries": ["notes.txt", "data"]}).install(monkeypatch)
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/demo", samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert r["outcome"] == "proven" and r["code"] == "run_production.submitted", r
+        assert [dst for _, dst in remote.uploads] == ["/work/demo/.incoming"]
+        assert "/work/demo/.incoming/main.nf" in remote.sent
+        assert remote.moved[0] == "/work/demo"
+        assert {"main.nf", "nextflow.config", "params.yaml", "launcher.sh", "samples.csv"} <= set(remote.moved[1])
+        assert all(f.startswith("/work/demo/") and "/.incoming/" not in f for f in r["files_uploaded"])
+        assert r["run_dir_held"] == ["data", "notes.txt"] and r["reused_run_dir"] is False
+        assert remote.sbatch["dir"] == "/work/demo"
+        manifest = __import__("json").loads(Path(r["manifest_path"]).read_text())
+        assert manifest["run_dir_held"] == ["data", "notes.txt"]
+
+    @pytest.mark.integration
+    def test_a_move_into_place_that_fails_launches_nothing(self, tmp_path, monkeypatch):
+        remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values()),
+                         run_state={"exists": True, "missing": None, "samplesheet": False, "texts": {},
+                                    "entries": ["notes.txt"]}).install(monkeypatch)
+        remote.move_error = "rmdir: failed to remove '.incoming': Directory not empty"
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/demo", samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
+        assert (r["outcome"], r["code"]) == ("broke", "run_production.place_failed"), r
+        assert remote.sbatch is None
+
+    @pytest.mark.integration
+    @pytest.mark.parametrize("entries", [["work", "notes.txt"], [".pipeline"], [".incoming"]])
+    def test_a_directory_holding_a_name_the_launch_writes_is_refused_before_a_byte_moves(
+            self, tmp_path, monkeypatch, entries):
+        """A launch never writes over files it did not put there: an existing directory
+        holding one of the names the launch makes is refused before any transfer."""
         remote = _Remote(existing={"/data/r1.fq"} | _REFS, sifs=set(_SIF.values()),
                          run_state={"exists": True, "missing": None, "samplesheet": False,
-                                    "texts": {}}).install(monkeypatch)
+                                    "texts": {}, "entries": entries}).install(monkeypatch)
         _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
         r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1",
                      samplesheet=_sheet(tmp_path, ["/data/r1.fq"]))
         assert (r["outcome"], r["code"]) == ("refused", "run_production.run_dir_exists"), r
-        assert remote.uploads == [] and remote.sbatch is None
+        assert entries[0] in r["error"] and remote.uploads == [] and remote.sbatch is None
+        if entries == [".incoming"]:
+            assert "did not finish" in r["error"] and "/work/pipelines/run1/.incoming" in r["remedy"]
 
     @pytest.mark.integration
     def test_a_directory_its_first_copy_did_not_finish_is_never_launched(self, tmp_path, monkeypatch):
@@ -788,7 +949,7 @@ class TestClusterLaunch:
         assert params_yaml.startswith("# rendered from sealed workflow"), "comments are kept"
         launcher = remote.sent["/work/pipelines/run1/launcher.sh"].decode()
         assert "\n#SBATCH --time=1-00:00:00\n" in launcher
-        assert remote.sbatch == {"dir": "/work/pipelines/run1", "sbatch_args": []}
+        assert remote.sbatch == {"dir": "/work/pipelines/run1", "sbatch_args": [], "launcher_args": []}
         assert r["params"]["stranded"] == "reverse"
         assert "run_dir='/work/pipelines/run1'" in r["follow_up"]["poll"]
         assert r["samplesheet"]["rows"] == 2
@@ -846,6 +1007,37 @@ class TestClusterLaunch:
         assert again["outcome"] == "proven" and again["files_rewritten"] == ["launcher.sh", "params.yaml"]
         assert "\nstranded: reverse\n" in remote.writes["/work/pipelines/run1/params.yaml"]
         assert "\n#SBATCH --time=12:00:00\n" in remote.writes["/work/pipelines/run1/launcher.sh"]
+
+    @pytest.mark.integration
+    def test_a_re_render_is_written_into_the_remote_run_directory(self, tmp_path, monkeypatch):
+        """The run directory on the cluster holds an earlier render of this pipeline: the
+        files the new render changed are rewritten there (the manifest among them), the
+        run's own params.yaml is left alone, nothing is uploaded, and the run resumes."""
+        pdir = _render(tmp_path, compute_env="hpc", sif_paths=_SIF)
+        old = {rel: (pdir / rel).read_text() for rel in (MANIFEST_PATH, RECORD_PATH, "launcher.sh", "params.yaml")}
+        old_sums = {rel: hashlib.sha256((pdir / rel).read_bytes()).hexdigest()
+                    for rel in parse_manifest(old[MANIFEST_PATH]) if (pdir / rel).is_file()}
+        _render(tmp_path, compute_env="hpc", sif_paths=_SIF, overwrite=True,
+                resources={"HISAT2": {"cpus": 8, "mem": "16G", "time": "01:00:00"}})
+        assert (pdir / MANIFEST_PATH).read_text() != old[MANIFEST_PATH], "the re-render changed the pipeline"
+        texts = {**old, "samples.csv": "sample,reads\nS1,/data/r1.fq\n"}
+        remote = _Remote(existing={"/work/pipelines", "/data/r1.fq"} | _REFS, sifs=set(_SIF.values()),
+                         run_state={"exists": True, "missing": [], "samplesheet": True, "texts": texts,
+                                    "sums": old_sums}).install(monkeypatch)
+        r = _run_ssh(tmp_path, "rnaseq_counts", "/work/pipelines/run1")
+        assert r["outcome"] in ("proven", "degraded") and r["reused_run_dir"] is True, r
+        assert remote.uploads == [] and remote.sbatch["dir"] == "/work/pipelines/run1"
+        assert "nextflow.config" in r["render_refreshed"] and MANIFEST_PATH in r["render_refreshed"]
+        assert remote.writes["/work/pipelines/run1/nextflow.config"] == (pdir / "nextflow.config").read_text()
+        assert remote.writes[f"/work/pipelines/run1/{MANIFEST_PATH}"] == (pdir / MANIFEST_PATH).read_text()
+        assert "/work/pipelines/run1/params.yaml" not in remote.writes
+        manifest = __import__("json").loads(Path(r["manifest_path"]).read_text())
+        assert manifest["render_refreshed"] == r["render_refreshed"]
+        # another pipeline in the directory is still refused, before anything is written
+        remote.writes.clear()
+        _render(tmp_path, "other", compute_env="hpc", sif_paths=_SIF)
+        o = _run_ssh(tmp_path, "other", "/work/pipelines/run1")
+        assert o["code"] == "run_production.run_dir_holds_another_render" and remote.writes == {}
 
     @pytest.mark.integration
     def test_a_run_the_scheduler_still_holds_is_never_launched_over(self, tmp_path, monkeypatch):
