@@ -19,9 +19,9 @@ the user (or a follow-up tool) declares `envs/<env>/bin/` as its own
 directory entry. The agent never recurses past what the user explicitly
 granted.
 
-The schema (post-2026-05-31 redesign): list-of-named-blocks at every
-level; per-dir access lives at projects[].compute_env_access[].directories[].
-See agent/skills/projects_access.yaml.example for the full annotated shape.
+The schema: list-of-named-blocks at every level; per-dir access lives at
+projects[].directories[], each entry naming its env. See
+agent/skills/projects_access.yaml.example for the full annotated shape.
 """
 from __future__ import annotations
 

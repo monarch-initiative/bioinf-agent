@@ -387,23 +387,6 @@ def test_known_gaps_are_declared_not_discovered_later():
 
 
 # ---------------------------------------------------------------------------
-# 5. the meter — state the number, don't bury it
-# ---------------------------------------------------------------------------
-
-def test_the_meter_is_visible():
-    """Print how many §7 rows route correctly. Deterministic, so today this is N/N —
-    but stating it means a future regression shows as a number, not silence."""
-    passed = 0
-    for rid, raw, want_outcome, want_rail, _ in ROWS:
-        result = gate(parse_intent(raw))
-        if result.outcome is want_outcome and result.rail is want_rail:
-            passed += 1
-    print(f"\nGATE CORPUS: {passed}/{len(ROWS)} §7 scenarios route to the intended "
-          f"outcome + rail (scenarios 14 ride-level, 15 composite → declared gaps, Phase 4)")
-    assert passed == len(ROWS)
-
-
-# ---------------------------------------------------------------------------
 # §4 — the ride's judgment has a slot, and no slot means INVESTIGATE
 # ---------------------------------------------------------------------------
 

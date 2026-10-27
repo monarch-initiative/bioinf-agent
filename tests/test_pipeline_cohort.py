@@ -16,22 +16,21 @@ last class previews the composed directory under the real nextflow binary.
 """
 from __future__ import annotations
 
-import os
 import re
 import stat
-import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
 from pipeline_fixtures import (DESEQ2_SCRIPT, DESEQ2_TEXT, DESIGN, DIGEST, DIGEST_DE, MERGE_SCRIPT, MERGE_TEXT,
-                               REQUEST_KEY, REQUEST_KEY_DE, SHEET, TEMPLATES_DE, sealed_deseq2_spec,
+                               REQUEST_KEY, REQUEST_KEY_DE, SHEET, sealed_deseq2_spec,
                                probe_spec, sealed_rnaseq_spec, sheet_text)
 
 from agent.skills import pipeline_record as pr
 from agent.skills.pipeline_page_html import directory_tree, picture_layout, render_pipeline_page
 from agent.skills.pipeline_render import PipelineRenderError, parse_manifest, render_pipeline_dir, render_pipeline_files
 from agent.skills.pipeline_render_nextflow import bound_commands, render_nextflow
+from _nextflow import needs_nextflow, run_nextflow as _nextflow
 
 SAMPLES = list(DESIGN)
 DE_PATH = "/ws/reports/rnaseq_de_workflow.workflow.yaml"
@@ -484,19 +483,6 @@ class TestTool:
 
 # ── the real thing ────────────────────────────────────────────────────────────
 
-_RUNTIME = Path(__file__).resolve().parents[1] / ".conda_runtime"
-_NEXTFLOW = _RUNTIME / "bin" / "nextflow"
-_JVM = _RUNTIME / "lib" / "jvm"
-needs_nextflow = pytest.mark.skipif(
-    not (_NEXTFLOW.is_file() and os.access(_NEXTFLOW, os.X_OK) and (_JVM / "bin" / "java").is_file()),
-    reason="the runtime env carries no nextflow binary (./scripts/setup.sh installs it)")
-
-
-def _nextflow(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    """The runtime env's nextflow in `cwd`, offline, NXF_HOME inside the directory."""
-    env = dict(os.environ, JAVA_HOME=str(_JVM), JAVA_CMD=str(_JVM / "bin" / "java"),
-               NXF_HOME=str(cwd / ".nextflow_home"), NXF_OFFLINE="true", NXF_ANSI_LOG="false")
-    return subprocess.run([str(_NEXTFLOW), *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=300)
 
 
 def _point_at_real_files(rec: pr.PipelineRecord, data: Path) -> pr.PipelineRecord:

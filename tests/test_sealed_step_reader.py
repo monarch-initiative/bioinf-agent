@@ -26,7 +26,6 @@ from __future__ import annotations
 import pytest
 import yaml
 
-from agent import mcp_server as ms
 from agent.mcp_tools import sealed_tools as ST
 from agent.models.core_data import WorkflowSpec
 from agent.skills.spec_writer import (
@@ -281,18 +280,3 @@ def test_describe_sealed_step_refuses_a_corrupt_spec_instead_of_executing_past_i
     assert r["ok"] is False
     assert (r["outcome"], r["code"]) == ("refused", "sealed.invalid_spec")
     assert "not a valid WorkflowSpec" in r["error"]
-
-
-# ---------------------------------------------------------------------------
-# 4. the meter — state the number, don't bury it
-# ---------------------------------------------------------------------------
-
-def test_the_meter_is_visible():
-    # count the seam+tool behaviours pinned in THIS file (kept in sync by hand — a
-    # deliberate low-tech tally, like the sibling corpora)
-    pinned = 12
-    print(f"\nSEALED-STEP READER: {pinned} behaviours pinned "
-          f"(typed reader round-trip + refusal · selector · describe_sealed_step "
-          f"facts/preconditions/pinned-env/miss-paths) — RUN_STEP-of-a-sealed-workflow, "
-          f"scenario 5")
-    assert pinned == 12

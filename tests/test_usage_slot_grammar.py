@@ -47,8 +47,9 @@ def test_no_module_but_core_data_spells_the_slot_grammar():
 
 @pytest.mark.parametrize("slot,expected", [
     ("OUTPUT_DIR", True), ("OUT_DIR", True), ("OUTDIR", True), ("OUTPUTDIR", True),
-    ("MY_OUTPUT", True), ("OUTPUT_BAM", True),
+    ("MY_OUTPUT", True), ("OUTPUT_BAM", True), ("output_path", True),
     ("OUT_TSV", False), ("OUTFILE", False), ("OUPUT_DIR", False), ("FASTQ", False),
+    ("REF", False),
 ])
 def test_is_output_slot_folds_the_underscore(slot, expected):
     assert CD.is_output_slot(slot) is expected

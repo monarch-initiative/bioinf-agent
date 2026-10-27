@@ -6,7 +6,7 @@ attestation rendering path) for policy-firewall + early-gate
 behavior. `freeze()` writes to the EnvCache SINGLETON on success
 (and even before some refusals, if the marker is thrown after the
 cache write). The singleton is bound to
-`<repo>/env_reports/_env_cache.json` at import time, so any record
+the workspace's `environments/_env_cache.json` at import time, so any record
 written during a test PERSISTS into the user's production cache —
 where it becomes the canonical record for that request_key, and its
 test-fixture `env_name` (e.g. `bioinf_test_ungated`) flows
@@ -18,7 +18,7 @@ because a leaked freeze record had `name="bioinf_test_ungated"`).
 The fix mirrors the L5 conftest: autouse isolation. For every test
 in this directory, swap the singleton's `path` to a `tmp_path`-backed
 file. Records written during the test land in `tmp_path` (pytest
-cleans up); the real working-dir cache stays untouched.
+cleans up); the real workspace cache stays untouched.
 
 If you're adding a test outside L4 that calls `m.freeze()` directly
 (rather than constructing an `EnvCache(tmp_path/...)` instance like

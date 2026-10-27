@@ -27,6 +27,7 @@ from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_HPC_NEXTFLOW, RU
                                                    RUN_RECORD_FILES, RUN_RECORDS, STRICT_MODE_LINE, TRACE_FIELDS,
                                                    MANAGER_LOG_LINES, MANAGER_LOG_NAMES,
                                                    bound_commands, render_nextflow, run_lines)
+from _nextflow import needs_nextflow, run_nextflow as _nextflow
 
 #: A compute env block the way projects_access.yaml declares one: SLURM policy,
 #: notification email, the Lmod names the launcher loads. Names nothing real.
@@ -1125,23 +1126,6 @@ class TestRefusals:
 # The real thing — the rendered directory under the runtime env's nextflow
 # ===========================================================================
 
-_RUNTIME = Path(__file__).resolve().parents[1] / ".conda_runtime"
-_NEXTFLOW = _RUNTIME / "bin" / "nextflow"
-_JVM = _RUNTIME / "lib" / "jvm"
-needs_nextflow = pytest.mark.skipif(
-    not (_NEXTFLOW.is_file() and os.access(_NEXTFLOW, os.X_OK) and (_JVM / "bin" / "java").is_file()),
-    reason="the runtime env carries no nextflow binary (./scripts/setup.sh installs it)")
-
-
-def _nextflow(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    """Run the runtime env's nextflow in `cwd`, offline, with NXF_HOME inside the
-    pipeline directory (as launcher.sh does) so nothing touches ~/.nextflow. The
-    launcher honours JAVA_HOME / JAVA_CMD over the JDK beside it, so both name the
-    bundled JVM."""
-    env = dict(os.environ, JAVA_HOME=str(_JVM), JAVA_CMD=str(_JVM / "bin" / "java"),
-               NXF_HOME=str(cwd / ".nextflow_home"), NXF_OFFLINE="true", NXF_ANSI_LOG="false")
-    return subprocess.run([str(_NEXTFLOW), *args], cwd=cwd, env=env,
-                          capture_output=True, text=True, timeout=300)
 
 
 def _write(files: dict, d: Path) -> Path:

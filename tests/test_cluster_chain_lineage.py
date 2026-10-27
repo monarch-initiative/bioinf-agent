@@ -37,7 +37,6 @@ With both, the real two-step chain goes to zero violations.
 """
 from __future__ import annotations
 
-import copy
 from collections import Counter
 from pathlib import Path
 
@@ -248,7 +247,7 @@ def test_no_already_sealed_workflow_starts_failing(spec_path, monkeypatch):
     wrong here before — the last I8 change refused a real sealed cluster
     workflow. Check the artifacts, not the reasoning.
 
-    `env_reports/` is gitignored, so on a fresh clone there is nothing to check and
+    The environments zone lives outside the checkout, so on a fresh clone there is nothing to check and
     a green tick here would mean nothing — `load_or_skip` turns that into a visible
     skip, because a vacuous pass is indistinguishable from coverage."""
     spec = load_or_skip(spec_path)

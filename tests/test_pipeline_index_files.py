@@ -13,8 +13,6 @@ rendered main.nf builds its channels under the real binary.
 """
 from __future__ import annotations
 
-import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -22,6 +20,7 @@ from pipeline_fixtures import probe_spec
 
 from agent.skills import pipeline_record as pr
 from agent.skills.pipeline_render import render_pipeline_files
+from _nextflow import needs_nextflow, run_nextflow
 
 _T = ["bcftools view -r chr22 {VCF} > {OUTPUT_DIR}/{SAMPLE}.vcf",
       "gatk HaplotypeCaller -R {REF} -I {BAM} -O {OUTPUT_DIR}/{SAMPLE}.g.vcf"]
@@ -119,12 +118,9 @@ def test_indexes_named_differently_across_rows_are_not_staged_and_the_notes_say_
     assert any(n.startswith("BAM: index files sit beside its files, but not under one name") for n in rec.notes)
 
 
-_RUNTIME = Path(__file__).resolve().parents[1] / ".conda_runtime"
-_NEXTFLOW, _JVM = _RUNTIME / "bin" / "nextflow", _RUNTIME / "lib" / "jvm"
 
 
-@pytest.mark.skipif(not (_NEXTFLOW.is_file() and (_JVM / "bin" / "java").is_file()),
-                    reason="needs the runtime env's nextflow")
+@needs_nextflow
 def test_the_rendered_channels_build_under_the_real_binary(tmp_path):
     data = _data(tmp_path / "d")
     rec = pr.derive_pipeline_record(_spec(str(data)), name="vc", index_files=_observed(_spec(str(data))))
@@ -132,8 +128,5 @@ def test_the_rendered_channels_build_under_the_real_binary(tmp_path):
     for name, text in render_pipeline_files(rec).items():
         (pipe / name).parent.mkdir(parents=True, exist_ok=True)
         (pipe / name).write_text(text)
-    env = dict(os.environ, JAVA_HOME=str(_JVM), JAVA_CMD=str(_JVM / "bin" / "java"),
-               NXF_HOME=str(pipe / ".nextflow_home"), NXF_OFFLINE="true", NXF_ANSI_LOG="false")
-    run = subprocess.run([str(_NEXTFLOW), "run", "main.nf", "-profile", "local", "-params-file", "params.yaml",
-                          "-preview"], cwd=pipe, env=env, capture_output=True, text=True, timeout=300)
+    run = run_nextflow(pipe, "run", "main.nf", "-profile", "local", "-params-file", "params.yaml", "-preview")
     assert run.returncode == 0, run.stdout + run.stderr

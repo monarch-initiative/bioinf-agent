@@ -8,12 +8,12 @@ were ILLEGIBLE — a full-auto agent had to read spec_writer.py source to learn 
 The fixes make the failures self-explanatory at the point of failure WITHOUT
 weakening any check. These tests lock that legibility in so it can't regress:
 
-  1. `_is_output_slot` — the (previously duplicated, now single-source) I4 output
-     placeholder convention. `{OUT_TSV}` is NOT an output slot → the trap.
-  2. `_run_one_trial` — when an output goes through an unrecognized slot (produced
+  1. `_run_one_trial` — when an output goes through an unrecognized slot (produced
      nothing in the scratch dir), the refusal now carries `hint` +
-     `recognized_output_slots` naming the convention and the fix.
-  3. `run_pipeline_step` — rc=0 with an expected-but-undetected output now returns
+     `recognized_output_slots` naming the convention and the fix. (`{OUT_TSV}` is
+     NOT an output slot; the convention itself is pinned in
+     tests/test_usage_slot_grammar.py.)
+  2. `run_pipeline_step` — rc=0 with an expected-but-undetected output now returns
      `output_detection_hint` pointing at watch_dir (the silent-empty trap; would
      otherwise fail I3 at seal with no explanation).
 """
@@ -23,8 +23,6 @@ from pathlib import Path
 
 import pytest
 
-from agent.skills import spec_writer
-from agent.models.core_data import is_output_slot as _is_output_slot
 from agent.skills.spec_writer import _run_one_trial
 
 
@@ -40,8 +38,6 @@ from agent.skills.spec_writer import _run_one_trial
     ("FASTQ", False),
     ("REF", False),
 ])
-def test_is_output_slot_convention(slot, expected):
-    assert _is_output_slot(slot) is expected
 
 
 class _FakeEM:
@@ -56,7 +52,7 @@ class _FakeEM:
         return {"returncode": 0, "stdout": "", "stderr": ""}
 
 
-# ── 2. the I4 refusal is now legible for the unrecognized-slot trap ─────────
+# ── 1. the I4 refusal is now legible for the unrecognized-slot trap ─────────
 def test_i4_unrecognized_output_slot_refusal_is_legible():
     """`-o {OUT_TSV}` → the file lands outside the scratch dir → produced_files
     empty. The refusal must now DISCLOSE the convention (hint) + which slots were
@@ -94,7 +90,7 @@ def test_i4_recognized_output_dir_slot_passes():
     assert res["ok"] is True, res
 
 
-# ── 3. run_pipeline_step surfaces a hint on the silent-empty trap ───────────
+# ── 2. run_pipeline_step surfaces a hint on the silent-empty trap ───────────
 def _patch_state(monkeypatch):
     import agent.mcp_server as ms
     monkeypatch.setattr(ms._env_mgr, "hash_outputs", lambda outs: {}, raising=False)

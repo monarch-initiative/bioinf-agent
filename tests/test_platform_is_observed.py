@@ -136,10 +136,10 @@ def test_a_platform_string_the_system_cannot_read_is_refused_not_waved_through()
 # --- three states, not two ---------------------------------------------------------
 
 def test_a_record_written_before_the_observation_is_unobserved_not_failed():
-    """All 16 records in the real corpus predate `image_arch`. Failing them would be a
-    claim about their architecture that nothing supports — the same overreach in the
-    other direction. They report UNOBSERVED, surface through `assurance_unproven[]` in
-    the inventory, and are re-earned by a re-freeze, never a backfill."""
+    """A record frozen before `image_arch` was observed carries no architecture. Failing
+    it would be a claim about its architecture that nothing supports — the same overreach
+    in the other direction. It reports UNOBSERVED, surfaces through `assurance_unproven[]`
+    in the inventory, and is re-earned by a re-freeze, never a backfill."""
     rec = _rec()
     del rec["image_arch"]
     assert _platform_violations(rec) == []
@@ -187,17 +187,18 @@ def test_the_observation_reads_the_image_not_the_request():
 
 
 @pytest.mark.live
+@pytest.mark.integration_docker
 def test_the_observation_against_real_images():
-    """The three shapes, on bytes rather than fixtures — this is where the amd64-only
-    biocontainer and the multi-arch index were actually found."""
+    """The shapes on bytes rather than fixtures — this is where the amd64-only
+    biocontainer and the multi-arch index were actually found. The image is pulled
+    when it is not local, so `resolved` does not depend on what this machine had
+    cached; a pull that fails (offline, registry down) is a real "we failed to look"
+    and skips, never passes."""
     assert locus.image_arch("no-such-image-here:nope")["resolved"] is False
     bc = locus.image_arch("quay.io/biocontainers/samtools:1.21--h50ea8bc_0")
-    # Since F3 this pulls when the image is not local, so `resolved` no longer
-    # depends on what this machine had cached — which is the whole point of the
-    # change. The guard stays because a pull can still fail (offline, registry
-    # down), and that is a real "we failed to look" rather than a cold cache.
-    if bc["resolved"]:
-        assert bc["arch"] == "amd64", "bioconda publishes linux-64 biocontainers only"
+    if not bc["resolved"]:
+        pytest.skip("the biocontainer could not be pulled or inspected (offline, or the registry is down)")
+    assert bc["arch"] == "amd64", "bioconda publishes linux-64 biocontainers only"
 
 
 # ---------------------------------------------------------------------------

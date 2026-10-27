@@ -118,6 +118,27 @@ from agent.skills.env_honesty import evidence_depth, is_shallow_evidence  # noqa
     ("mytool", "mytool", "help"),
     ("", "mytool", "unknown"),          # decline to guess rather than assume a depth
     ("tool --frobnicate", "other", "unknown"),
+    # `| head`, `| cat`, `2>&1`, `> /dev/null` shape a command's OUTPUT and say nothing
+    # about what it does. They used to promote anything to 'functional' — one pipe
+    # outranking the thing being piped, and a one-character bypass for any depth rule.
+    ("samtools --version | head -1", "samtools", "version"),
+    ("samtools --version 2>&1", "samtools", "version"),
+    # A bare invocation + plumbing is still a bare invocation (CS19): measured on a
+    # real freeze, `set -o pipefail; bwa > /tmp/bwa_help.txt 2>&1; grep -q … /tmp/…`
+    # graded 'functional' off its own CAPTURE redirect while the samtools row beside
+    # it was correctly ⚠ 'version'. The banner-capture idiom the shape rule itself
+    # recommends must not out-grade the flag it replaces.
+    ("bwa 2>&1 | head", "bwa", "help"),
+    ("set -o pipefail; bwa > /tmp/h.txt 2>&1; grep -q 'Program: bwa' /tmp/h.txt",
+     "bwa", "help"),
+    # a wrapper must not hide the bare probe back into 'functional' (audit) —
+    # the segment's command word comes from the same reading the run
+    # primitives use to name a step, which unwraps time/nice/env
+    ("time bwa > /tmp/h.txt 2>&1", "bwa", "help"),
+    # an INPUT redirect is work (stdin feeding), never banner capture
+    ("gunzip < /data/x.gz > /tmp/y.txt", "gunzip", "functional"),
+    ("mytool --help | cat", "mytool", "help"),
+    ("pigz --version > /dev/null", "pigz", "version"),
 ])
 def test_evidence_depth_classifies(ev, tool, expected):
     assert evidence_depth(ev, tool) == expected
@@ -139,33 +160,6 @@ def test_presence_probes_are_named_presence_not_promoted(ev, tool):
     """
     assert evidence_depth(ev, tool) == "presence"
     assert is_shallow_evidence(ev, tool) is True
-
-
-@pytest.mark.parametrize("ev,tool,expected", [
-    ("samtools --version | head -1", "samtools", "version"),
-    ("samtools --version 2>&1", "samtools", "version"),
-    # A bare invocation + plumbing is still a bare invocation (CS19): measured on a
-    # real freeze, `set -o pipefail; bwa > /tmp/bwa_help.txt 2>&1; grep -q … /tmp/…`
-    # graded 'functional' off its own CAPTURE redirect while the samtools row beside
-    # it was correctly ⚠ 'version'. The banner-capture idiom the shape rule itself
-    # recommends must not out-grade the flag it replaces.
-    ("bwa 2>&1 | head", "bwa", "help"),
-    ("set -o pipefail; bwa > /tmp/h.txt 2>&1; grep -q 'Program: bwa' /tmp/h.txt",
-     "bwa", "help"),
-    # a wrapper must not hide the bare probe back into 'functional' (audit) —
-    # the segment's command word comes from the same reading the run
-    # primitives use to name a step, which unwraps time/nice/env
-    ("time bwa > /tmp/h.txt 2>&1", "bwa", "help"),
-    # an INPUT redirect is work (stdin feeding), never banner capture
-    ("gunzip < /data/x.gz > /tmp/y.txt", "gunzip", "functional"),
-    ("mytool --help | cat", "mytool", "help"),
-    ("pigz --version > /dev/null", "pigz", "version"),
-])
-def test_output_plumbing_does_not_promote_depth(ev, tool, expected):
-    """`| head`, `| cat`, `2>&1`, `> /dev/null` shape a command's OUTPUT and say nothing
-    about what it does. They used to promote anything to 'functional' — one pipe
-    outranking the thing being piped, and a one-character bypass for any depth rule."""
-    assert evidence_depth(ev, tool) == expected
 
 
 def test_shallow_flags_presence_only_not_functional():

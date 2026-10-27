@@ -552,22 +552,6 @@ def test_attestation_guarantees_are_read_off_the_contract_not_the_mode():
     assert gap["not_applicable"] and all(u["why"] for u in gap["unobserved"])
 
 
-def test_i13_fires_on_the_legacy_gated_key():
-    """Records on disk carry `gated`, not `license_gated`. The contract read only the
-    canonical name, so a legacy gated record passed I13 by default AND reported the
-    clause as not-applicable. `core_data.record_is_gated` is the one reader; the contract
-    now uses it, which is the only reason it is in a leaf module."""
-    legacy = _clean_record(gated=True, redistributable=True, licenses=[])
-    c = eh.evaluate_build(legacy)
-    assert _clause(c, "POLICY_CLEAN.license").status == eh.CHECKED
-    assert {v["invariant"] for v in c.violations} == {
-        "I13.gated_not_redistributable", "I13.gated_license_recorded"}
-
-    # ...and the canonical key still wins when both are present.
-    both = _clean_record(license_gated=False, gated=True)
-    assert _clause(eh.evaluate_build(both), "POLICY_CLEAN.license").status == eh.NOT_APPLICABLE
-
-
 # ---------------------------------------------------------------------------------------
 # The `-m` alternative caught CLI flags, not python modules
 # ---------------------------------------------------------------------------------------

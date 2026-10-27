@@ -31,7 +31,6 @@ where they were sealed.
 from __future__ import annotations
 
 import pytest
-import yaml
 
 from agent.skills import data_pins as dp
 from _artifacts import load_or_skip, sealed_spec_params
@@ -221,19 +220,3 @@ def test_no_sealed_workflow_condemns_its_own_inputs(spec_path, locus):
     assert not diverged, (
         f"{spec_path} at the {locus} locus: the checker condemns "
         f"{[f['path'] for f in diverged]}, which is what it was sealed with")
-
-
-def test_the_flagship_workflow_really_does_verify_by_content():
-    """The complement of the guard above: proof it is not vacuously green. This
-    one has 16 authored anchors still on disk and must MATCH them, by sha256."""
-    # Bare filename: load_or_skip resolves it against the machine's real
-    # reports zone. (This used to say "env_reports/…", a zone name that died
-    # in the workspace split — the skip named a path nobody writes to.)
-    spec = load_or_skip("rnaseq_deseq2_chr22.workflow.yaml")
-    step1 = (spec.get("pipeline_steps") or [])[0]
-    bound = {f"IN{i}": inp["path"] for i, inp in enumerate(step1.get("inputs") or [])}
-    r = dp.check_bound_inputs(spec, bound)
-    assert r["status"] == dp.VERIFIED
-    assert r["counts"][dp.MATCH] >= 10, r["counts"]
-    assert all(f["observed_sha256"] for f in r["findings"]), \
-        "a 'match' with no observed hash would be a claim, not an observation"

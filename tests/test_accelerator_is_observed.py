@@ -44,7 +44,6 @@ Separate provenance is the only reason the comparison means anything.
 """
 from __future__ import annotations
 
-import copy
 
 import pytest
 
@@ -347,18 +346,25 @@ def test_freeze_record_keeps_an_observation_of_absence():
 # Live — against real images on the local daemon
 # --------------------------------------------------------------------------
 
-@pytest.mark.live
-def test_live_reads_a_real_cuda_image_and_a_real_cpu_image():
-    """Needs docker + `docker pull nvidia/cuda:12.4.1-base-ubuntu22.04`.
+@pytest.mark.integration_docker
+def test_reads_a_real_cuda_image_and_a_real_cpu_image():
+    """Needs docker + `docker pull nvidia/cuda:12.4.1-base-ubuntu22.04`; the CPU half
+    reads the pinned build base image, which every real build here pulls.
 
     Grounded in what a real image actually holds, which corrected three assumptions:
     /usr/local/cuda/version.json and version.txt do NOT exist in a base image, and
     nvcc is not there either. What IS there is the toolkit directory, plus CUDA_VERSION
     and NVIDIA_REQUIRE_CUDA in the image ENV.
     """
+    from agent.skills.container_build import BASE_IMAGE
+    cpu = L.image_accelerator(BASE_IMAGE)
+    if not cpu["resolved"]:
+        pytest.skip(f"the pinned base image is not on this daemon: docker pull {BASE_IMAGE}")
+    assert cpu["type"] == "none", cpu
     cuda = L.image_accelerator("nvidia/cuda:12.4.1-base-ubuntu22.04")
     if not cuda["resolved"]:
-        pytest.skip("nvidia/cuda base image not present on this daemon")
+        pytest.skip("nvidia/cuda base image not present on this daemon: "
+                    "docker pull nvidia/cuda:12.4.1-base-ubuntu22.04")
     assert cuda["type"] == "cuda"
     assert cuda["version"].startswith("12.4")
     assert cuda["source"]

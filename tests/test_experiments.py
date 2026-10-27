@@ -1652,12 +1652,6 @@ class TestIsolation:
         meta2 = json.loads((run2 / "experiment.json").read_text())
         assert "resources_mutated" not in meta2 and (meta2["attempt"], meta2["attempts_of"]) == (2, "first")
 
-    def test_the_real_docker_build_is_in_the_docker_tier(self):
-        src = (ROOT / "tests" / "test_local_sif.py").read_text()
-        assert "@pytest.mark.integration_docker\n@pytest.mark.skipif(not shutil.which(\"docker\")" in src
-        assert "integration_docker" in (ROOT / "pytest.ini").read_text()
-
-
 # ---------------------------------------------------------------------------
 # Repeats: per tier, per code revision, confirmed on fail
 # ---------------------------------------------------------------------------

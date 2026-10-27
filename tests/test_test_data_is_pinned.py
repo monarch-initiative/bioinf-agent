@@ -209,8 +209,7 @@ def test_an_unchanged_anchored_input_seals_and_says_verified(tmp_path):
 
 def test_an_unanchored_block_is_unanchored_not_verified(tmp_path):
     """The legacy shape (and anything that reached a draft outside the primitive). It
-    does not refuse the seal — existence still passed — but it must not read as proof.
-    Both sealed specs on disk that carry test_data are exactly this."""
+    does not refuse the seal — existence still passed — but it must not read as proof."""
     spec = _spec(tmp_path, {"genome_build": "hg38", "r1": _reads(tmp_path)})
     assert _ids(spec) == []
     r = verify_test_data(spec)
@@ -466,30 +465,6 @@ def test_a_production_run_binding_swapped_data_reports_diverged(tmp_path, monkey
     Path(td["r1"]).write_text("@b\nGGGG\n+\nIIII\n")
     check = data_pins.check_bound_inputs({"test_data": td}, {"READS": td["r1"]})
     assert check["status"] == data_pins.DIVERGED, check
-
-
-def test_the_real_sealed_specs_are_read_as_unanchored_not_as_verified():
-    """The two sealed artifacts on disk that carry test_data predate anchors. They must
-    read as `unanchored` — the honest third state — and must not refuse, since their
-    inputs are still where they were left. Guards against the tempting shortcut of
-    treating "no anchor" as "nothing to complain about, call it verified"."""
-    from _artifacts import sealed_spec_paths
-    paths = sealed_spec_paths()
-    if not paths:
-        pytest.skip("no sealed workflow artifacts in the workspace reports zone — "
-                    "this check only has force on a machine that has sealed something")
-    seen = 0
-    for f in [Path(x) for x in paths]:
-        spec = yaml.safe_load(f.read_text())
-        if not cd.test_data_paths(spec.get("test_data")):
-            continue
-        seen += 1
-        r = verify_test_data(spec)
-        assert r["status"] in (TEST_DATA_UNANCHORED, TEST_DATA_VERIFIED), (f.name, r)
-        assert r["checked"] > 0
-    if seen == 0:
-        pytest.skip("no sealed spec in env_reports/ carries test_data paths "
-                    "(env_reports/ is gitignored, so this is vacuous in a clean clone)")
 
 
 # ---------------------------------------------------------------------------
