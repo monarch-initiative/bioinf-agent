@@ -53,6 +53,19 @@ def _register_local_reference(*, name: str, local_path: str, version: str, descr
         return refused("data.register_db_missing", success=False,
                        error=f"nothing exists at local_path {lp!r} — a reference is registered "
                              f"after it is built; to fetch one, pass `url`")
+    # The seal pins a reference by content and I5 re-verifies it on every later seal; the
+    # scratch zone is cleared freely, so a reference there is a pin that routine cleanup
+    # breaks.
+    try:
+        in_scratch = target.resolve().is_relative_to(_workspace.scratch_dir().resolve())
+    except (OSError, ValueError):
+        in_scratch = False
+    if in_scratch:
+        return refused("data.register_db_in_scratch", success=False,
+                       error=(f"{lp} lies in the scratch zone, which is cleared freely, so a seal "
+                              f"pinning it would fail I5 after routine cleanup. Put the reference "
+                              f"under the common_data zone ({_workspace.common_data_dir()}) — write "
+                              f"or copy it there — and register that path."))
     sha256 = None
     size_bytes = None
     if target.is_file():
@@ -108,7 +121,8 @@ def download_reference_database(
     in async. Auto-records a ReferenceDatabase entry in the draft when pipeline_id
     is supplied.
 
-    REGISTER (url="" and `local_path` names an existing file or directory): a
+    REGISTER (url="" and `local_path` names an existing file or directory outside
+    the scratch zone, which is cleared freely): a
     reference you BUILT or STAGED on this machine — an aligner index from
     `hisat2-build`/`bwa index`, an annotation sliced from a larger file, a bundle
     copied in — is recorded as a reference database with no download origin

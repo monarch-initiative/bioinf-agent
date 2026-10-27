@@ -115,6 +115,18 @@ def test_a_built_directory_is_registered_by_path(tools, tmp_path):
     assert ps.get_draft(pid)["reference_databases"][0]["local_path"] == str(d)
 
 
+def test_a_reference_in_the_scratch_zone_is_refused_naming_the_durable_zone(tools):
+    """Scratch is cleared freely; a seal that pinned a reference there failed I5 the day
+    the scratch test runs were deleted."""
+    from agent.skills import workspace
+    data_tools, _, pid = tools
+    f = workspace.scratch_dir("step_outputs") / "built.idx"
+    f.write_bytes(b"x")
+    r = data_tools.download_reference_database(name="idx", url="", local_path=str(f), pipeline_id=pid)
+    assert r["outcome"] == "refused" and r["code"] == "data.register_db_in_scratch"
+    assert "scratch zone" in r["error"] and str(workspace.common_data_dir()) in r["error"]
+
+
 def test_registering_what_is_not_there_is_refused(tools, tmp_path):
     data_tools, _, pid = tools
     r = data_tools.download_reference_database(name="idx", url="", local_path=str(tmp_path / "no"), pipeline_id=pid)
