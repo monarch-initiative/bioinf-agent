@@ -406,11 +406,14 @@ def image_mutation(evidence: str) -> str:
 
 
 def evidence_shape_violation(evidence: str, tool: str = "",
-                             aliases: Iterable[str] = ()) -> Optional[str]:
+                             aliases: Iterable[str] = (), *,
+                             require_tool_token: bool = True) -> Optional[str]:
     """Return a reason string if `evidence` is a cheat shape, else None. Public so
     a face (MCP/CLI) can pre-flight an agent-authored evidence before a build.
     `aliases` are the other structural names of the same artifact (a run-by-path
-    repo's entrypoint file) that satisfy the token rule beside `tool`.
+    repo's entrypoint file, the commands a package ships) that satisfy the token rule
+    beside `tool`. `require_tool_token=False` skips that one clause, for a caller that
+    applies it later with the names read off the built image.
 
     DEFENSE IN DEPTH, NOT THE DEFENSE. This reads a string, and a string rule cannot win
     against a string author — the audit walked through the previous version with four
@@ -480,7 +483,7 @@ def evidence_shape_violation(evidence: str, tool: str = "",
     if _BARE_ECHO.match(ex) and "$(" not in ex and "`" not in ex:
         return f"evidence {ev!r} only echoes a string — it never invokes the tool"
     if tool:
-        if not _references_tool(ex, tool, aliases):
+        if require_tool_token and not _references_tool(ex, tool, aliases):
             others = [a for a in aliases if a and a != tool]
             also = f" (nor its entrypoint {', '.join(repr(a) for a in others)})" if others else ""
             return (f"evidence {ev!r} never references the tool token {tool!r}{also} as a "

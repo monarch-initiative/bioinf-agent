@@ -67,8 +67,9 @@ def _validate_tools_in_image(image: str, platform: str, tools: list,
     samtools` walks through the shape rule and is caught by neither reading the string
     nor trusting it, but by running it somewhere the tool does not exist.
     """
+    from agent.skills.container_build import package_commands_sh, parse_command_names
     from agent.skills.env_honesty import evidence_shape_violation
-    from agent.skills.freeze_from_image import _evidence_discriminates
+    from agent.skills.freeze_from_image import _command_word, _evidence_discriminates
 
     ev_map = {str(k): str(v) for k, v in (evidence or {}).items() if v}
     rows: list[dict] = []
@@ -87,7 +88,20 @@ def _validate_tools_in_image(image: str, platform: str, tools: list,
             # The synthesized probe needs neither guard — nothing authored it and its
             # shape is ours. This one was typed by the agent, so it earns its standing
             # the same way freeze_from_image's does.
-            row["shape_violation"] = evidence_shape_violation(authored, tool) or ""
+            # An evidence that invokes a command other than the package's name (the
+            # package google-cloud-sdk ships `gcloud`) is held to the token rule with the
+            # commands the package ships in the image, read off its conda-meta record.
+            aliases: list[str] = []
+            word = _command_word(authored)
+            if word and tool.lower() not in word.lower():
+                try:
+                    probe = _ms._docker.run_in_container(image, package_commands_sh(tool),
+                                                         platform=platform, timeout=120)
+                    aliases = parse_command_names(probe.get("stdout") or "")
+                except Exception:
+                    aliases = []
+            row["tool_aliases"] = aliases
+            row["shape_violation"] = evidence_shape_violation(authored, tool, aliases) or ""
             row["control"], row["control_note"] = (
                 _evidence_discriminates(platform, authored) if rc == 0
                 else ("not_applicable", "evidence did not pass"))

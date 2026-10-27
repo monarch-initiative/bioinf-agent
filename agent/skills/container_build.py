@@ -338,6 +338,24 @@ def registry_pull_ref(ref: str) -> str:
 _OOM_SIGNS = ("cannot allocate memory", "ResourceExhausted", "out of memory", "exit code: 137", "Killed")
 
 
+def package_commands_sh(name: str) -> str:
+    """A shell that prints the commands a conda package ships in an image, one per line:
+    the `bin/` basenames its conda-meta record lists, under every conda prefix an image
+    here or adopted carries. Always exits 0; prints nothing for a package not there."""
+    q = shlex.quote(name)
+    return (f'for f in /opt/conda/envs/*/conda-meta/{q}-*.json /opt/conda/conda-meta/{q}-*.json '
+            f'/usr/local/conda-meta/{q}-*.json; do [ -e "$f" ] || continue; '
+            f'sed -nE \'s|.*"bin/([^"/]+)".*|\\1|p\' "$f"; done | sort -u; exit 0')
+
+
+_COMMAND_NAME = re.compile(r"^[A-Za-z0-9_.+-]+$")
+
+
+def parse_command_names(out: str) -> list[str]:
+    """The command names `package_commands_sh` printed, sorted and unique."""
+    return sorted({l.strip() for l in (out or "").splitlines() if _COMMAND_NAME.match(l.strip())})
+
+
 def docker_memory_gib() -> Optional[float]:
     """The memory the Docker daemon's VM has, in GiB, or None when docker does not answer."""
     try:
@@ -931,6 +949,12 @@ class ContainerBuild:
                         runtime_packages=spec.get("runtime_packages"),
                         version_probe=spec.get("version_probe", ""), timeout=timeout,
                         workdir=spec.get("evidence_workdir", ""))
+
+    def package_commands(self, image: str, name: str) -> list[str]:
+        """The commands package `name` ships in `image`, read off its conda-meta record."""
+        r = self._sh(["docker", "run", "--rm", "--platform", self.platform, image, "bash", "-c",
+                      package_commands_sh(name)], timeout=120)
+        return parse_command_names(r.get("stdout") or "") if r.get("returncode") == 0 else []
 
     # -- MATERIALIZE -------------------------------------------------------
     def freeze(self, name: str, version: str = "", *, output_dir: str = "/tmp") -> dict[str, Any]:

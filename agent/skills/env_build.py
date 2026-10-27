@@ -119,6 +119,14 @@ class EnvBuild:
         for v in self.verifications:
             shape = _honesty.evidence_shape_violation(v.get("check", ""), v.get("tool", ""),
                                                       v.get("tool_aliases") or ())
+            if shape and _honesty.evidence_shape_violation(
+                    v.get("check", ""), v.get("tool", ""), v.get("tool_aliases") or (),
+                    require_tool_token=False) is None:
+                # Only the token clause failed: the evidence invokes a command that is not
+                # the package's name. The built image says which commands the package
+                # ships; verify_in_image reads them and applies the clause then.
+                v["tool_aliases_pending"] = True
+                continue
             if shape:
                 return broke("env_build.evidence_shape", success=False, stage="evidence_preflight",
                              tool=v.get("tool", ""), label=v.get("label", ""),
@@ -175,6 +183,21 @@ class EnvBuild:
         # / `micromamba run`. This makes validated==shipped literal — a tool that
         # passes only under engine-run activation but is unreachable via `apptainer
         # exec image <tool>` is now correctly caught (the GAB python-on-PATH gap).
+        # The token clause deferred at build(): the package's own commands, read off the
+        # image, are the names that satisfy it, and the record carries them.
+        for v in self.verifications:
+            if not v.pop("tool_aliases_pending", False):
+                continue
+            names = self.cb.package_commands(image, v.get("tool", ""))
+            v["tool_aliases"] = names
+            shape = _honesty.evidence_shape_violation(v.get("check", ""), v.get("tool", ""), names)
+            if shape:
+                return broke("env_build.evidence_shape", success=False, stage="evidence",
+                             tool=v.get("tool", ""), label=v.get("label", ""),
+                             evidence=v.get("check", ""),
+                             error=shape + (f"; the commands the package ships in the image are "
+                                            f"{', '.join(names)}" if names else
+                                            "; the package ships no bin/ command in the image"))
         finals = [(v, v["check"]) for v in self.verifications]
         # Banner probes — per-tool self-reported version capture from the shipped
         # binary. Tokens come from the structural `tool` field set by the install
