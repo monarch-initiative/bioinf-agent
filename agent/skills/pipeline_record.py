@@ -270,6 +270,36 @@ class ResolvedValue(BaseModel):
     stage: str                                 # the stage that writes it; it runs on every launch
 
 
+class ProofTask(BaseModel):
+    """One task of the proof run, as Nextflow's trace recorded it."""
+    model_config = ConfigDict(extra="forbid")
+    name: str                                  # `STAGE (sample)`, as the trace names it
+    status: str                                # COMPLETED / FAILED / ABORTED
+    exit: str                                  # the task's exit code, as the trace spells it
+    realtime: str
+    peak_rss: str
+    container: str
+
+
+class PipelineProof(BaseModel):
+    """The render's own run: the rendered directory, as written, run once with Nextflow
+    over the sealed samples (`-profile local`), so what the user plugs in is what ran.
+    Written into the record and shown on the page; the run's records (trace.txt,
+    report.html, nextflow.log) sit under `run_record` inside the pipeline directory."""
+    model_config = ConfigDict(extra="forbid")
+    verdict: Literal["passed", "failed", "timed_out"]
+    reason: str
+    stamp: str
+    run_dir: str                               # where the proof ran (the scratch zone)
+    run_record: str                            # runs/<stamp>, inside the pipeline directory
+    launch: str                                # the command line the proof ran
+    samples: list[str]
+    tasks_expected: int
+    tasks: list[ProofTask]
+    nextflow_exit: Optional[int]
+    duration_s: float
+
+
 class PipelineRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -293,6 +323,7 @@ class PipelineRecord(BaseModel):
     resolved: list[ResolvedValue]              # values looked up at run time (resolve=), at most one
     defaults: list[PipelineDefault]
     notes: list[str]
+    proof: Optional[PipelineProof] = None      # the render's own run over the sealed samples
 
     def stage(self, name: str) -> PipelineStage:
         for s in self.stages:

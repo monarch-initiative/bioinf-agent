@@ -389,3 +389,35 @@ def probe_spec(templates: list[str], trials: list[tuple[str, dict]], outputs: li
                   "trials": [{"name": n, "substitutions": dict(s, OUTPUT_DIR=f"/out/{n}")} for n, s in trials]},
         "pipeline_steps": steps,
         "envs": [{"request_key": REQUEST_KEY, "image": f"x@{DIGEST}", "image_digest": DIGEST}]})
+
+
+# ── the proof, faked for the tests that render without docker or nextflow ────
+
+def fake_proof(monkeypatch, verdict: str = "passed", tasks_per_row: int = 1):
+    """Stand in for the render's proof run: the preconditions pass and `run_proof` reports
+    `verdict` with one COMPLETED task per per-sample stage and sample, writing the run's
+    record directory the real proof would leave. Returns the list of calls made."""
+    from agent.skills import pipeline_proof as PP
+    from agent.skills.pipeline_record import PipelineProof, ProofTask
+    calls: list[dict] = []
+    from agent import mcp_server as _ms
+    monkeypatch.setattr(_ms, "_check_docker_available", lambda: None)
+    monkeypatch.setattr(PP, "check_preconditions", lambda record: None)
+
+    def _run(record, pipeline_dir, *, files, timeout_s=PP.PROOF_TIMEOUT_S_DEFAULT):
+        calls.append({"record": record, "pipeline_dir": Path(pipeline_dir), "files": list(files), "timeout_s": timeout_s})
+        stamp = "20261028_120000"
+        (Path(pipeline_dir) / "runs" / stamp).mkdir(parents=True, exist_ok=True)
+        (Path(pipeline_dir) / "runs" / stamp / "trace.txt").write_text("task_id\tname\tstatus\texit\n")
+        rows = record.samplesheet.rows
+        tasks = [ProofTask(name=f"{s.name} ({r.get('sample', '')})" if s.scope == "per_sample" else s.name,
+                           status="COMPLETED" if verdict == "passed" else "FAILED",
+                           exit="0" if verdict == "passed" else "1", realtime="1s", peak_rss="10 MB",
+                           container=s.image or "")
+                 for s in record.stages for r in (rows if s.scope == "per_sample" else [{}])]
+        return PipelineProof(verdict=verdict, reason="faked", stamp=stamp, run_dir=str(Path(pipeline_dir) / "_proof"),
+                             run_record=f"runs/{stamp}", launch="nextflow run main.nf -profile local",
+                             samples=[r.get("sample", "") for r in rows], tasks_expected=len(tasks), tasks=tasks,
+                             nextflow_exit=0 if verdict == "passed" else 1, duration_s=1.0)
+    monkeypatch.setattr(PP, "run_proof", _run)
+    return calls

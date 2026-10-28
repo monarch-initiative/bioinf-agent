@@ -298,7 +298,36 @@ def render_pipeline_dir(record: PipelineRecord, out_dir: Path, *,
     }
 
 
+def write_record_files(record: PipelineRecord, out_dir: Path) -> list[str]:
+    """Rewrite the files that are rendered from the record alone — `.pipeline/pipeline.yaml`,
+    `pipeline.html` and the manifest — after the record gained its proof. The Nextflow files
+    the proof ran are left exactly as they were; the manifest covers them unchanged."""
+    out_dir = Path(out_dir)
+    files = render_pipeline_files(record)
+    for rel in (RECORD_PATH, PAGE_FILENAME, MANIFEST_PATH):
+        p = out_dir / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(files[rel])
+    return [RECORD_PATH, PAGE_FILENAME, MANIFEST_PATH]
+
+
+def remove_render(out_dir: Path, files: list[str]) -> None:
+    """Take a render back: the files it wrote and its record directory, and the directory
+    itself when nothing else is in it. A run's own `runs/`, `results/` and `work/` and the
+    user's files are never touched."""
+    out_dir = Path(out_dir)
+    for rel in files:
+        p = out_dir / rel
+        if p.is_file():
+            p.unlink()
+    rec = out_dir / RECORD_DIR
+    if rec.is_dir() and not any(rec.iterdir()):
+        rec.rmdir()
+    if out_dir.is_dir() and not any(out_dir.iterdir()):
+        out_dir.rmdir()
+
+
 __all__ = ["PipelineRenderError", "PAGE_FILENAME", "SAMPLESHEET_FILENAME", "RECORD_DIR",
            "RECORD_PATH", "MANIFEST_FILENAME", "MANIFEST_PATH", "command_matches_template",
            "check_rendered_commands", "parse_manifest", "render_pipeline_files",
-           "render_pipeline_dir"]
+           "render_pipeline_dir", "write_record_files", "remove_render"]

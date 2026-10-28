@@ -37,10 +37,18 @@ from agent.skills.pipeline_page_html import (FOOTER, DirEntry, _ticks_to_code, d
                                              render_pipeline_page)
 from agent.skills.pipeline_render_nextflow import RUN_HPC, RUN_LOCAL, RUN_RECORD_FILES, RUN_RECORDS, bound_commands
 
+
+@pytest.fixture(autouse=True)
+def _proof_is_faked(monkeypatch):
+    """The render ends with a proof run (docker + nextflow); these tests pin the render
+    and the record, so the proof is stood in for."""
+    from pipeline_fixtures import fake_proof
+    fake_proof(monkeypatch)
+
 SPEC_PATH = "/ws/reports/rnaseq_counts_workflow.workflow.yaml"
 SIF = "/cluster/containers/rnaseq_cli_48ac8c5b25d2.sif"
 MODULES = ["apptainer/1.3.2", "nextflow/24.10.0"]
-SECTION_IDS = ["picture", "directory", "samplesheet", "run-local", "run-hpc", "stages"]
+SECTION_IDS = ["proof", "picture", "directory", "samplesheet", "run-local", "run-hpc", "stages"]
 DIGEST_2 = "sha256:" + "c" * 64
 #: How this machine provides nextflow, as the render tool records it: the checkout's
 #: activate script, and the binary it puts on PATH — or None when it was not there.

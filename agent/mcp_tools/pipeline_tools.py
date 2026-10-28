@@ -7,9 +7,11 @@ be re-run alone, the frozen image per stage, and an explain page — run with Ne
 locally through docker or on a cluster through apptainer and SLURM. A second sealed
 workflow can be attached as COHORT stages (`cohort=`): they run once, over every
 sample, after the per-sample stage they collect from — the fan-in is declared, never
-inferred. The tool reads the
-sealed spec through the typed seam, derives the record (`pipeline_record`), renders the
-directory (`pipeline_render`) and returns where it landed. It EXECUTES NOTHING.
+inferred. The tool reads the sealed spec through the typed seam, derives the record
+(`pipeline_record`), renders the directory (`pipeline_render`), then PROVES it: the
+directory as written is run once with Nextflow over the sealed samples
+(`pipeline_proof`), the run's records land under `runs/<stamp>/` and the verdict in the
+record, and a failed proof leaves no directory behind.
 
 It also INVENTS nothing. The record is derived from the seal (stages = the how-to's
 commands, images = the sealed steps' digests, columns = the per-sample inputs, defaults
@@ -28,8 +30,10 @@ from typing import Any, Optional
 from agent import mcp_server as _ms
 from agent.mcp_server import OptStrList, mcp
 from agent.skills import compute_access
+from agent.skills import pipeline_proof
 from agent.skills import workspace as _workspace
-from agent.skills.outcomes import proven, refused
+from agent.skills.backgroundable import backgroundable
+from agent.skills.outcomes import broke, proven, refused
 
 
 def _local_runtime() -> Optional[dict]:
@@ -111,6 +115,7 @@ def _cluster_hints(env_block: dict, spec: Any) -> dict:
 
 
 @mcp.tool()
+@backgroundable("name", "sealed_workflow")
 def render_pipeline(sealed_workflow: str,
                     name: Optional[str] = None,
                     stages: Optional[list[list[int]]] = None,
@@ -121,10 +126,26 @@ def render_pipeline(sealed_workflow: str,
                     env: Optional[str] = None,
                     cohort: Optional[list[dict[str, Any]]] = None,
                     resolve: Optional[dict[str, str]] = None,
-                    overwrite: bool = False) -> dict:
+                    overwrite: bool = False,
+                    proof_timeout_s: int = pipeline_proof.PROOF_TIMEOUT_S_DEFAULT) -> dict:
     """**The PIPELINE layer.** Render a SEALED workflow as a runnable pipeline directory
-    under ``<workspace>/pipelines/<name>/``. Executes nothing. The directory is a template:
-    copy it next to the data, fill ``samples.csv`` and ``params.yaml``, run it there.
+    under ``<workspace>/pipelines/<name>/`` and PROVE it: the directory as written is run
+    once with Nextflow over the sealed samples. The directory is then a template: copy it
+    next to the data, fill ``samples.csv`` and ``params.yaml``, run it there.
+
+    **The proof.** After the files are written they are copied under the scratch zone and
+    run there — ``nextflow run main.nf -profile local -params-file params.yaml`` with the
+    runtime env's Nextflow, docker, the stages' own images, ``samples.csv`` and
+    ``params.yaml`` exactly as rendered — and the run's records move into the pipeline
+    directory as ``runs/<stamp>/`` (trace.txt, report.html, timeline.html, nextflow.log,
+    proof.stdout, proof.stderr). The verdict (every expected task completed with exit 0)
+    is written into the record (``.pipeline/pipeline.yaml``, ``proof``) and shown on the
+    page; a proof that fails or times out returns ``broke`` with the failed tasks and the
+    run's path, and no pipeline directory is left. Before anything is written, a missing
+    runtime, a stage image absent from the local Docker daemon or a sealed input missing
+    from this machine refuses with the remedy. ``proof_timeout_s`` (default two hours)
+    bounds the run; every stage runs once more per sample, so a long proof is one to
+    start with ``background=True`` and finish with ``check_job``.
 
     **One way to run it.** ``main.nf`` + ``nextflow.config`` + ``params.yaml`` +
     ``samples.csv`` run every samplesheet row with Nextflow, one stage per how-to command,
@@ -181,20 +202,23 @@ def render_pipeline(sealed_workflow: str,
     **Refuses** (``refused``, with a remedy) when the seal cannot support the render: no
     how-to, no trial, a placeholder no trial binds, an artifact no sealed step was
     observed writing, a stage cut that mixes images, a fan-in not declared or naming an
-    artifact no per-sample stage writes, a placeholder both how-tos use; and when the
+    artifact no per-sample stage writes, a placeholder both how-tos use; when the
     target directory holds files edited since they were rendered (``pipeline.dir_edited``;
-    ``overwrite=True`` replaces them, or use a new ``name``). Every rendered command is
-    checked against the sealed how-to before any file is written.
+    ``overwrite=True`` replaces them, or use a new ``name``); and when the proof cannot run
+    here (``pipeline.proof_no_runtime`` · ``pipeline.proof_image_missing`` ·
+    ``pipeline.proof_inputs_missing``). Every rendered command is checked against the
+    sealed how-to before any file is written.
 
-    Returns ``proven("pipeline.rendered")`` with ``dir``, ``page``, ``files``, the ``stages``
-    (name, scope, commands, image digest, sized?), ``params``, ``samplesheet_columns``,
-    ``cohort_workflows``, ``scripts`` and ``resolved`` when there are any, ``sif`` when an
-    env was named, and every derivation ``note``. Open ``page`` first.
+    Returns ``proven("pipeline.rendered")`` with ``dir``, ``page``, ``files``, the ``proof``
+    (verdict, the run's records, the tasks), the ``stages`` (name, scope, commands, image
+    digest, sized?), ``params``, ``samplesheet_columns``, ``cohort_workflows``, ``scripts``
+    and ``resolved`` when there are any, ``sif`` when an env was named, and every
+    derivation ``note``. Open ``page`` first.
     """
     from agent.skills.pipeline_record import (CohortRequest, LocalRuntime, PipelineDerivationError,
                                               derive_pipeline_record)
     from agent.models.core_data import sha256_file_or_none
-    from agent.skills.pipeline_render import render_pipeline_dir
+    from agent.skills.pipeline_render import remove_render, render_pipeline_dir, write_record_files
     from agent.skills.spec_writer import load_workflow_spec
 
     def _load(name: str):
@@ -295,10 +319,33 @@ def render_pipeline(sealed_workflow: str,
             local_runtime=LocalRuntime(**runtime) if runtime else None,
             samplesheet_files=sheet_files, index_files=index_files, cohort=requests or None,
             resolve=resolve or None)
+        # THE PROOF'S PRECONDITIONS, BEFORE A FILE IS WRITTEN: a render that cannot be
+        # proven here is not rendered here.
+        docker_refusal = _ms._check_docker_available()
+        if docker_refusal:
+            return docker_refusal
+        stop = pipeline_proof.check_preconditions(record)
+        if stop:
+            return {**stop, "sealed_workflow": sealed_workflow, "pipeline": pipeline_name}
         written = render_pipeline_dir(record, out_dir, env=env_block, overwrite=overwrite)
     except PipelineDerivationError as e:
         return refused(e.code, success=False, error=e.error, remedy=e.remedy,
                        sealed_workflow=sealed_workflow, pipeline=pipeline_name)
+
+    # THE PROOF: the directory as written, run once over the sealed samples.
+    proof = pipeline_proof.run_proof(record, out_dir, files=written["files"], timeout_s=proof_timeout_s)
+    if proof.verdict != "passed":
+        # No unproven pipeline directory: the render is taken back, the run stays for diagnosis.
+        remove_render(out_dir, written["files"])
+        return broke(
+            "pipeline.proof_failed", success=False, pipeline=pipeline_name, sealed_workflow=sealed_workflow,
+            error=f"the rendered pipeline did not run clean over the sealed samples: {proof.reason}",
+            proof=proof.model_dump(),
+            remedy=(f"read {proof.run_dir}/{proof.run_record}/ (nextflow.log, trace.txt, proof.stderr) and the "
+                    f"failed tasks' work directories under {proof.run_dir}/work/; fix the sealed run (re-run the "
+                    f"step, re-seal) and render again — the directory was not left as a template"))
+    record.proof = proof
+    write_record_files(record, out_dir)
 
     sif = next((s.sif_path for s in record.stages if s.sif_path), None)
     return proven(
@@ -306,6 +353,8 @@ def render_pipeline(sealed_workflow: str,
         pipeline=pipeline_name, sealed_workflow=sealed_workflow,
         dir=written["dir"], page=written["page"], record=written["record"],
         files=written["files"],
+        proof={"verdict": proof.verdict, "run_record": f"{written['dir']}/{proof.run_record}",
+               "samples": proof.samples, "tasks": len(proof.tasks), "duration_s": proof.duration_s},
         stages=[{"name": s.name, "scope": s.scope, "commands": s.commands,
                  "image_digest": s.image_digest, "sized": s.resources.requested_by == "caller"}
                 for s in record.stages],

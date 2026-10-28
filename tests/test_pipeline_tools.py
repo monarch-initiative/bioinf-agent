@@ -22,6 +22,14 @@ from agent.skills.pipeline_record import load_pipeline_record
 from agent.skills.spec_writer import write_workflow_spec
 from pipeline_fixtures import DIGEST, sealed_rnaseq_spec
 
+
+@pytest.fixture(autouse=True)
+def _proof_is_faked(monkeypatch):
+    """The render ends with a proof run (docker + nextflow); these tests pin the render
+    and the record, so the proof is stood in for."""
+    from pipeline_fixtures import fake_proof
+    fake_proof(monkeypatch)
+
 ENV = {"name": "cluster", "type": "ssh", "host": "h", "user": "u",
        "apptainer_module": "apptainer/1.4.1", "nextflow_module": "nextflow/25.04.7",
        "slurm": {"account": "acct_demo", "partition": "cpu_part"},

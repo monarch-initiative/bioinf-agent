@@ -808,6 +808,29 @@ def _header(record: PipelineRecord) -> str:
     return _header_banner(f"Pipeline — {_e(record.name)}", pill, rows)
 
 
+def _proof_section(record: PipelineRecord) -> str:
+    """The render's own run over the sealed samples: the verdict, the task table and
+    where the run's records are. A record without a proof says so."""
+    pf = record.proof
+    if pf is None:
+        return _section("proof", "Proven", "",
+                        '<span class="pill na">not proven</span> this directory was rendered without the proof run')
+    n = len(pf.samples)
+    done = sum(1 for t in pf.tasks if t.status == "COMPLETED" and t.exit == "0")
+    pill = (f'<span class="pill ok">✓ ran over the {n} sealed sample{"s" if n != 1 else ""}</span>' if pf.verdict == "passed"
+            else f'<span class="pill bad">✗ {_e(pf.verdict)}</span>')
+    lead = (f"{pill} on {_e(_created_line(record.created_at))}: {done} of {pf.tasks_expected} task(s) completed, "
+            f"in {pf.duration_s:.0f} s, with the files in this directory as rendered (Nextflow, <code>-profile local</code>, "
+            f"docker). {_e(pf.reason)}")
+    rows = [[f"<code>{_e(t.name)}</code>", _e(t.status), _e(t.exit), _e(t.realtime), _e(t.peak_rss),
+             _code(t.container)] for t in pf.tasks]
+    table = _table(["task", "status", "exit", "time", "peak rss", "container"], rows) if rows else _empty("no task ran")
+    records = (f'<p class="note">The run\'s records are under <code>{_e(pf.run_record)}/</code> in this directory '
+               f'(trace.txt, report.html, timeline.html, nextflow.log); it ran in <code>{_e(pf.run_dir)}</code>.</p>'
+               f'<pre>{_e(pf.launch)}</pre>')
+    return _section("proof", "Proven", "this pipeline, run once over the sealed samples", f"<p>{lead}</p>{table}{records}")
+
+
 def _ticks_to_code(text: str) -> str:
     """A record value's `command` spans as <code>, everything escaped."""
     parts = text.split("`")
@@ -1037,6 +1060,7 @@ def render_pipeline_page(record: PipelineRecord) -> str:
     P: list[str] = [
         _open_page(f"Pipeline — {record.name}"),
         _header(record),
+        _proof_section(record),
         _picture_section(record),
         _directory_section(record),
         _samplesheet_section(record),

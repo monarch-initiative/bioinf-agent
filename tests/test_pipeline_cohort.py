@@ -32,6 +32,14 @@ from agent.skills.pipeline_render import PipelineRenderError, parse_manifest, re
 from agent.skills.pipeline_render_nextflow import bound_commands, render_nextflow
 from _nextflow import needs_nextflow, run_nextflow as _nextflow
 
+
+@pytest.fixture(autouse=True)
+def _proof_is_faked(monkeypatch):
+    """The render ends with a proof run (docker + nextflow); these tests pin the render
+    and the record, so the proof is stood in for."""
+    from pipeline_fixtures import fake_proof
+    fake_proof(monkeypatch)
+
 SAMPLES = list(DESIGN)
 DE_PATH = "/ws/reports/rnaseq_de_workflow.workflow.yaml"
 COLLECT = {"COUNTS_DIR": "{SAMPLE}.counts.tsv"}
