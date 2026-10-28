@@ -140,6 +140,17 @@ def run_pipeline_step(
         env_name, command, working_dir=watch_dir, timeout=timeout_seconds, inputs=inputs,
         watch_dir=watch_dir,
     )
+    if result.get("code") == "env_manager.run_env_missing":
+        # Refused before anything is recorded: a command that never ran is not a step.
+        # A name that is a frozen image and no host env is the container tool's.
+        r = _ms._env_mgr.env_missing_refusal("env_manager.run_env_missing", env_name)
+        frozen = [k for k, rec in _ms._env_cache.all().items()
+                  if isinstance(rec, dict) and rec.get("name") == env_name]
+        if frozen:
+            r["frozen_as"] = frozen
+            r["remedy"] = (f"{env_name!r} is a frozen image with no host env: run the step inside "
+                           f"it with run_step_in_container(freeze_request_key={frozen[0]!r}, …)")
+        return r
     # L11 (universal lineage): hash each detected_output at production time
     # so seal can verify the same path holds the same bytes through to its
     # downstream consumer. Cheap (one sha256 per produced file), file-type-
@@ -216,21 +227,8 @@ def run_pipeline_step(
         # produced; the caller just needs to know their output_types key
         # didn't bind to anything (typo, wrong extension, file not produced).
         out["output_types_unmatched"] = unmatched
-    # Legibility: rc=0 + the caller expected outputs
-    # (output_types given) + NOTHING detected is the silent-empty trap. The step
-    # only sees files created/modified under watch_dir, so an output written via
-    # `-o <path>`/`> <path>` to another directory goes undetected — and an
-    # undetected output fails I3 at seal. Not an error (the run genuinely
-    # succeeded); a hint so an unattended agent self-corrects.
-    if result.get("returncode") == 0 and output_types and not result.get("detected_outputs"):
-        out["output_detection_hint"] = (
-            "rc=0 but no outputs were detected. run_pipeline_step only sees files "
-            f"created/modified under watch_dir ({watch_dir}). If your command writes "
-            "via `-o <path>`/`> <path>` to a different dir, pass watch_dir=<that dir> "
-            "so the output is detected and validated — otherwise it will fail I3 (no "
-            "validated detected_outputs) at seal_workflow. A missing watch_dir is "
-            "created for you."
-        )
+    if result.get("returncode") == 0 and not result.get("detected_outputs"):
+        out["output_detection_hint"] = _nothing_detected_hint("run_pipeline_step", watch_dir)
     out["watch_dir"] = watch_dir
     if watch_dir_created:
         out["watch_dir_created"] = watch_dir
@@ -238,6 +236,18 @@ def run_pipeline_step(
     if result.get("returncode") != 0 and idx is not None:
         out["retry"] = _failed_step_note(idx, pipeline_id)
     return _ms._shrink_stdio_for_response(out, label=f"step.{pipeline_id}", log_subdir="step_logs")
+
+
+def _nothing_detected_hint(tool: str, watch_dir: str) -> str:
+    """A clean step that wrote nothing where the snapshot looks is the silent-empty
+    trap: the seal refuses it as I3 (no validated detected_outputs). Said on the step's
+    own result, not at the seal. Not an error — the run genuinely succeeded."""
+    return (f"rc=0 but no outputs were detected. {tool} only sees files created or "
+            f"modified under watch_dir ({watch_dir}), the command's working directory. A "
+            f"result written to stdout is not an output: write it to a file (`-o`, `>`); a "
+            f"file written elsewhere (`-o <path>`, `> <path>`) is detected only when "
+            f"watch_dir names that directory. A step with no detected output fails I3 at "
+            f"seal_workflow.")
 
 
 def _failed_step_note(step_n, pipeline_id: str) -> str:
@@ -542,6 +552,8 @@ def run_step_in_container(
     payload["watch_dir"] = str(wdir)
     if watch_dir_created:
         payload["watch_dir_created"] = str(wdir)
+    if res.get("returncode") == 0 and not detected:
+        payload["output_detection_hint"] = _nothing_detected_hint("run_step_in_container", str(wdir))
     payload.update(_lineage_disclosure(pipeline_id, idx))
     if res.get("returncode") != 0 and not payload.get("error"):
         payload["error"] = (last_informative_line(res.get("stderr")) or last_informative_line(res.get("stdout"))

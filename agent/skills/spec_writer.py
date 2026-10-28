@@ -18,7 +18,7 @@ env-build tiers moved to agent/skills/env_honesty.py.
 from __future__ import annotations
 
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
 import yaml
@@ -76,6 +76,26 @@ def _sidecar_parent(path: str) -> Optional[str]:
         if low.endswith(suf) and len(path) > len(suf):
             return path[: -len(suf)]
     return None
+
+
+def _under_declared_dir(path: str, dirs: list[str]) -> bool:
+    """Is `path` strictly beneath one of the declared external DIRECTORIES — component-wise,
+    so `/ref/db10` is not under `/ref/db1` and a directory is not under itself? The
+    resolved form of the path is tried too, as the directories were added in both forms."""
+    if not dirs:
+        return False
+    forms = [path]
+    try:
+        forms.append(str(Path(path).resolve()))
+    except Exception:
+        pass
+    for d in dirs:
+        dp = PurePosixPath(d)
+        for f in forms:
+            fp = PurePosixPath(f)
+            if fp != dp and fp.is_relative_to(dp):
+                return True
+    return False
 
 
 def _dir_contains_a_prior_output(path: str, universe: set) -> bool:
@@ -1601,9 +1621,22 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
     for _path in _core_data.test_data_paths(spec.get("test_data")).values():
         _add_external(_path)
 
+    # A reference DATABASE that is a directory (an aligner index, a VEP cache, the
+    # Exomiser data bundle) is consumed file by file: a step input beneath its
+    # local_path traces to it. Scoped to declared reference directories — a directory
+    # here, or at another locus, where nothing can be stat'd — never to prior outputs,
+    # whose prefix hole _dir_contains_a_prior_output keeps closed.
+    external_dirs: list[str] = []
     for rdb in spec.get("reference_databases", []) or []:
         if isinstance(rdb, dict):
             _add_external(rdb.get("local_path"))
+            lp = rdb.get("local_path")
+            if isinstance(lp, str) and lp and (rdb.get("locus") == "cluster" or Path(lp).is_dir()):
+                external_dirs.append(lp)
+                try:
+                    external_dirs.append(str(Path(lp).resolve()))
+                except Exception:
+                    pass
 
     for rc in spec.get("runtime_configs", []) or []:
         if isinstance(rc, dict):
@@ -1651,6 +1684,8 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             if _is_orphan_exempt(p):
                 continue
             if p in universe:
+                continue
+            if _under_declared_dir(p, external_dirs):
                 continue
             # SIDECAR TOLERANCE — a step may consume the companion of a file a prior step
             # produced (`{p}.bai` beside `{p}`, `{p}.gz` after an in-step bgzip). The
