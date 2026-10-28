@@ -233,6 +233,19 @@ def test_resolve_adopts_author_image_over_everything(monkeypatch):
     assert "(env," not in call
 
 
+def test_with_no_registry_route_the_authors_recipe_outranks_reading_the_repo(monkeypatch):
+    """No conda/pip/cran/bioconductor package and a clean root Dockerfile: the recipe is the
+    next route in the protocol's order, not `synthesis`. The gate's own question (would a
+    registry reconstruction drop pieces?) has no object when there is no registry route."""
+    _stub_registries(monkeypatch)
+    _stub_authors_io(monkeypatch, dockerfile=_SAFE_DF)
+    d = R.resolve("mytool", github_repo="me/mytool")
+    assert "authors_gate_error" not in d["probed"], d["probed"].get("authors_gate_error")
+    assert d["chosen"] == "authors_recipe", d["chosen"]
+    assert "no registry carries" in d["probed"]["authors_recipe"]["reason"]
+    assert d["install_call"].startswith("build_env_from_authors_recipe(")
+
+
 def test_resolve_no_repo_no_gate_conda_wins(monkeypatch):
     # no repo derivable from metadata → author tiers never available → conda as before.
     _stub_registries(monkeypatch, conda=True)

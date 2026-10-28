@@ -100,19 +100,69 @@ class _ImageUsageRunner:
     Mounts are bound at their OWN host paths so the trial's absolute substitutions resolve
     verbatim inside the image (the same trick run_step_in_container uses), and outputs land
     back on the host where OutputValidator can read them.
+
+    `images_by_command` (1-based command index → (image, platform)) names the image a
+    how-to command's own sealed step ran in; a command not in it runs in the pinned image.
+    Every result names the image it ran in, which the trial transcript carries.
     """
     is_image_runner = True
 
-    def __init__(self, image: str, platform: str, mounts: list):
+    def __init__(self, image: str, platform: str, mounts: list,
+                 images_by_command: Optional[dict] = None):
         self.image, self.platform, self.mounts = image, platform, mounts
+        self.images_by_command = dict(images_by_command or {})
 
-    def run_in_env(self, env_name, command, timeout=600, watch_dir=None, **_):
+    def run_in_env(self, env_name, command, timeout=600, watch_dir=None, command_index=None, **_):
         mounts = list(self.mounts)
         if watch_dir:
             mounts.append((str(watch_dir), str(watch_dir)))
-        return _ms._docker.run_in_container(
-            self.image, command, mounts=mounts, workdir=str(watch_dir) if watch_dir else None,
-            platform=self.platform, timeout=timeout)
+        image, platform = self.images_by_command.get(command_index, (self.image, self.platform))
+        res = _ms._docker.run_in_container(
+            image, command, mounts=mounts, workdir=str(watch_dir) if watch_dir else None,
+            platform=platform, timeout=timeout)
+        return {**res, "image": image}
+
+
+def _command_images(fr: dict, draft: dict, by_digest: dict) -> tuple[dict, str]:
+    """The image each how-to command is self-tested in, when it is not the pinned env's:
+    the image the command's own sealed step ran in (matched the way the pipeline record
+    matches commands to steps). Returns `(map, reason)`: `map` is 1-based command index
+    → (image ref, docker platform) for every command whose step ran in another frozen
+    image; `reason` names the first such command whose image does not resolve in the
+    local daemon, in which case nothing here can self-test the how-to."""
+    from agent.models.core_data import is_output_slot, usage_commands, usage_slots
+    from agent.skills.pipeline_record import match_steps_to_templates
+    usage = draft.get("usage") or {}
+    templates = usage_commands(usage)
+    rows = [{"substitutions": dict(t.get("substitutions") or {})}
+            for t in (usage.get("trials") or []) if isinstance(t, dict)]
+    steps = [s for s in (draft.get("pipeline_steps") or [])
+             if isinstance(s, dict) and s.get("returncode") == 0]
+    out_slots = {p for p in usage_slots(usage) if is_output_slot(p)}
+    matched, _wrote = match_steps_to_templates(templates, rows, steps, out_slots)
+    primary = (fr.get("image_digest") or "").strip()
+    mapping: dict = {}
+    for ti, hits in matched.items():
+        digests = [d for d in dict.fromkeys(s.get("container_image_digest") for _ri, s in hits)
+                   if d and d != primary]
+        if not digests:
+            continue
+        d = digests[0]
+        _rk, rr = by_digest.get(d, ("", {}))
+        if not rr:
+            return {}, (f"how-to command {ti + 1} ran as a sealed step in image digest {d}, "
+                        f"which no frozen env record pins, so it cannot be self-tested in its own image")
+        ref = _frozen_image_ref((rr.get("image") or "").strip(), d)
+        try:
+            resolved = _ms._docker.image_digest(ref)
+        except Exception:
+            resolved = None
+        if not resolved:
+            return {}, (f"how-to command {ti + 1} ran as a sealed step in {ref} (digest {d}), which "
+                        f"does not resolve in the local Docker daemon, so it cannot be self-tested "
+                        f"in its own image")
+        mapping[ti + 1] = (ref, _ms.docker_platform(rr.get("platform", "")))
+    return mapping, ""
 
 
 def _local_trial_mounts(draft: dict, missing: list | None = None):
@@ -179,7 +229,7 @@ def _local_trial_mounts(draft: dict, missing: list | None = None):
     return mounts
 
 
-def _image_usage_runner(fr: dict, draft: dict):
+def _image_usage_runner(fr: dict, draft: dict, images_by_command: Optional[dict] = None):
     """Build an _ImageUsageRunner for this frozen env, or None when the how-to can't be
     self-tested in-image here.
 
@@ -226,7 +276,8 @@ def _image_usage_runner(fr: dict, draft: dict):
         resolved = None
     if not resolved:
         return None                        # not resolvable locally (adopted, or no daemon)
-    return _ImageUsageRunner(image, _ms.docker_platform(fr.get("platform", "")), mounts)
+    return _ImageUsageRunner(image, _ms.docker_platform(fr.get("platform", "")), mounts,
+                             images_by_command=images_by_command)
 
 
 def _no_image_runner_reason(fr: dict, draft: dict) -> str:
@@ -261,7 +312,8 @@ def _proven_trial_records(usage_detail: dict) -> list[dict]:
     sealed spec carries — what the I4 self-test actually ran.
 
     Carried: the trial's name/description, whether it passed, the LITERAL commands
-    executed (`commands_run`, already substituted), the substitution map, which of
+    executed (`commands_run`, already substituted) and the image each ran in
+    (`images_run`), the substitution map, which of
     those slots were the ephemeral scratch-dir override, a sample of the files that
     landed, and **what each of those files was validated AS** (`validation_results`).
     Read back through `core_data.usage_proven_trials` /
@@ -302,10 +354,14 @@ def _proven_trial_records(usage_detail: dict) -> list[dict]:
         produced = t.get("produced_files")
         produced = ([p for p in produced if isinstance(p, str)]
                     if isinstance(produced, list) else [])
+        imgs = t.get("images_run")
         rec = {
             "name": str(t.get("name") or "trial"),
             "ok": bool(t.get("ok")),
             "commands_run": [str(c) for c in cmds[:_TRIAL_MAX_COMMANDS] if isinstance(c, str)],
+            # where each command ran: the image its sealed step ran in, or the pinned one
+            "images_run": ([str(i) for i in imgs[:_TRIAL_MAX_COMMANDS] if isinstance(i, str)]
+                           if isinstance(imgs, list) else []),
             "substitutions": {str(k): str(v) for k, v
                               in list(subs.items())[:_TRIAL_MAX_SUBS]},
             "output_slots": slots,
@@ -612,14 +668,8 @@ def seal_workflow(
                            "(replace_step=N) through its run primitive, or "
                            "discard_pipeline_draft and rebuild the draft.")
 
-    # WHICH FROZEN ENVS THIS RUN TOUCHED — computed BEFORE the I4 gate, because the I4
-    # gate's honest "why not" depends on it. A workflow whose steps ran in more than one
-    # shipped image CANNOT have a fully self-tested how-to: every command in
-    # `usage.command_template` executes inside the ONE image named by `freeze_request_key`,
-    # so a chain whose phases live in different images has no single image the template
-    # could run in. That is structural, not laziness, and until now the seal said the same
-    # sentence either way ("no usage block was authored"), leaving a reader unable to tell
-    # an unprovable how-to from an unwritten one.
+    # WHICH FROZEN ENVS THIS RUN TOUCHED — computed BEFORE the I4 gate, which self-tests
+    # each how-to command in the image its sealed step ran in (`_command_images`).
     #
     # MULTI-ENV CHAINING: a workflow may chain steps that each ran in their OWN
     # frozen env (their own freeze). Validate every step's container digest against
@@ -664,25 +714,14 @@ def seal_workflow(
     if not draft.get("usage"):
         usage_detail = {
             "ok": False, "status": "not_attempted",
-            # TWO REASONS, because they are two different facts about the artifact and a
-            # reader acts differently on each. "Add a usage block and re-seal" is right
-            # for a single-image run and WRONG for a chain across images, where
-            # authoring only the phase that happens to run in the pinned image earns a
-            # green self-test for a command that does half the work. That is the
-            # failure this contract exists to prevent, so the honest landing there is
-            # to author nothing and say why.
             "reason": (
-                (f"this run spans {len(seen_dig)} shipped images, and every command in "
-                 f"usage.command_template executes inside the ONE image pinned by "
-                 f"freeze_request_key — so a fully self-tested how-to is STRUCTURALLY "
-                 f"impossible here, not merely absent. Authoring only the phase that runs "
-                 f"in the pinned image would earn a green badge for a command that does "
-                 f"part of the work. Read the per-step evidence for what actually ran."
-                 if _spans_images else
-                 "no usage block was authored on the draft, so I4 ran nothing — this "
-                 "seal proves the RUN happened, not how to re-run it. Add "
-                 "patch_pipeline(usage={command_template, description, inputs, outputs}) "
-                 "and re-seal to earn a verified how-to.")),
+                "no usage block was authored on the draft, so I4 ran nothing — this "
+                "seal proves the RUN happened, not how to re-run it. Add "
+                "patch_pipeline(usage={command_template, description, inputs, outputs}) "
+                "and re-seal to earn a verified how-to"
+                + (f"; this run spans {len(seen_dig)} shipped images, and each command is "
+                   f"self-tested in the image its sealed step ran in" if _spans_images else "")
+                + "."),
             "spans_images": len(seen_dig),
         }
     else:
@@ -691,13 +730,19 @@ def seal_workflow(
         # trials on this host, failed them, and turned the honest not_attempted into a
         # hard seal refusal. Same
         # precondition as the image runner, one implementation: _local_trial_mounts.
-        runner = _image_usage_runner(fr, draft)
-        if runner is None and draft.get("conda_env") and _local_trial_mounts(draft) is not None:
+        # A command whose sealed step ran in another frozen image is self-tested in that
+        # image; when that image does not resolve here, nothing (not the host env either)
+        # stands in for it, and the record says so.
+        images_by_command, own_image_reason = _command_images(fr, draft, by_digest)
+        runner = None if own_image_reason else _image_usage_runner(fr, draft, images_by_command)
+        host_env_can_run = draft.get("conda_env") and _local_trial_mounts(draft) is not None
+        if runner is None and not own_image_reason and host_env_can_run:
             runner = _ms._env_mgr
         try:
             usage_detail = self_test_usage(
                 draft, runner, validator=_ms._validator,
-                no_runner_reason=_no_image_runner_reason(fr, draft) if runner is None else "")
+                no_runner_reason=((own_image_reason or _no_image_runner_reason(fr, draft))
+                                  if runner is None else ""))
             usage_ok = bool(usage_detail.get("ok"))
         except Exception as e:
             usage_ok = False
@@ -1168,9 +1213,21 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
 
 
 @mcp.tool()
-def discard_pipeline_draft(pipeline_id: str) -> dict:
+def discard_pipeline_draft(pipeline_id: str, step: int = 0) -> dict:
     """Delete a pipeline draft without finalizing. Use when you want to start
-    fresh with the same pipeline_name and don't want resume semantics."""
+    fresh with the same pipeline_name and don't want resume semantics.
+
+    `step=N` drops only step N instead, when that step FAILED (a recorded attempt you
+    abandon rather than retry; a draft seals as a failed run while it stays). A step
+    that ran clean is evidence and is never dropped — replace it with `step=N` on its
+    run primitive. Later steps are renumbered."""
+    if step:
+        r = _ms._pipeline_state.remove_step(pipeline_id, step)
+        if not r.get("ok"):
+            return refused("discard_draft.step_kept", success=False, pipeline_id=pipeline_id,
+                           step=step, error=r.get("reason", ""))
+        return proven("discard_draft.step_dropped", pipeline_id=pipeline_id, step=step,
+                      remaining_steps=r.get("remaining"))
     return _ms._pipeline_state.discard(pipeline_id)
 
 

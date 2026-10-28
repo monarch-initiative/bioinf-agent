@@ -158,6 +158,16 @@ def check_docker() -> None:
     rc, out = run(["docker", "info", "--format", "{{.ServerVersion}}"], timeout=20)
     if rc == 0 and out:
         row("PASS", "docker", f"daemon up (server {out.splitlines()[-1]})")
+        # The daemon's VM is what a build and a local run get; a genome-scale build or
+        # run needs more memory than the default, and the limit is otherwise invisible.
+        rc2, size = run(["docker", "info", "--format", "{{.MemTotal}} {{.NCPU}}"], timeout=20)
+        parts = size.split()[-2:] if rc2 == 0 else []
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            gib = int(parts[0]) / 1024 ** 3
+            row("PASS", "docker vm",
+                f"{gib:.0f} GiB memory, {parts[1]} cpus for builds and local runs"
+                + ("" if gib >= 16 else
+                   " (a genome-scale build or run may need more: Docker Desktop → Settings → Resources)"))
     elif rc == 127:
         row("FAIL", "docker", "docker CLI not found",
             "install Docker Desktop (macOS; or colima for a no-Desktop daemon: "

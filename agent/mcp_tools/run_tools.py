@@ -11,6 +11,7 @@ surface — they sit here next to their only callers.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 # IMPORT-BINDING: see workflow_tools.py — singletons go through `_ms.X`
@@ -234,7 +235,16 @@ def run_pipeline_step(
     if watch_dir_created:
         out["watch_dir_created"] = watch_dir
     out.update(_lineage_disclosure(pipeline_id, idx))
+    if result.get("returncode") != 0 and idx is not None:
+        out["retry"] = _failed_step_note(idx, pipeline_id)
     return _ms._shrink_stdio_for_response(out, label=f"step.{pipeline_id}", log_subdir="step_logs")
+
+
+def _failed_step_note(step_n, pipeline_id: str) -> str:
+    """What a caller can do with a step recorded as failed: replace it or drop it."""
+    return (f"step {step_n} is recorded as failed (the draft seals as a failed run while it "
+            f"stays); re-run it with step={step_n} to replace the record, or "
+            f"discard_pipeline_draft({pipeline_id!r}, step={step_n}) to drop it")
 
 
 def _lineage_disclosure(pipeline_id: str, step_n) -> dict:
@@ -340,7 +350,9 @@ def run_step_in_container(
 
     output_types: {basename|ext: validator_type}. inputs: paths (or {path,…}).
     Every declared input's directory and the watch_dir are mounted at their own host
-    paths; extra_mounts: ["host:container", …] is for anything else. `platform` defaults
+    paths; extra_mounts: ["host:container", …] is for anything else. A directory input
+    is a bind mount point inside the container, so the command cannot move or remove
+    it: declare its parent when the command renames it. `platform` defaults
     to the frozen record's own (an arm64 image runs as arm64); pass one only to override.
     Long stdout/stderr is cut to head+tail in the
     response; the full text is on disk at `log_path`. `untraced_inputs`, when present,
@@ -534,6 +546,19 @@ def run_step_in_container(
     if res.get("returncode") != 0 and not payload.get("error"):
         payload["error"] = (last_informative_line(res.get("stderr")) or last_informative_line(res.get("stdout"))
                             or f"exit {res.get('returncode')} with nothing on stderr")
+    if res.get("returncode") != 0:
+        # A directory input is bound into the container at its own path, and a mount
+        # point cannot be moved or removed from inside: `mv` on one fails "Device or
+        # resource busy", a failure that reads as the tool's.
+        dir_inputs = [p for p in (i.get("path") if isinstance(i, dict) else i for i in inputs)
+                      if isinstance(p, str) and Path(p).is_dir()]
+        if dir_inputs and re.search(r"resource busy", res.get("stderr") or "", re.I):
+            payload["hint"] = (
+                "a declared directory input is a bind mount point inside the container and "
+                f"cannot be moved or removed: {', '.join(dir_inputs[:3])}. Rename inside it, "
+                "write the result elsewhere, or declare its parent directory as the input.")
+        if idx is not None:
+            payload["retry"] = _failed_step_note(idx, pipeline_id)
     payload = _ms._shrink_stdio_for_response(payload, label=f"step.{pipeline_id}",
                                              log_subdir="step_logs")
     if res.get("returncode") == 0:

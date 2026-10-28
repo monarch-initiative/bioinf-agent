@@ -673,6 +673,7 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
                      f'<summary><div class="run-title">'
                      f'{_e(t.get("name", "trial"))} {badge}{desc}</div></summary>')
             cmds = [c for c in (t.get("commands_run") or []) if isinstance(c, str)]
+            imgs = [i for i in (t.get("images_run") or []) if isinstance(i, str)]
             if cmds:
                 P.append('<p class="note"><b>Ran</b></p>')
                 if len(cmds) == 1:
@@ -680,6 +681,12 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
                 else:
                     P.append("<pre>" + "\n".join(f"{i}. {_e(c)}" for i, c
                                                  in enumerate(cmds, 1)) + "</pre>")
+                # where each command ran, as the self-test recorded it
+                if imgs and len(set(imgs)) == 1:
+                    P.append(f'<p class="note">in <code>{_e(imgs[0])}</code></p>')
+                elif imgs:
+                    P.append('<p class="note">' + " · ".join(
+                        f"{i}. in <code>{_e(im)}</code>" for i, im in enumerate(imgs, 1)) + "</p>")
             tbl = _subs_table(t.get("substitutions") or {},
                               t.get("output_slots") or [], proven=True)
             if tbl:

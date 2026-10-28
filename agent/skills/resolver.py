@@ -2247,6 +2247,20 @@ def resolve(
                 "available": False, "repo": eff_repo,
                 "error": f"{type(e).__name__}: {e}"}
 
+    # NO REGISTRY ROUTE. The gate above opens the authors' recipe only when a registry
+    # reconstruction would drop pieces — a comparison with no object when no registry
+    # carries the tool at all. Then the recipe is the next route in the protocol's order
+    # (the image, a package, the authors' Dockerfile, then source), ahead of reading the repo.
+    _registry_hit = any((availability.get(t) or {}).get("available")
+                        for t in ("conda", "pip", "cran", "bioconductor"))
+    _recipe = availability.get("authors_recipe") or {}
+    if _recipe and not _recipe.get("available") and not _registry_hit \
+            and (_recipe.get("recipe") or {}).get("present"):
+        availability["authors_recipe"] = {
+            **_recipe, "available": True,
+            "reason": ("no registry carries this tool, so the authors' recipe is the next route "
+                       "in the protocol's order, ahead of a reading of the repository")}
+
     # A WORKFLOW REPO HAS NO BUILD TO SYNTHESIZE.
     #
     # `synthesis` and `source` are the only two tiers whose availability test is, verbatim,

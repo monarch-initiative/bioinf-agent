@@ -89,6 +89,23 @@ def test_the_hpc_extra_carries_the_globus_cli():
     assert "[dev,hpc]" in (ROOT / "scripts" / "setup.sh").read_text()
 
 
+# --- the doctor's docker rows ----------------------------------------------------
+
+def test_the_doctor_reports_the_docker_vms_memory_and_cpus(doctor, monkeypatch):
+    def run(argv, timeout=15, cwd=None):
+        if argv[-1] == "{{.ServerVersion}}":
+            return 0, "28.0.1"
+        if argv[-1] == "{{.MemTotal}} {{.NCPU}}":
+            return 0, f"{8 * 1024 ** 3} 4"
+        return 1, ""
+    monkeypatch.setattr(doctor, "run", run)
+    doctor.check_docker()
+    rows = {n: d for _v, n, d, _f in doctor.ROWS}
+    assert rows["docker"].startswith("daemon up")
+    assert rows["docker vm"].startswith("8 GiB memory, 4 cpus") and "may need more" in rows["docker vm"]
+    doctor.ROWS.clear()
+
+
 # --- the doctor's bridge-prerequisite rows -------------------------------------
 
 @pytest.fixture()
