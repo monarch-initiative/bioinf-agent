@@ -193,15 +193,18 @@ def _samtools_available() -> bool:
                         "tool_found", False))
 
 
-@pytest.mark.skipif(not _samtools_available(),
-                    reason="needs the real samtools from the core_tools env")
+@pytest.mark.integration
 def test_real_unaligned_bam_validates_and_real_truncation_does_not(tmp_path):
     """The mocked tests above pin the BRANCHING; this one pins the PREMISE —
     that a real samtools really does score an unaligned BAM 8 and a truncated
     one 24. If a future samtools renumbers those bits, the mocks would all
     still pass while production silently rejected every uBAM again."""
-    # real_envs, to match the skipif above — otherwise the guard probes the real
-    # samtools, decides to run, and the body then looks for one in the sandbox.
+    from _artifacts import CONDA_ENVS, real_dir_or_skip
+    real_dir_or_skip(CONDA_ENVS, "run ./scripts/setup.sh")
+    if not _samtools_available():
+        pytest.skip("needs the real samtools from the core_tools env")
+    # real_envs: the probe above ran the machine's samtools, so the body must not
+    # then look for one in the sandbox.
     v = _validator(real_envs=True)
     sam = tmp_path / "mini.sam"
     sam.write_text(

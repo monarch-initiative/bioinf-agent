@@ -404,7 +404,7 @@ def test_the_collision_model_is_closed_and_requires_every_field():
 
 
 def test_an_identity_written_before_collisions_existed_still_parses():
-    """Records on disk predate the field; they read as "no collision detected"."""
+    """A record written without the field reads as "no collision detected"."""
     ti = ToolIdentity.model_validate(_GOOD_ID)
     assert ti.collision is None and ti.note is None
 

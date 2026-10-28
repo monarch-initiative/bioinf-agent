@@ -83,11 +83,9 @@ def validation_key(path: str) -> str:
 def validation_covers(validation: dict, output_path: str) -> bool:
     """Does `validation` hold a record for this output? The READ side of `validation_key`.
 
-    Accepts the canonical path key, the raw string as filed, and — for records written
-    before path keys existed — the bare basename. The legacy fallback is deliberately last
-    and deliberately narrow: on a path-keyed record no output's basename matches any key,
-    so new records get the strict behaviour while old drafts keep working rather than
-    failing an invariant for a naming change they had no say in."""
+    Accepts the canonical path key, the raw string as filed, and the bare basename
+    (records written before path keys existed). The basename fallback is last and
+    narrow: on a path-keyed record no output's basename matches any key."""
     if not isinstance(validation, dict) or not validation:
         return False
     return (output_path in validation
@@ -225,10 +223,8 @@ class PipelineState:
     def all_drafts(self) -> dict[str, dict]:
         """Every draft, keyed by pipeline_id, re-read from disk.
 
-        Exists so no caller outside this class has to touch `self._drafts` — the one
-        that did (`agent_status`) reported whatever the server saw at startup, which is
-        exactly the staleness `get_draft` above fixes. Readers that reach past the API
-        into the cache do not get the fix."""
+        Exists so no caller outside this class touches `self._drafts`, which holds what
+        the server saw at startup; every read here goes back to disk."""
         out: dict[str, dict] = {}
         for pid in set(self._drafts) | self._known_draft_ids():
             draft = self.get_draft(pid)
@@ -698,10 +694,8 @@ class PipelineState:
             mode="w", dir=str(path.parent),
             prefix=path.stem, suffix=".tmp", delete=False,
         ) as f:
-            # safe_dump, not dump: the READER is `yaml.safe_load` (`_read_draft_file`), so
-            # the unsafe dumper could emit a `!!python/...` tag its own reader refuses —
-            # a draft writable but not readable. Harmless while writes came from one
-            # in-memory copy; silently fatal now that every read goes back to disk.
+            # safe_dump, not dump: the READER is `yaml.safe_load` (`_read_draft_file`), and
+            # the unsafe dumper could emit a `!!python/...` tag its own reader refuses.
             yaml.safe_dump(draft, f, default_flow_style=False, sort_keys=False)
             tmp = f.name
         os.replace(tmp, path)
@@ -823,10 +817,10 @@ def current_state(draft: Optional[dict], *, verify_frozen, spec_sealed) -> str:
                                              #   AND still pins a live env digest
 
     RUN_VALIDATED is deliberately NOT a state here: this deriver is ORIENTATION,
-    not a gate (the only Phase-3 enforcement is the seal write-guard), so the
+    not a gate (the only enforcement is the seal write-guard), so the
     frozen-vs-sealed distinction is what a reader needs; run-in-shipped-image is a
     per-run quality axis carried by WorkflowSpec.pipeline_status, not a lifecycle
-    position. (Dropping it also keeps this free of a user_guide dependency.)"""
+    position."""
     if not draft:
         return ABSENT
     if draft.get("sealed_as") and spec_sealed(draft):

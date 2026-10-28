@@ -511,30 +511,9 @@ def _effective_push_target(push_target: str, registry: str, name: str,
 
 
 # ---------------------------------------------------------------------------
-# Tool surface — moved to agent/mcp_tools/
+# Tool surface — the tools live in agent/mcp_tools/, one submodule per theme (the
+# package docstring lists them).
 # ---------------------------------------------------------------------------
-# data_tools           — add_core_*, phenopacket_*, select_test_data,
-#                        list_available_resources,
-#                        download_reference_database, install_pipeline_brief
-# env_tools            — search_package, resolve_tool, create_conda_env,
-#                        install_conda_packages, install_git_repo, synth_fetch,
-#                        synth_build,
-#                        install_release_binary, install_perl_package,
-#                        install_cargo_tool, install_go_tool, install_jar_tool,
-#                        install_r_package, install_pip_package,
-#                        run_install_command
-# freeze_tools         — freeze, verify_env_recipe
-# jobs_tools           — run_in_background, check_job, cancel_job, list_jobs
-# observability_tools  — agent_status, snapshot_project
-# run_tools            — run_pipeline_step, run_step_in_container,
-#                        verify_installation, run_in_env, validate_output
-# service_tools        — check_gpu, start_service, stop_service,
-#                        check_service_health, verify_service_dependency
-# workflow_tools       — start_pipeline, discard_pipeline_draft,
-#                        show_pipeline_draft, patch_pipeline,
-#                        stage_authored_artifact, mark_step_validated,
-#                        seal_workflow,
-#                        list_installed_pipelines, fetch_r_package_deps
 
 
 # ---------------------------------------------------------------------------
@@ -630,10 +609,8 @@ from agent.skills import tool_surface as _tool_surface  # noqa: E402
 
 _tool_surface.apply_to(mcp)
 
-# Back-compat re-exports — `job_runner` (the detached subprocess), tests, and any
-# external caller continues to `from agent.mcp_server import <tool>`. This
-# list grows alongside the mcp_tools package; populated per phase as tools
-# move out.
+# Re-exports: job_runner resolves a backgrounded tool with getattr(agent.mcp_server,
+# name), and tests import tools from here.
 from agent.mcp_tools.bridge_tools import (  # noqa: E402,F401
     upload,
     download,
@@ -708,12 +685,8 @@ from agent.mcp_tools.run_tools import (  # noqa: E402,F401
     verify_installation,
     run_in_env,
     validate_output,
-    # Back-compat: tests/test_invariants.py probes these private helpers
-    # via `m._stamp_i7_authority` / `m._infer_validator_type`. They were
-    # extracted to run_tools alongside the only tools that use them; we
-    # re-export so the existing tests don't change.
+    # tests/test_invariants.py reads `_stamp_i7_authority` through this module.
     _stamp_i7_authority,
-    _infer_validator_type,
 )
 from agent.mcp_tools.service_tools import (  # noqa: E402,F401
     check_gpu,

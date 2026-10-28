@@ -1637,13 +1637,6 @@ def load_pipeline_record(path: Path) -> PipelineRecord:
     return PipelineRecord.model_validate(raw)
 
 
-def sha256_of(path: Path) -> Optional[str]:
-    try:
-        return core_data.sha256_file(str(path))
-    except Exception:
-        return None
-
-
 __all__ = [
     "PipelineDerivationError", "PipelineRecord", "PipelineStage", "PipelineParam",
     "StageInput", "StageOutput", "StageResources", "Samplesheet", "SamplesheetColumn", "LocalRuntime",

@@ -298,3 +298,31 @@ def pytest_sessionfinish(session, exitstatus):
             print(f"      … and {len(leaked) - 20} more")
         print("*** Route the writer through agent.skills.workspace (which the autouse "
               "fixture in tests/conftest.py redirects), then delete the records above.\n")
+
+
+# --- the opt-in tiers are opt-in by mechanism, not by convention ---------------------
+#
+# `live` reaches the real registries and `integration_docker` drives the local Docker
+# daemon (a real build runs for minutes). A marker alone makes neither opt-in: a bare
+# `pytest tests/` collects everything, so the live tier would hammer PyPI / anaconda.org
+# / CRAN / GitHub on every run and the docker tier would rebuild images on every run.
+# The tier must be ASKED FOR: any `-m` expression that names it decides for itself
+# (`-m live`, `-m integration_docker`, CI's `-m "not live and not integration_docker"`);
+# an expression that does not name it, or no expression at all, skips it visibly.
+
+_OPT_IN_TIERS = ("live", "integration_docker")
+
+
+def pytest_collection_modifyitems(config, items):
+    expr = config.getoption("-m") or ""
+    for tier in _OPT_IN_TIERS:
+        if tier in expr:
+            continue
+        skip = pytest.mark.skip(reason=f"{tier} tier — opt in with `pytest -m {tier}`")
+        for item in items:
+            # `get_closest_marker`, NOT `tier in item.keywords`: pytest folds every path
+            # component into an item's keywords, so the directory `tests/live/` would match
+            # every test under it, including the corpus-integrity checks that must run on
+            # every push. Ask for the MARKER.
+            if item.get_closest_marker(tier) is not None:
+                item.add_marker(skip)

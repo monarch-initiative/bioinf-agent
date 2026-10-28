@@ -175,8 +175,8 @@ def rebuild_from_recipe(recipe: dict, *, engine=None,
         # from these exact bytes, no solve — no chance of bioconda drift.
         conda_lock_files=recipe.get("conda_lock") or None,
         # the captured snapshot.debian.org timestamp — replay's apt resolves to
-        # the SAME bytes as the original freeze. Empty for pre-Phase-2 recipes
-        # (which keep floating-apt behavior, backward compatible).
+        # the SAME bytes as the original freeze. Empty when the recipe carries none;
+        # replay then resolves apt live.
         apt_snapshot=recipe.get("apt_snapshot") or "",
     )
     expected = recipe.get("content_digest") or ""

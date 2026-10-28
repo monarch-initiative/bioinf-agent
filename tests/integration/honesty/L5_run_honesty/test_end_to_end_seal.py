@@ -161,8 +161,6 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
         name = wf.workflow_name
         yaml_path = out_dir / f"{name}.workflow.yaml"
         data = wf.model_dump(exclude_none=True)
-        data.pop("user_guide", None)
-        data.pop("user_guide_path", None)
         yaml_path.write_text(_yaml.dump(data, default_flow_style=False, sort_keys=False))
         return {"workflow_spec_path": str(yaml_path)}
 

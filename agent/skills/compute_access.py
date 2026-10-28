@@ -580,7 +580,7 @@ def _validate_slurm_block(blk: object, where: str, path: Path) -> None:
 # at every level so a typo can't silently revert us to scp without notice.
 #
 # The two providers:
-#   scp_head_node  — the legacy default; scp + sha256 round-trip over ssh.
+#   scp_head_node  — the default; scp + sha256 round-trip over ssh.
 #                    Fine for tiny files (workflow renders); pisses off the
 #                    cluster head node when used for GB-scale .sif images.
 #   globus         — encrypted, off-head-node, end-to-end checksummed by
@@ -757,7 +757,7 @@ def get_project_directories(project: dict, compute_env_name: str) -> list[dict]:
 # check per-project authorization; the consuming primitives (transfer.upload /
 # transfer.download, submit_workflow, run_cluster_step) layer the grants on
 # top in their own modules via check_env_target_capability, in the same shape
-# as Phase 1's check_permission.
+# as check_permission.
 # ---------------------------------------------------------------------------
 
 def get_agent_scratch_target(env: dict) -> Optional[dict]:

@@ -916,8 +916,7 @@ class ContainerBuild:
         A spec may also carry `stage_artifact` (a local path): the bytes are carried
         into the builder FIRST, so the command — which reads them from `{_STAGED}` —
         has something to read. Routed here rather than at the caller so every path
-        that installs a spec gets it (the propagation rule: a lesson wired at one of
-        several call sites is a lesson half-applied).
+        that installs a spec gets it.
 
         `spec["tool"]` is emitted by every generator and is passed through — see
         `run()`'s docstring for what dropping it costs downstream."""
@@ -932,10 +931,6 @@ class ContainerBuild:
                         runtime_packages=spec.get("runtime_packages"),
                         version_probe=spec.get("version_probe", ""), timeout=timeout,
                         workdir=spec.get("evidence_workdir", ""))
-
-    def run_tool(self, tool_cmd: str, timeout: int = 300) -> dict[str, Any]:
-        """Invoke a conda-env tool via the engine's run wrapper (`pixi run`)."""
-        return self.exec(self.engine.run(tool_cmd), timeout=timeout)
 
     # -- MATERIALIZE -------------------------------------------------------
     def freeze(self, name: str, version: str = "", *, output_dir: str = "/tmp") -> dict[str, Any]:

@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from agent.skills.env_report_html import _close_page, _created_line, _e, _empty, _header_banner, _open_page
-from agent.models.core_data import SLOT_RE
+from agent.models.core_data import SLOT_RE, short_digest
 from agent.skills.pipeline_record import (DEFAULT_STAGE_REQUEST, SCRIPT_DIR, PipelineParam, PipelineRecord,
                                           PipelineStage, StageResources)
 from agent.skills.pipeline_render_nextflow import (OUTDIR_PARAM, RUN_RECORDS, SAMPLESHEET_PARAM, bound_commands,
@@ -139,13 +139,6 @@ _LABEL_H = 15.0
 
 def _tw(text: str, pt: float) -> float:
     return len(text) * pt * _MONO_EM
-
-
-def _short_digest(d: Optional[str]) -> str:
-    if not d:
-        return ""
-    body = d.split(":", 1)[1] if ":" in d else d
-    return body[:12]
 
 
 def _key(p: PipelineParam) -> str:
@@ -371,7 +364,7 @@ def picture_layout(record: PipelineRecord) -> _Layout:
             req = f"cluster request cpus {r.cpus} · mem {r.mem} · time {r.time} · gpus {r.gpus}"
         runs = "once per sample" if st.scope == "per_sample" else "once over the cohort"
         n.tooltip = (f"stage {st.index + 1} {st.name} · {st.tool} · runs {runs} · "
-                     f"image {_short_digest(st.image_digest) or 'unrecorded'} · {req} · "
+                     f"image {short_digest(st.image_digest) or 'unrecorded'} · {req} · "
                      f"measured authority {r.measured_authority}")
         n.w, n.h = _node_w(n, 12.5), _STAGE_H
         stage_node[st.name] = n
@@ -733,7 +726,7 @@ def _code(v: Optional[str], absent: str = "unrecorded") -> str:
 def _digest_cell(d: Optional[str]) -> str:
     if not d:
         return _muted("unrecorded")
-    return f"<b>{_e(_short_digest(d))}</b> <code>{_e(d)}</code>"
+    return f"<b>{_e(short_digest(d))}</b> <code>{_e(d)}</code>"
 
 
 def _steps(steps: list[tuple[str, list[str]]]) -> str:
@@ -767,7 +760,7 @@ def _image_cell(st: PipelineStage) -> str:
     if not st.image and not st.image_digest:
         return _muted("unrecorded")
     tag = f"<code>{_e(st.image)}</code>" if st.image else _muted("tag unrecorded")
-    short = (f' <span class="muted" title="{_e(st.image_digest)}">{_e(_short_digest(st.image_digest))}</span>'
+    short = (f' <span class="muted" title="{_e(st.image_digest)}">{_e(short_digest(st.image_digest))}</span>'
              if st.image_digest else "")
     return tag + short
 
@@ -921,7 +914,7 @@ def _run_hpc_section(record: PipelineRecord) -> str:
     imgs = _images(record)
     notes: list[str] = []
     for st in imgs:
-        label = _short_digest(st.image_digest) or st.image or ""
+        label = short_digest(st.image_digest) or st.image or ""
         which = f" for image <code>{_e(label)}</code>" if len(imgs) > 1 else ""
         on = f'<b>{_e(env or "the cluster")}</b>'
         docker = f"the docker image <code>{_e(st.image)}</code>" if st.image else "the frozen image"

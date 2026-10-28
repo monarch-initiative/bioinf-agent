@@ -121,14 +121,6 @@ def test_one_output_is_not_covered_by_a_different_file_of_the_same_name():
     assert "I3.outputs_validated" in _i3(_step([a, b], {validation_key(b): {"passed": True}}))
 
 
-def test_legacy_basename_keyed_records_still_validate():
-    """Drafts and sealed specs written before path keys are keyed by basename. They keep
-    working — an invariant must not start failing over a naming change the record had no
-    say in ([[feedback-existing-installs-not-precious]] covers re-earning an artifact, not
-    retroactively condemning one)."""
-    assert _i3(_step(["/out/a/result.bam"], {"result.bam": {"passed": True}})) == []
-
-
 @pytest.mark.parametrize("key,path,covered", [
     ("/out/a/x.bam", "/out/a/x.bam", True),      # canonical
     ("x.bam",        "/out/a/x.bam", True),      # legacy basename

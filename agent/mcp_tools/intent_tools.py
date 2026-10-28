@@ -6,7 +6,7 @@ user's request as JSON, it validates that reading against the `RequestIntent` sc
 and returns the completeness gate's verdict (decline / ask / investigate / proceed)
 plus the rail the request belongs to.
 
-BEHAVIOUR-NEUTRAL (Phase 1). This is ADVISORY, exactly like `resolve_tool`: nothing
+BEHAVIOUR-NEUTRAL. This is ADVISORY, exactly like `resolve_tool`: nothing
 forces a request through it and it changes no existing behaviour. Its value is that the
 intake becomes a validated, routable, testable record instead of an interpretation
 improvised fresh each time. The hard gates stay at the EXIT (the honesty contract).

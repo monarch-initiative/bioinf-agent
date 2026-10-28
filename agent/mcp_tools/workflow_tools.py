@@ -13,7 +13,7 @@ import re
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 # IMPORT-BINDING NOTE: singletons that tests monkeypatch (the L5 conftest
 # swaps `_pipeline_state` to a tmp-rooted instance per test) MUST be reached
@@ -531,7 +531,8 @@ def seal_workflow(
     ignore install concerns.
 
     Refuses to write if any workflow invariant fails (I0 shape · I3 validated
-    outputs · I6 paths · I7 resources · I8 input provenance); the env-build
+    outputs · I4 the how-to self-test · I5 reference databases · I6 paths ·
+    I7 resources · I8 input provenance · I10 service health); the env-build
     invariants are Layer 1's concern. Writes {workflow_name}.workflow.yaml (the
     machine-verified spec) + {workflow_name}.RUN.html (the Layer-2 run dashboard
     rendered from the passing run — validated evidence per compute locus plus a

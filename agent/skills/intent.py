@@ -16,7 +16,7 @@ half (types the intake); Phase 2 fixes the second (deletes the word-list).
                                                           │
                                             gate() ── deterministic ──▶ Outcome + Rail
 
-BEHAVIOUR-NEUTRAL (Phase 1). Nothing in the running system is forced through this yet;
+BEHAVIOUR-NEUTRAL. Nothing in the running system is forced through this yet;
 `interpret_request` is advisory, exactly like `resolve_tool`. The value delivered now is
 that the intake becomes a thing we can VALIDATE, LOG, TEST against a corpus, and ROUTE on
 — instead of an interpretation re-improvised on every request. The hard gates stay where
@@ -203,8 +203,8 @@ class DataOp(BaseModel):
 class Unknown(BaseModel):
     """A gap the LLM could NOT fill from the prompt. THE gate's input.
 
-    Every gap is stated here EXPLICITLY — this is the `outputs=[]` lesson applied to
-    the intake: a missing field is a fact to write down, never a default to invent.
+    Every gap is stated here EXPLICITLY: a missing field is a fact to write down, never
+    a default to invent.
     The gate never guesses what is missing; it reads this list.
     """
     model_config = ConfigDict(extra="forbid")
@@ -239,10 +239,10 @@ class RequestIntent(BaseModel):
     thing we validate, log, test against a corpus, and route on. That is the entire
     reason the front door stops being brittle.
 
-    SINGLE-RAIL BY CONSTRUCTION (Phase 1). One `RequestIntent` carries one `kind`. A
+    SINGLE-RAIL BY CONSTRUCTION. One `RequestIntent` carries one `kind`. A
     request that spans rails ("install x, y, z as separate envs AND run a pipeline",
     scenario 15) is COMPOSITION — an `ExecutionPlan` that decomposes one goal into a
-    DAG of intents (§6, Phase 4). It is a declared, tested gap here (see
+    DAG of intents (§6). It is a declared, tested gap here (see
     tests/test_intent_gate.py::known_gaps), not something faked into a single record.
     """
     model_config = ConfigDict(extra="forbid")

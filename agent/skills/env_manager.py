@@ -27,17 +27,6 @@ from agent.skills.outcomes import proven, refused, broke, last_informative_line
 
 #: How much of a step's stdout/stderr travels back into the agent's context.
 #:
-#: Measured, not guessed. `run_in_env` returned the streams UNTRUNCATED, so one
-#: ordinary verbose command (4,000 lines of build chatter) put **47,001 tokens** into
-#: context from a single call — more than the whole session's fixed prompt. On the
-#: 5-tool/5-step flagship pipeline, `run_step_in_container` alone was 35,188 tokens
-#: across 7 calls: 60% of that pipeline's entire MCP traffic.
-#:
-#: The lesson was already learned HERE, one function away: the conda install path has
-#: capped its streams at `[-3000:]` for a long time. It never propagated to the verb an
-#: agent uses to run an ARBITRARY bioinformatics command — which is the one that faces
-#: hisat2-build, STAR genomeGenerate and pip. One truth, applied at exactly one site.
-#:
 #: TAIL, not head: a traceback, a `command not found`, and a tool's final summary all
 #: land at the END. stderr keeps a larger share because it is almost always the
 #: diagnostic, and it is usually small — capping it aggressively would save nothing and
@@ -2086,8 +2075,7 @@ class EnvManager:
         Returns absolute paths so downstream tools (validate_output, the next
         run_in_env step's `inputs`) can use them directly without manual joins.
         Files in subdirectories of `directory` (e.g. Flye's `00-assembly/`,
-        `20-repeat/`) are preserved with their full path — the prior basename-
-        only output dropped subdir info and broke pipeline lineage.
+        `20-repeat/`) are preserved with their full path.
 
         When `watch_dir` is a system-shared location like
         /tmp, the snapshot may pick up files belonging to OTHER processes

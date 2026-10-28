@@ -7,10 +7,8 @@ structured dicts for the MCP tools list_available_resources and
 list_installed_pipelines.
 """
 
-from pathlib import Path
-
 from agent.models import core_data
-from agent.models.core_data import (USAGE_NOT_ATTEMPTED, USAGE_VERIFIED,
+from agent.models.core_data import (USAGE_VERIFIED,
                                     record_is_gated as _record_is_gated,
                                     step_is_validated, usage_status)
 from agent.skills.env_honesty import ASSURANCE as _ASSURANCE
@@ -471,11 +469,8 @@ def list_pipelines(config: dict, env_cache=None, detail: bool = False) -> dict:
             d = yaml.safe_load(spec_file.read_text()) or {}
             steps = d.get("pipeline_steps") or []
             if not detail:
-                # NO `or USAGE_NOT_ATTEMPTED` FALLBACK. That default did the rounding the
-                # leaf now refuses: a spec with no `usage_verification` block was reported
-                # as "nobody attempted the self-test", which is a finding, from a field that
-                # is simply absent. `usage_status` returns `unrecorded` for it and `""` only
-                # for a spec that is not a mapping at all.
+                # `usage_status` reports `unrecorded` for a spec with no usage_verification
+                # block; never default it.
                 status = usage_status(d)
                 row = {
                     "workflow_name":   d.get("workflow_name"),

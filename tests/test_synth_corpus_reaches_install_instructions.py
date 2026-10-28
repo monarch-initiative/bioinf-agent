@@ -44,25 +44,21 @@ from agent.skills import synthesis as s
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("path", [
+    # install instructions — the whole class, not the one file; nothing here keys on a
+    # tool or repo name
     "HIC_ASSEMBLER/packageInstallCommands.txt",   # the S4a specimen, verbatim
     "INSTALL",
     "INSTALL.md",
     "docs/INSTALLATION.rst",
     "install_commands.txt",
-])
-def test_a_file_that_holds_install_instructions_is_in_the_corpus(path):
-    """The whole class, not the one file. Nothing here keys on a tool or repo name."""
-    assert s.is_build_relevant(path), f"{path} would not be fetched"
-
-
-@pytest.mark.parametrize("path", [
+    # declarative dependency lists — for a repo whose "build" is a conda env, WHAT to
+    # install is most of the job, and an `agent_authored` command is grounded against
+    # exactly these bytes
     "requirements.txt", "requirements-dev.txt",
     "environment.yml", "env.yaml", "conda_env.yml",
     "DESCRIPTION",                                 # the R/Bioconductor dependency list
 ])
-def test_a_declarative_dependency_list_is_in_the_corpus(path):
-    """For a repo whose "build" is a conda env, WHAT to install is most of the job, and
-    an `agent_authored` command is grounded against exactly these bytes."""
+def test_an_install_instruction_or_dependency_file_is_in_the_corpus(path):
     assert s.is_build_relevant(path), f"{path} would not be fetched"
 
 

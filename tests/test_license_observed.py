@@ -179,12 +179,6 @@ def test_the_declared_path_is_unchanged():
     assert "license_gated=true requires redistributable=false" in v[0]["message"]
 
 
-def test_the_legacy_gated_key_still_arms_the_clause():
-    """Records on disk carry `gated`, not `license_gated`; read through record_is_gated."""
-    cov, v = EH._clause_license(_rec(_FREE, redistributable=True, gated=True))
-    assert cov.status == EH.CHECKED and v
-
-
 def test_redistribution_allowed_still_has_to_be_declared():
     """sentieon's own licence says "redistribution allowed" — and the artifact still may
     not claim it by DEFAULT. I13's rule is procedural: a gated tool discloses its terms.

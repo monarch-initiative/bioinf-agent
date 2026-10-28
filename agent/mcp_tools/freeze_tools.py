@@ -250,7 +250,7 @@ def freeze(
     pipeline_id: str = "",
     evidence: Optional[dict] = None,
 ) -> dict:
-    """Freeze an env into a content-addressed, HPC-shippable artifact (Slice 5).
+    """Freeze an env into a content-addressed, HPC-shippable artifact.
 
     The env-artifact primitive — adopt a pre-built BioContainer by
     digest when one exists, else build our own, and emit the Apptainer/HPC
@@ -269,13 +269,14 @@ def freeze(
            cross-arch refusal). A biocontainer is NOT adopted when the env has non-
            conda installs it can't represent (that would ship a different artifact).
            Gated builds must pass `licenses` (I13).
-      4. HPC delivery: adopted → `apptainer pull docker://…@digest`. Built →
-         registry-free by DEFAULT (`docker save` tarball + `apptainer build
-         docker-archive://…`, zero _ms.config/auth). If a default registry is
-         configured (_ms.config docker.registry) OR a push_target is passed, the built
-         image is pushed and delivery becomes `apptainer pull docker://…`; a push
-         failure falls back to the tarball and is reported in push_status. Gated
-         images are NEVER pushed (I13 — tarball-only).
+      4. HPC delivery is `stage_apptainer_image`: it builds the `.sif` on THIS
+         machine (an adopted image pulled by digest; a built one from the
+         `docker save` tarball) and ships the finished file; nothing is built
+         or pulled on the head node. The returned `hpc_delivery` block carries
+         the equivalent by-hand commands. A built image is also pushed when a
+         default registry is configured or a push_target is passed; a push
+         failure falls back to the tarball and is reported in push_status.
+         Gated images are NEVER pushed (I13 — tarball-only).
       5. EnvCache.register(request_key → record).
 
     `tools` are the PRIMARY requested tools (e.g. ['samtools=1.21',

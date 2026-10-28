@@ -16,9 +16,9 @@ THE SPLIT, UNCHANGED. Code owns what must be trustworthy — the SHAPE of the pl
 the GATE over it (is it a real DAG? does every input trace to a source? does it
 terminate at the goal?). The LLM owns the open-ended — the decomposition itself, and
 walking each node by calling the existing single-purpose primitives. This module
-DISPATCHES NOTHING (Phase 4 is advisory, like `interpret_request`): "rails are
+DISPATCHES NOTHING (advisory, like `interpret_request`): "rails are
 deterministic ordering + state + gates, not an auto-pilot; the agent WALKS the rides."
-Auto-dispatch is a later phase; building an `execute_plan` that loops the DAG calling
+Building an `execute_plan` that loops the DAG calling
 freeze/run/seal internally would be the forbidden composite primitive AND would bury
 the per-seam honesty gates inside one opaque call.
 

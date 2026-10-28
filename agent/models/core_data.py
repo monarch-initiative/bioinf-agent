@@ -175,7 +175,7 @@ class Accelerator(BaseModel):
     recorded runtime_probe. Default is build_only — the toolchain/image is
     correct, but execution was not verified on hardware (the case when building
     a CUDA image on a machine with no GPU). True runtime verification needs the
-    GPU runner (Phase 3).
+    GPU runner.
 
     MPS (Apple Metal) is dev-only: it does NOT survive containerization to the
     shipped linux/amd64 image, so I12 forces dev_only=true for it — a local MPS
@@ -911,7 +911,7 @@ class PackageRecord(BaseModel):
     One package installed as part of a pipeline.
 
     install_method describes HOW it was installed (conda, jar download, pip, …).
-    If absent, conda is assumed (backward compatible with existing specs).
+    If absent, conda is assumed.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -920,7 +920,7 @@ class PackageRecord(BaseModel):
     resolved_version:  Optional[str] = None   # conda recipe / install version
     runtime_version:   Optional[str] = None   # what packageVersion('X') / pip show returns at library() time — only set when it differs from resolved_version
     install_method:    Optional[InstallMethod] = None   # None → conda (default)
-    # kept for backward compatibility; also populated from install_method for conda packages
+    # also populated from install_method for conda packages
     conda_spec:        Optional[str] = None
     channel:           Optional[str] = None
     description:       Optional[str] = None
@@ -1317,6 +1317,37 @@ def sha256_file_or_none(path: Any) -> Optional[str]:
         return sha256_file(path)
     except OSError:
         return None
+
+
+def sha256_text(text: str) -> str:
+    """THE one hash of a text — utf-8, surrogates escaped so a captured stream hashes
+    whatever it held."""
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def short_digest(digest: Any, *, missing: str = "") -> str:
+    """The first 12 hex characters of an `algo:hex` digest, for a label or a filename.
+    Anything that is not an `algo:hex` digest is `missing`."""
+    if not isinstance(digest, str) or ":" not in digest:
+        return missing
+    return digest.split(":", 1)[1][:12]
+
+
+def human_size(n: Any) -> Optional[str]:
+    """Bytes → a compact human string (`68.9 MB`). None passes through; a value that
+    is not a number is returned as recorded."""
+    if n is None:
+        return None
+    try:
+        val = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if val < 1024 or unit == "TB":
+            return f"{int(val)} {unit}" if unit == "B" else f"{val:.1f} {unit}"
+        val /= 1024
+    return str(n)
 
 
 def resolve_data_path(path: Any, data_root: Optional[Path] = None) -> Path:
@@ -1886,7 +1917,7 @@ class UsageTemplate(BaseModel):
     build/test the pipeline; usage records the canonical command(s) a downstream
     user (or Nextflow generator) should run on *their* data.
 
-    LLM authors this via patch_pipeline after Phase 4. The command_template
+    The agent authors this via patch_pipeline. The command_template
     uses {PLACEHOLDER} substitutions whose names line up with `inputs` and
     `outputs` entries.
 
@@ -2424,16 +2455,12 @@ def resource_usage_authority(step: Any) -> str:
     `locus.detect_locus` sets `i7_authoritative` False whenever the run was
     emulated (an amd64 image on an arm64 host under QEMU), and both producers —
     `run_tools.py` for a host step and `env_build.py` for an in-container one —
-    write it into `resource_usage`. **No renderer had ever read it.** The RUN
-    dashboard printed `wall … · peak RSS … · CPU …` and dropped the one sibling
-    field whose entire job is to say those three numbers are not authoritative.
-
-    That page is the one a human opens *specifically to review parameters before
-    committing real data*, and the number it teaches is `#SBATCH --mem`. Under
-    emulation the timings are wrong by roughly two orders of magnitude. The
-    direction is over-request, so it wastes allocation rather than crashing jobs
-    — but it is wrong, actionable, and the correction was sitting unread in the
-    same file. (The ENV report does hedge, for TIME only, on the other page.)
+    write it into `resource_usage`. Every renderer reads this before printing a
+    step's numbers: the RUN dashboard is the page a human opens to review
+    parameters before committing real data, the number it teaches is
+    `#SBATCH --mem`, and under emulation the timings are wrong by roughly two
+    orders of magnitude (over-request, so it wastes allocation rather than
+    crashing jobs — but wrong and actionable).
 
     THREE states, never two. A spec sealed before the flag existed carries no
     opinion, and `False` is the default a bool would hand back for it — which
@@ -2461,7 +2488,7 @@ def usage_output_validations(spec: Any) -> list[dict]:
     """THE one reading of *what the I4 self-test validated each produced file AS*.
 
     `_run_one_trial` resolves an expected type for every matched output —
-    `declared_type or _infer_type_from_basename(...)` — runs the type-aware
+    `declared_type or infer_validator_type(...)` — runs the type-aware
     validator against it, and records `{pattern, file, expected_type, passed,
     method}`. So the record knows the type of every file the how-to produced,
     including the ones the author never declared a type for.
@@ -2633,7 +2660,7 @@ class WorkflowSpec(BaseModel):
     # The validated run. REQUIRED, no default: the producer (seal) must DERIVE and
     # STATE the real run status from the steps — a defaulted "in_progress" stamped
     # into every sealed spec is the "permissive model with defaults authors drift"
-    # anti-pattern (the outputs: list[str]=[] lesson). seal computes it via
+    # anti-pattern. seal computes it via
     # spec_writer.derive_pipeline_status; a spec that omits it fails model_validate.
     pipeline_status:    PipelineStatus
     usage_verified:     bool = False
@@ -2662,18 +2689,11 @@ class WorkflowSpec(BaseModel):
     reference_databases:  list[ReferenceDatabase] = []
     runtime_configs:      list[RuntimeConfig] = []
     authored_artifacts:   list[AuthoredArtifact] = []
-    # Not an input SOURCE — a runtime PREREQUISITE, carried for the same reason.
-    # I10 (every declared service has a healthy probe) ran at seal against the
-    # draft and then the field was dropped from the artifact, so the sealed spec
-    # re-verified it against nothing: a workflow that genuinely depends on a
-    # running Redis/Postgres/Spark read, standalone, as one that depends on no
-    # service at all. Carrying it makes seal's own self-verify (which validates
-    # the constructed spec, not the draft) actually re-check the clause.
+    # Not an input SOURCE — a runtime PREREQUISITE, carried so seal's standalone I10
+    # re-check has the services to verify.
     service_dependencies: list[ServiceDependency] = []
     # Driver env: what runs the workflow (records the orchestrator's env, too).
     driver_env:         dict = {}                  # {conda_env, python_version, key_packages}
-    user_guide:         Optional[str] = None       # rendered markdown (from the passing run)
-    user_guide_path:    Optional[str] = None
 
     def to_yaml(self) -> str:
         return yaml.dump(self.model_dump(exclude_none=True),

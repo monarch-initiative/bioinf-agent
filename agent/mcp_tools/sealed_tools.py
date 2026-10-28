@@ -8,7 +8,7 @@ ADVISORY-READER family — `interpret_request` (intent_tools, the front gate) ·
 `plan_request` (plan_tools, composition) · `describe_sealed_step` (here, the
 RUN_STEP-of-sealed reader). All three DISPATCH NOTHING. A successful read returns an
 untagged `{ok: true, …}` query dict: the facts it reports are a different axis from an
-outcome that gates an action (the ShippedBinary "one key, one meaning" lesson). A
+outcome that gates an action (one key, one meaning). A
 request the reader cannot serve — no such workflow, a spec that does not parse, no
 such step — is a `refused` terminal like any other gate's. workflow_tools.py holds
 the honesty PRIMITIVES (seal_workflow / patch_pipeline / …), each returning a
@@ -16,9 +16,9 @@ proven/refused terminal.
 
 The typed SEAM this reader stands on lives in `spec_writer`
 (`load_workflow_spec` / `select_pipeline_step`) — a sealed spec is read back through
-the WorkflowSpec model, never scraped (the bcftools-1.23.1 lesson: a `.get`/regex over
-a record returns the wrong field under a confident name, and "the wrong command in the
-right container" is a silent, ground-truthed lie).
+the WorkflowSpec model, never scraped: a `.get`/regex over a record returns the wrong
+field under a confident name, and "the wrong command in the right container" is a
+silent, ground-truthed lie.
 
 Singletons via `_ms.X` so test monkeypatching on mcp_server reaches us — same binding
 convention as env_tools.py / workflow_tools.py.

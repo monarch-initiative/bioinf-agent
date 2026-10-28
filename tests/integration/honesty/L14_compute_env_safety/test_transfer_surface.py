@@ -8,7 +8,7 @@ Pins the public contract of agent/skills/transfer.py:
   - scratch zone enforces the per-project-isolation prefix.
   - common_data zone allows shared writes (no prefix).
   - project_path zone requires longest-prefix-match in directories[].
-  - _ad_hoc project synthesizes scratch + common_data on every env, no
+  - _ad_hoc project synthesizes the env-implicit zones on every env, no
     YAML edit needed; project_path zone is refused for _ad_hoc (empty
     directories[] by design).
   - The manifest is ALWAYS written, success or failure, under
@@ -331,7 +331,7 @@ class TestZoneRouting:
 
 
 # ===========================================================================
-# _ad_hoc project — scratch + common_data on every env, NO directories[]
+# _ad_hoc project — the env-implicit zones on every env, NO directories[]
 # ===========================================================================
 
 class TestAdHocProject:

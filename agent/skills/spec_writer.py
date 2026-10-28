@@ -33,6 +33,7 @@ from agent.skills.outcomes import refused
 # + outcomes, so this stays cycle-free.
 from agent.skills.pipeline_state import validation_covers as _validation_covers
 from agent.skills import workspace
+from agent.validators.output_validator import infer_validator_type
 
 #: How long one command of a self-test trial may run before the runner kills it. Thirty
 #: minutes: a release-scale step on an emulated laptop runs for ten, and a self-test is a
@@ -209,9 +210,7 @@ def write_workflow_spec(workflow: dict, config: dict, env_name: str | None = Non
     """Validate + write a Layer-2 WorkflowSpec as YAML.
 
     The human-facing how-to is rendered as HTML into {name}.RUN.html by the seal
-    (run_dashboard_html), NOT a markdown guide — the markdown GUIDE.md is retired.
-    Any legacy `user_guide` markdown on the workflow dict is dropped here (never
-    inlined in the YAML, never written to disk)."""
+    (run_dashboard_html)."""
     # (helper below is module-level; see _shape_fix_hint)
     from agent.models.core_data import WorkflowSpec
 
@@ -252,8 +251,6 @@ def write_workflow_spec(workflow: dict, config: dict, env_name: str | None = Non
     # STATE. `exclude_none` un-states it. Explicit `null`s cost some YAML noise and
     # buy a spec that round-trips, which is the whole point of a sealed artifact.
     data = wf.model_dump()
-    data.pop("user_guide", None)        # retired markdown guide — never persist it
-    data.pop("user_guide_path", None)
     yaml_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
     return {"workflow_spec_path": str(yaml_path)}
 
@@ -278,9 +275,9 @@ def load_workflow_spec(path: Any) -> Any:
     (``agent_status``, ``resources.list_pipelines``, ``pipeline_state.spec_sealed``).
     That scrape is harmless for an orientation SUMMARY — but re-running a RECORDED
     step means pulling a command we are about to EXECUTE in the shipped image out of
-    that dict, which is exactly the read where a scrape is dangerous: the
-    bcftools-1.23.1 lesson is that a ``.get``/regex over a record returns the wrong
-    field under a confident name, and "the wrong command in the right container" is a
+    that dict, which is exactly the read where a scrape is dangerous: a
+    ``.get``/regex over a record returns the wrong field under a confident name, and
+    "the wrong command in the right container" is a
     silent, ground-truthed lie. So any consumer that ACTS on a sealed spec reads it
     back through THIS typed seam — a malformed artifact fails HERE, loudly
     (``pydantic.ValidationError``), rather than surfacing as a bad command deep in a
@@ -694,17 +691,15 @@ def _run_one_trial(
             )
         return out
 
-    # Step 2: type-aware validation on each matched file. Skips when the
-    # validator wasn't passed in (legacy path / unit tests), but with the
-    # MCP server wired up, validator is always supplied so this is the
-    # mainline.
+    # Step 2: type-aware validation on each matched file (when a validator is
+    # supplied; the server always supplies one).
     validation_results: list[dict] = []
     if validator is not None:
         for pat, matches in matched_files.items():
             for produced_rel, declared_type in matches:
                 abs_path = str(scratch / produced_rel)
-                # Resolve expected type: declared > extension inference > "any".
-                etype = declared_type or _infer_type_from_basename(Path(produced_rel).name)
+                # Expected type: declared, else the validator's own filename reading.
+                etype = declared_type or infer_validator_type(Path(produced_rel).name)
                 v = validator.validate(abs_path, etype, env_name=env_name)
                 validation_results.append({
                     "pattern":       pat,
@@ -735,22 +730,6 @@ def _run_one_trial(
         "validation_results": validation_results[:20],
         "description": plan.get("description"),
     }
-
-
-def _infer_type_from_basename(basename: str) -> str:
-    """Map a basename to a validator type. Mirrors _infer_validator_type in
-    mcp_server.py; kept here to avoid the import cycle."""
-    name = basename.lower()
-    if name.endswith(".gz"):
-        name = name[:-3]
-    last = name.rsplit(".", 1)[-1]
-    for known in ("bam", "sam", "bai", "vcf", "bcf", "fasta", "fastq",
-                  "bed", "bigwig", "gtf", "gff", "gfa", "tsv", "csv", "txt",
-                  "html", "json", "jsonl", "fq"):
-        if last == known:
-            # validator dispatches on "fasta" not "fa", "fastq" not "fq"
-            return "fastq" if known == "fq" else known
-    return "any"
 
 
 def check_invariants(spec: dict) -> list[dict]:

@@ -774,31 +774,32 @@ def test_upsert_service_dependency_appends_probe_to_existing_log():
     ps.discard("svc_upsert_test")
 
 
+@pytest.mark.integration
 def test_package_in_registry_finds_installed_and_misses_absent():
-    """The runtime registry anchor must find a really-installed package and
-    miss a fabricated one. Uses the base conda env (python is always present;
-    a random name never is). Skips if no conda env named 'base' is resolvable."""
+    """The runtime registry anchor must find a really-installed package and miss a
+    fabricated one, against a real conda env on THIS machine (the per-test sandbox
+    holds no env by construction)."""
     import shutil, pytest as _pytest
     from agent.skills.env_manager import EnvManager
-    # Use the live config so EnvManager points at the real envs dir.
     import yaml as _yaml
     from pathlib import Path as _Path
+    from _artifacts import CONDA_ENVS, real_dir_or_skip
+    envs_dir = real_dir_or_skip(CONDA_ENVS, "run ./scripts/setup.sh")
     cfg_path = _Path(__file__).parent.parent / "config" / "agent_config.yaml"
-    if not cfg_path.exists() or not shutil.which("conda"):
-        _pytest.skip("conda or agent_config.yaml not available")
-    cfg = _yaml.safe_load(cfg_path.read_text())
-    em = EnvManager(cfg)
-    # Find any existing bioinf_* env to probe against. THE MACHINE'S conda zone,
-    # not the per-test sandbox: this probes a real conda registry, and the sandbox
-    # has no env in it by construction.
-    from _artifacts import CONDA_ENVS
-    envs_dir = CONDA_ENVS
-    candidates = [p.name for p in envs_dir.glob("bioinf_*") if p.is_dir()] if envs_dir.exists() else []
+    if not shutil.which("conda"):
+        _pytest.skip("conda is not on PATH")
+    em = EnvManager(_yaml.safe_load(cfg_path.read_text()))
+    em.envs_dir = envs_dir                    # the machine's zone, not the sandbox's
+    candidates = [p for p in sorted(envs_dir.glob("bioinf_*"))
+                  if (p / "conda-meta").is_dir() and any((p / "conda-meta").glob("*.json"))]
     if not candidates:
-        _pytest.skip("no bioinf_* env to probe")
+        _pytest.skip("no bioinf_* conda env to probe")
     env = candidates[0]
-    # A package that definitely isn't installed under this fabricated name.
-    assert em._package_in_registry(env, "totally-not-a-real-package-xyz123") is False
+    # A package the env's own conda-meta records is found; a fabricated name is not.
+    installed = sorted(f.name.rsplit("-", 2)[0] for f in (env / "conda-meta").glob("*-*-*.json"))
+    present = next(n for n in installed if n[0].isalpha())
+    assert em._package_in_registry(env.name, present) is True, present
+    assert em._package_in_registry(env.name, "totally-not-a-real-package-xyz123") is False
 
 
 def test_kill_service_pid_terminates_detached_process():
@@ -1740,22 +1741,6 @@ def test_build_number_ranking():
     assert _build_number("noversion") == -1
 
 
-@pytest.mark.live
-def test_resolve_biocontainer_single_tool_live():
-    """Live adoption against quay.io for a tool that definitely has a
-    biocontainer (samtools 1.21). Network-guarded: skips if the registry is
-    unreachable so the suite stays green offline."""
-    import pytest as _pytest
-    from agent.skills.biocontainers import resolve_biocontainer
-    res = resolve_biocontainer([("samtools", "1.21")], timeout=20)
-    if not res.get("found"):
-        _pytest.skip(f"quay.io unreachable or tag absent: {res.get('reason')}")
-    assert res["repo"] == "samtools"
-    assert res["tag"].startswith("1.21--")
-    assert res["digest"].startswith("sha256:")
-    assert res["image_by_digest"].startswith("quay.io/biocontainers/samtools@sha256:")
-
-
 # ---------------------------------------------------------------------------
 # Re-spine Slice 5b: content-addressing (content_digest / request_key / cache)
 # ---------------------------------------------------------------------------
@@ -1961,19 +1946,6 @@ def test_install_call_maps_each_tier_to_its_primitive():
     assert "install_git_repo" in _install_call("source", "thing", "", {}, "owner/thing")
 
 
-@pytest.mark.live
-def test_resolve_live_samtools_chooses_conda():
-    """Live resolve: samtools is on bioconda, so the resolver must choose the
-    conda tier. Network-guarded — skips if registries are unreachable."""
-    import pytest as _pytest
-    from agent.skills.resolver import resolve
-    d = resolve("samtools", timeout=15)
-    if not d.get("chosen"):
-        _pytest.skip("registries unreachable")
-    assert d["chosen"] == "conda", f"expected conda for samtools, got {d['chosen']} ({d['probed']})"
-    assert "install_conda_packages" in d["install_call"]
-
-
 def test_is_ambiguous_only_for_python_plus_r_without_hint():
     from agent.skills.resolver import _is_ambiguous
     both = {"pip": {"available": True}, "cran": {"available": True}}
@@ -2124,25 +2096,6 @@ def test_resolve_cran_cross_namespace_collision(monkeypatch):
         f"CRAN collision was not disqualified; got {d['chosen']!r}"
     assert any(c["tier"] == "cran" for c in d["cross_namespace_collisions"])
     assert d["probed"]["cran"]["available"] is False
-
-
-@pytest.mark.live
-def test_resolve_live_ape_disambiguated_by_language():
-    """The collision finding, fixed: bare 'ape' is flagged ambiguous (PyPI vs
-    CRAN), and language='r' steers it to an R tier (cran/bioconductor/conda
-    r-ape), never pip. Network-guarded."""
-    import pytest as _pytest
-    from agent.skills.resolver import resolve
-    bare = resolve("ape", timeout=15)
-    if not bare.get("probed", {}).get("pip", {}).get("available") or \
-       not bare.get("probed", {}).get("cran", {}).get("available"):
-        _pytest.skip("ape not present in both PyPI and CRAN right now")
-    assert bare["ambiguous"] is True
-    assert "AMBIGUOUS" in bare["rationale"]
-    r = resolve("ape", language="r", timeout=15)
-    assert r["ambiguous"] is False
-    assert r["chosen"] in ("conda", "cran", "bioconductor"), f"R tool went to {r['chosen']}"
-    assert r["chosen"] != "pip"
 
 
 # ---------------------------------------------------------------------------

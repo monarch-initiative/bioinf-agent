@@ -91,16 +91,3 @@ def test_reports_still_render_deterministically():
     assert render_env_report_html(env_record()) == render_env_report_html(env_record())
     r = _freeze_record()
     assert render_run_dashboard_html(_run_spec(), r) == render_run_dashboard_html(_run_spec(), r)
-
-
-# ---------------------------------------------------------------------------
-# GUIDE — the Talos walkthrough, generated honestly
-# ---------------------------------------------------------------------------
-
-@pytest.mark.integration
-@pytest.mark.integration
-def test_the_meter_is_visible():
-    pinned = 5
-    print(f"\nPHASE-7 REPORTS: {pinned} behaviours pinned "
-          f"(theme toggle · two palettes · no-stray-hex · one-stylesheet · determinism)")
-    assert pinned == 5

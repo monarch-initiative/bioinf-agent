@@ -64,10 +64,52 @@ def test_both_runners_share_the_one_reading():
     from agent.skills import run_cluster_step
     from agent.mcp_tools import run_tools
     from agent.validators import output_validator
+    from agent.skills import spec_writer
     assert run_cluster_step.infer_validator_type is output_validator.infer_validator_type
     assert run_tools._infer_validator_type is output_validator.infer_validator_type
+    assert spec_writer.infer_validator_type is output_validator.infer_validator_type
     assert not hasattr(run_cluster_step, "_infer_etype"), (
         "_infer_etype is the second copy F18 deleted; it must not come back")
+    assert not hasattr(spec_writer, "_infer_type_from_basename"), (
+        "_infer_type_from_basename was the I4 self-test's own copy; it lacked the "
+        "fa/fna/faa/ndjson aliases, so the self-test validated x.fa as 'any' while "
+        "the step runners validated it as fasta")
+
+
+@pytest.mark.parametrize("produced, expected", [
+    ("S1.fa", "fasta"), ("S1.fna.gz", "fasta"), ("S1.faa", "fasta"),
+    ("S1.fq.gz", "fastq"), ("S1.ndjson", "jsonl"), ("S1.sorted.bam", "bam"),
+    ("S1.mystery", "any"),
+])
+def test_the_self_test_validates_an_undeclared_output_by_the_one_reading(tmp_path, produced, expected):
+    # The I4 self-test types each produced file the way the step runners do: an
+    # output the author declared no type for is validated as what its name says.
+    from pathlib import Path
+    from agent.skills import spec_writer as SW
+
+    class _Runner:
+        is_image_runner = False
+
+        def run_in_env(self, env_name, command, timeout=None, watch_dir=None, **kw):
+            (Path(watch_dir) / produced).write_text(">r\nACGT\n")
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    class _Validator:
+        asked: list = []
+
+        def validate(self, path, expected_type, env_name=None):
+            self.asked.append((Path(path).name, expected_type))
+            return {"passed": True, "validation_method": "stub"}
+
+    spec = {"usage": {"description": "d", "command_template": "tool -o {OUTPUT_DIR}/" + produced,
+                      "inputs": [], "outputs": [{"name": "out", "files": [produced]}],
+                      "trials": [{"name": "t1", "substitutions": {}}]},
+            "conda_env": "e"}
+    validator = _Validator()
+    r = SW.self_test_usage(spec, _Runner(), validator=validator)
+    assert r["ok"] is True, r
+    assert validator.asked == [(produced, expected)]
+    assert r["trials"][0]["validation_results"][0]["expected_type"] == expected
 
 
 # ───────────────────────── F19 — the runner probe tries both spellings ──────

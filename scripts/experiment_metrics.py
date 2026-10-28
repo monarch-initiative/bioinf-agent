@@ -181,12 +181,6 @@ METRIC_COLUMNS: tuple[tuple[str, str], ...] = (
     ("judge_hash", "sha256 of scripts/experiment_metrics.py — the judge that produced this verdict"),
 )
 METRIC_NAMES = tuple(name for name, _ in METRIC_COLUMNS)
-#: Row fields that are structured (not scalar columns): kept in metrics.json, shown in the
-#: report, left out of the CSV.
-DETAIL_FIELDS = ("mcp_by_tool", "refusal_codes", "outcome_codes", "code_classes", "expected_codes", "required_codes",
-                 "gated_tools", "expect", "expect_failed", "expect_checked", "reasons", "bound", "sealed_names",
-                 "resources_mutated", "attempts_of", "model_usage",
-                 "final_text", "session_id", "claude_code_version", "code_dirty", "started_at")
 
 
 # ---------------------------------------------------------------------------

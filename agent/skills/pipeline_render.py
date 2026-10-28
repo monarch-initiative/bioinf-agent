@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Mapping, Optional
 
 from agent.skills.pipeline_page_html import render_pipeline_page
-from agent.models.core_data import SLOT_RE
+from agent.models.core_data import SLOT_RE, sha256_text
 from agent.skills.pipeline_record import (RECORD_FILENAME, PipelineDerivationError,
                                           PipelineRecord, PipelineStage, _TOKEN_CHARS,
                                           _collapse, record_yaml,
@@ -171,13 +171,9 @@ def check_rendered_commands(record: PipelineRecord, files: Mapping[str, str]) ->
 # ── the file set ────────────────────────────────────────────────────────────
 
 
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def _manifest(files: Mapping[str, str]) -> str:
     """`sha256sum` format over every file but the manifest itself, sorted by path."""
-    lines = [f"{_sha256_text(files[path])}  {path}"
+    lines = [f"{sha256_text(files[path])}  {path}"
              for path in sorted(files) if path != MANIFEST_PATH]
     return "\n".join(lines) + "\n"
 

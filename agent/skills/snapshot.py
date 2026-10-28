@@ -375,7 +375,7 @@ def _snapshot_paths_for_env(project: dict, env_name: str,
     Upload-only dirs (no `file_name_only`) are authorized for upload
     but invisible to the snapshot — they don't appear here."""
     out: list[dict] = []
-    # Source 1: project's compute_env_access[].directories[] (Phase 1)
+    # Source 1: the project's directories[] on this env
     for d in compute_access.get_project_directories(project, env_name):
         if "file_name_only" in (d.get("permissions") or []):
             p = d.get("path")
@@ -625,8 +625,8 @@ def snapshot_project(project_name: str,
     # path BEFORE any subprocess runs — defense-in-depth, even though every
     # walked path is by construction in the project's authorized dir set.
     # Tagged paths carry their source so the right gate fires:
-    #   project_directory → check_permission (Phase 1, project-level grant)
-    #   env_target        → check_env_target_capability (Phase 2, env grant)
+    #   project_directory → check_permission (project-level grant)
+    #   env_target        → check_env_target_capability (env grant)
     plans: list[tuple[str, dict, list[dict]]] = []
     for block in access_blocks:
         env_name = block.get("compute_env")

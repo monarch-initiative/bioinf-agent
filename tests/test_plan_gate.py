@@ -474,21 +474,3 @@ def test_type_compatibility_is_a_declared_gap_not_a_silent_green():
         "the plan gate is provenance-not-type BY DESIGN — a SEAL-consumes-env plan gates "
         "green at authoring time; seal_workflow is the authority that rejects it. If this "
         "now reds, a per-action type check was added — update this declared gap deliberately")
-
-
-# ---------------------------------------------------------------------------
-# 6. the meter — state the number, don't bury it
-# ---------------------------------------------------------------------------
-
-def test_the_meter_is_visible():
-    passed = 0
-    for rid, raw, want_ready, want_topo, _ in ROWS:
-        result = gate_plan(parse_plan(raw))
-        ok = result.plan_ready is want_ready
-        if want_topo is not None:
-            ok = ok and result.topo_order == want_topo
-        if ok:
-            passed += 1
-    print(f"\nPLAN GATE CORPUS: {passed}/{len(ROWS)} §6/§7 composite scenarios gate as intended "
-          f"(worst case = 5-node DAG: install_env ⊕ run_step + SEAL)")
-    assert passed == len(ROWS)

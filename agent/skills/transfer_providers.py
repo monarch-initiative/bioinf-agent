@@ -16,7 +16,7 @@ so a Globus transfer needs no ssh session at all.
 
 Two providers live here today:
 
-  ScpHeadNodeProvider — the legacy default. scp over ssh + sha256sum
+  ScpHeadNodeProvider — the default. scp over ssh + sha256sum
     round-trip on the remote side; we compare hashes ourselves. Its
     no-overwrite check is the login-node `seen` over ssh; its parent-dir
     prep is `ssh mkdir -p`. Fine for small files; pisses off head-node policy

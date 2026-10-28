@@ -253,9 +253,9 @@ def render(corpus: dict) -> str:
     P.append("</table></div>")
 
     # -- what this page CANNOT see ------------------------------------------
-    # Rendered BEFORE the scenario table, not after, and never folded into a footnote.
-    # Tier 6's lesson, applied to a page instead of an install_call: a warning parked in a
-    # sibling key is a warning that gets skipped. A grid that shows only what it can measure
+    # Rendered BEFORE the scenario table, not after, and never folded into a footnote: a
+    # warning parked in a sibling key is a warning that gets skipped. A grid that shows
+    # only what it can measure
     # reads as "this is everything" — which is the exact failure mode the whole audit is
     # about, one level up.
     gaps = corpus.get("known_gaps") or []

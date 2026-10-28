@@ -117,6 +117,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from agent.models.core_data import human_size
 from agent.skills import compute_access
 from agent.skills.backgroundable import detached
 from agent.skills.outcomes import proven, refused, broke, degraded, loop
@@ -427,10 +428,10 @@ def _local_mkdir_parent(remote_abs_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _synthesize_ad_hoc_project(access: dict) -> dict:
-    """Build the virtual one-off project. It can touch scratch +
-    common_data on every env in the YAML, with no project-specific
-    directories[]. The synthesized project never persists to disk; it
-    lives only for the duration of one call."""
+    """Build the virtual one-off project. It can touch the four env-implicit
+    zones (scratch, common_data, container_upload, pipelines) on every env in
+    the YAML, with no project-specific directories[]. The synthesized project
+    never persists to disk; it lives only for the duration of one call."""
     envs = access.get("compute_envs") or []
     compute_env_access = []
     for env in envs:
@@ -443,9 +444,9 @@ def _synthesize_ad_hoc_project(access: dict) -> dict:
         })
     return {
         "name":               AD_HOC_PROJECT_NAME,
-        "description":        ("synthesized virtual project — scratch + "
-                               "common_data on every env, no "
-                               "project-specific directories"),
+        "description":        ("synthesized virtual project — the env-implicit "
+                               "zones on every env, no project-specific "
+                               "directories"),
         "compute_env_access": compute_env_access,
     }
 
@@ -606,19 +607,6 @@ def _short_hash(*parts: str) -> str:
 
 # --- human-readable formatting helpers for the manifest ------------------
 
-def _human_size(n: Optional[int]) -> Optional[str]:
-    """Bytes → a compact human string (e.g. 68.9 MB). None passes through."""
-    if n is None:
-        return None
-    step = 1024.0
-    val = float(n)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if val < step or unit == "TB":
-            # No decimals for plain bytes; one decimal above that.
-            return f"{int(val)} {unit}" if unit == "B" else f"{val:.1f} {unit}"
-        val /= step
-    return f"{n} B"
-
 
 def _human_duration(seconds: Optional[float]) -> Optional[str]:
     """Seconds → a compact human string (e.g. 3.8s, 1m04s)."""
@@ -716,7 +704,7 @@ def _write_transfer_manifest(*,
 
     outcome = _OUTCOME_VERB.get((result, direction), result)
     fname = os.path.basename(remote_abs_path) or os.path.basename(local_path)
-    size_h = _human_size(bytes_transferred)
+    size_h = human_size(bytes_transferred)
     # `to`/`from` carry the env name on the remote side so a reader knows
     # WHICH cluster without cross-referencing.
     if direction == "upload":
@@ -1465,7 +1453,7 @@ def _download_into_place(env: dict, task_id: str, path: Path, rec: dict, pending
                      remedy="globus_task_status again once that is put right: it retries the rename")
     rec["outcome"] = "downloaded"
     rec.pop("reason", None)
-    rec["size"] = _human_size(nbytes)
+    rec["size"] = human_size(nbytes)
     rec["summary"] = _summarize(
         outcome="downloaded", direction="download", transport="globus",
         fname=rec.get("file", ""), size_h=rec["size"], compute_env=env.get("name", "?"),

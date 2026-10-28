@@ -232,10 +232,8 @@ def main() -> int:
         return 1 if (drift or flipped or cleared) else 0
 
     corpus["probed_on"] = _dt.date.today().isoformat()
-    # indent=2 + ensure_ascii=False MATCH THE COMMITTED FILE. They are not cosmetic: with
-    # indent=1 (and \u-escaped em-dashes) every run rewrote all 1,844 lines, so a two-line
-    # behaviour change arrived as a whole-file diff and the reviewer could not see what
-    # actually moved. A meter whose updates are unreviewable is a meter nobody checks.
+    # indent=2 + ensure_ascii=False match the committed file, so a re-probe diffs only
+    # what changed.
     CORPUS.write_text(json.dumps(corpus, indent=2, ensure_ascii=False) + "\n")
     # Three counts, never two: printing `len(rows) - ok` as "do not" silently charges
     # every ungraded row to the failure column — the same rounding the loop above

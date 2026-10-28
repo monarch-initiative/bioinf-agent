@@ -104,4 +104,6 @@ def load_or_skip(path: Optional[str]) -> Any:
     if not p.is_file():
         pytest.skip(f"{path} is not on this machine (generated artifact, gitignored) "
                     f"— run the pipeline that produces it to exercise this check")
-    return yaml.safe_load(p.read_text())
+    # The C loader where PyYAML has it: a sealed spec can run to tens of megabytes,
+    # and several checks parse every one on the machine.
+    return yaml.load(p.read_text(), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))

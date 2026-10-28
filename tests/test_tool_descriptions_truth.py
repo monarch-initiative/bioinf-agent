@@ -28,6 +28,12 @@ def test_no_description_cites_a_retired_invariant(descriptions):
     assert not stale, f"descriptions cite retired invariants: {stale}"
 
 
+def test_seal_workflow_names_every_active_workflow_invariant(descriptions):
+    active = {i.id for i in reg.active(reg.LAYER_WORKFLOW)}
+    cited = {f"I{n}" for n in re.findall(r"\bI(\d{1,2})\b", descriptions["seal_workflow"])}
+    assert active <= cited, f"seal_workflow's description does not name {sorted(active - cited)}"
+
+
 def test_patch_pipeline_names_the_keys_it_accepts_and_blocks(descriptions):
     from agent.skills.pipeline_state import PipelineState
     text = descriptions["patch_pipeline"]

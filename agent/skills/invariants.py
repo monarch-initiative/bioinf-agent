@@ -169,8 +169,8 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
     # events that could drift, so every claim had to be re-anchored at finalize. Building
     # and validating INSIDE the shipped image collapsed the two events into one; there is
     # no second event to drift from, so the re-anchoring walks have nothing left to do.
-    # They are listed because CLAUDE.md still refers to them by number and a reader must
-    # be able to look one up and find out it is gone, rather than find nothing.
+    # They are listed so a reader who meets one of these ids in an older record or
+    # report can look it up and find out it is gone, rather than find nothing.
     _inv(id="I1", layer=LAYER_ENV, status=RETIRED,
          statement="every declared package is present in the built env",
          enforced_by="agent.skills.env_honesty.check_build",

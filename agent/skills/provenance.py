@@ -29,7 +29,7 @@ fetches the repo and passes the corpus in); unit-testable.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 GENERATOR = "generator"
 EXTRACTED = "extracted"

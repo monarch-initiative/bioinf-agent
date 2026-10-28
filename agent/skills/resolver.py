@@ -1831,13 +1831,8 @@ def registry_name(detail: dict, tool: str) -> str:
       * conda-forge ships R packages as `r-{name}`
       * CRAN knows Seurat as `Seurat`, and `install.packages()` is case-SENSITIVE
 
-    Three keys, one question. They were spelled separately at three call sites and
-    the third — the DISCLOSURE that tells the user the name changed — read only
-    `bioc_spec`, so `resolve('Seurat', language='r')` emitted an install of
-    `r-Seurat` with no mention that the name had been rewritten at all. That is the
-    `feedback-reports-never-lie` failure (requested-vs-installed at a glance) and
-    the repo's signature defect (one truth in N places, drifting in N−1) in one
-    line. Add a fourth registry convention HERE, never at a call site."""
+    Three keys, one question. Add a fourth registry convention HERE, never at a call
+    site."""
     return (detail.get("bioc_spec") or detail.get("r_spec")
             or detail.get("resolved_name") or tool)
 
