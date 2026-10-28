@@ -14,7 +14,7 @@ in is there (the staged .sif on a cluster, the docker image on a laptop); every 
 run binds — the shared path parameters and every path cell of the samplesheet — exists;
 and the shared references still hash to what the workflow was SEALED against where a
 sealed anchor exists. A reference that diverged launches, reported as `degraded`, never
-as a bare success; so does a value the seal's self-test never ran the how-to with
+as a bare success; so does a value the sealed run never bound the how-to to
 (`value_check`).
 
 A run directory is Nextflow's launch directory, and `-resume` only works from the same
@@ -531,11 +531,11 @@ def _spec_for(record: PipelineRecord, param_key: str) -> str:
 
 def _value_check(record: PipelineRecord, effective: Mapping[str, str], rows: list[dict]) -> dict:
     """The value parameters this launch binds (params.yaml values and the samplesheet's
-    value columns, never the sample's name) against what the seal's self-test ran the
+    value columns, never the sample's name) against what the sealed run bound the
     how-to with: {status: checked | unrecorded, unproven: [{param, values, proven}]}.
     A value it never ran is a run the shipped how-to was not proven on — legitimate,
     but not one to start without being told; `unrecorded` says the seal kept no
-    transcript of its self-test, so there was nothing to compare against."""
+    transcript, so there was nothing to compare against."""
     ran_with: dict[str, set[str]] = {}
     for path in {record.sealed_workflow_path, *(cw.sealed_workflow_path for cw in record.cohort_workflows)}:
         spec, _ = _load_spec(path)

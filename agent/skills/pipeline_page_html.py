@@ -794,7 +794,7 @@ def _header(record: PipelineRecord) -> str:
         ("Stages", f"{n_st} in execution order: " + " → ".join(stage_word(s) for s in _ordered(record))),
         ("Samples", f"{rows_word} in <code>samples.csv</code> — "
                     + ("the sealed run's own" if record.samplesheet.rows_from == "proven" else
-                       '<span class="warn">the values the how-to was declared with; its self-test did '
+                       '<span class="warn">the values the how-to was declared with; the seal did '
                        'not run on them</span>')
                     + "; replace them with yours"),
     ]

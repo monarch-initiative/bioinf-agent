@@ -183,6 +183,10 @@ class TestRefusals:
             i["name"] = i["name"].replace("DESIGN", "STRANDED")
         for t in d["usage"]["trials"] + d["usage_verification"]["trials"]:
             t["substitutions"]["STRANDED"] = t["substitutions"].pop("DESIGN")
+        for s in d["pipeline_steps"]:
+            s["template"] = s["template"].replace("{DESIGN}", "{STRANDED}")
+            if "DESIGN" in (s.get("bindings") or {}):
+                s["bindings"]["STRANDED"] = s["bindings"].pop("DESIGN")
         e = _refusal(cohort=[_request(WorkflowSpec.model_validate(d))])
         assert e.code == "pipeline.param_collision" and "STRANDED" in e.error and "rnaseq_de_workflow" in e.remedy
 

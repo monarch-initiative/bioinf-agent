@@ -10,10 +10,6 @@ Every test here encodes a defect measured on the real cluster drive of
        cluster BAM recorded `passed: False` under a txt probe. One reading now,
        living next to the validator dispatch it mirrors; unknown returns "any"
        (the gate teaches at seal), never a fabricated concrete type.
-  F19  the I4 runner probe consulted only the image TAG; when containerd GC
-       dropped the tag mapping the seal degraded with a reason claiming two
-       probes ("neither a frozen env image nor a host conda env") of which one
-       never ran and the other was false — the digest resolved throughout.
   F20  run_step_on_cluster was the one resource_usage producer not stamping
        i7_authoritative, so genuine sacct measurements — the only budgetable
        numbers in the corpus — rendered as "unknown authority" under a false
@@ -64,137 +60,10 @@ def test_both_runners_share_the_one_reading():
     from agent.skills import run_cluster_step
     from agent.mcp_tools import run_tools
     from agent.validators import output_validator
-    from agent.skills import spec_writer
     assert run_cluster_step.infer_validator_type is output_validator.infer_validator_type
     assert run_tools._infer_validator_type is output_validator.infer_validator_type
-    assert spec_writer.infer_validator_type is output_validator.infer_validator_type
     assert not hasattr(run_cluster_step, "_infer_etype"), (
         "_infer_etype is the second copy F18 deleted; it must not come back")
-    assert not hasattr(spec_writer, "_infer_type_from_basename"), (
-        "_infer_type_from_basename was the I4 self-test's own copy; it lacked the "
-        "fa/fna/faa/ndjson aliases, so the self-test validated x.fa as 'any' while "
-        "the step runners validated it as fasta")
-
-
-@pytest.mark.parametrize("produced, expected", [
-    ("S1.fa", "fasta"), ("S1.fna.gz", "fasta"), ("S1.faa", "fasta"),
-    ("S1.fq.gz", "fastq"), ("S1.ndjson", "jsonl"), ("S1.sorted.bam", "bam"),
-    ("S1.mystery", "any"),
-])
-def test_the_self_test_validates_an_undeclared_output_by_the_one_reading(tmp_path, produced, expected):
-    # The I4 self-test types each produced file the way the step runners do: an
-    # output the author declared no type for is validated as what its name says.
-    from pathlib import Path
-    from agent.skills import spec_writer as SW
-
-    class _Runner:
-        is_image_runner = False
-
-        def run_in_env(self, env_name, command, timeout=None, watch_dir=None, **kw):
-            (Path(watch_dir) / produced).write_text(">r\nACGT\n")
-            return {"returncode": 0, "stdout": "", "stderr": ""}
-
-    class _Validator:
-        asked: list = []
-
-        def validate(self, path, expected_type, env_name=None):
-            self.asked.append((Path(path).name, expected_type))
-            return {"passed": True, "validation_method": "stub"}
-
-    spec = {"usage": {"description": "d", "command_template": "tool -o {OUTPUT_DIR}/" + produced,
-                      "inputs": [], "outputs": [{"name": "out", "files": [produced]}],
-                      "trials": [{"name": "t1", "substitutions": {}}]},
-            "conda_env": "e"}
-    validator = _Validator()
-    r = SW.self_test_usage(spec, _Runner(), validator=validator)
-    assert r["ok"] is True, r
-    assert validator.asked == [(produced, expected)]
-    assert r["trials"][0]["validation_results"][0]["expected_type"] == expected
-
-
-# ───────────────────────── F19 — the runner probe tries both spellings ──────
-
-def _runner_inputs(tmp_path):
-    r1 = tmp_path / "r1.fastq"
-    r1.write_text("@r\nACGT\n+\nIIII\n")
-    fr = {"image": "s2_align:latest",
-          "image_digest": "sha256:" + "51" * 32,
-          "platform": "linux-64"}
-    draft = {"usage": {
-        "command_template": "bwa mem {R1} > {OUTPUT_DIR}/out.sam",
-        "trials": [{"name": "t", "substitutions": {"R1": str(r1)}}],
-    }}
-    return fr, draft
-
-
-def test_runner_falls_back_to_the_pinned_digest_when_the_tag_rotted(tmp_path, monkeypatch):
-    from agent.mcp_tools import workflow_tools
-    from agent import mcp_server as _ms
-    fr, draft = _runner_inputs(tmp_path)
-
-    def image_digest(ref):
-        # The measured daemon state: inspect-by-tag says "No such image" while
-        # the digest resolves — same artifact, two spellings.
-        return ref if ref.startswith("sha256:") else None
-
-    monkeypatch.setattr(_ms._docker, "image_digest", image_digest)
-    runner = workflow_tools._image_usage_runner(fr, draft)
-    assert runner is not None
-    assert runner.image == fr["image_digest"]
-
-
-def test_runner_runs_the_image_as_the_records_own_platform(tmp_path, monkeypatch):
-    """The record spells its platform the docker way; a map keyed by conda spellings
-    missed it and ran every self-test as amd64, which an arm64 image cannot satisfy."""
-    from agent.mcp_tools import workflow_tools
-    from agent import mcp_server as _ms
-    monkeypatch.setattr(_ms._docker, "image_digest", lambda ref: "sha256:" + "51" * 32)
-    for spelled, expected in (("linux/arm64", "linux/arm64"), ("linux-aarch64", "linux/arm64"),
-                              ("linux-64", "linux/amd64"), ("", "linux/amd64")):
-        fr, draft = _runner_inputs(tmp_path)
-        fr["platform"] = spelled
-        runner = workflow_tools._image_usage_runner(fr, draft)
-        assert runner is not None and runner.platform == expected, (spelled, runner and runner.platform)
-
-
-def test_the_no_runner_reason_names_what_was_missing(tmp_path, monkeypatch):
-    """When no in-image runner can be built, the seal says which precondition failed
-    rather than listing candidates: the unresolved image, or the first absent input."""
-    from agent.mcp_tools import workflow_tools
-    from agent import mcp_server as _ms
-    fr, draft = _runner_inputs(tmp_path)
-    draft["usage"]["outputs"] = [{"name": "out", "files": ["out.sam"]}]
-    monkeypatch.setattr(_ms._docker, "image_digest", lambda ref: None)
-    why = workflow_tools._no_image_runner_reason(fr, draft)
-    assert "s2_align:latest" in why and "does not resolve" in why
-    monkeypatch.setattr(_ms._docker, "image_digest", lambda ref: "sha256:" + "51" * 32)
-    draft["usage"]["trials"][0]["substitutions"]["R1"] = str(tmp_path / "gone.fastq")
-    why = workflow_tools._no_image_runner_reason(fr, draft)
-    assert "gone.fastq" in why and "does not exist on this host" in why
-    assert workflow_tools._image_usage_runner(fr, draft) is None
-    from agent.skills import spec_writer
-    r = spec_writer.self_test_usage(draft, None, no_runner_reason=why)
-    assert r["status"] == "not_attempted" and "gone.fastq" in r["reason"] and "conda_env" in r["reason"]
-
-
-def test_runner_is_none_when_neither_spelling_resolves(tmp_path, monkeypatch):
-    from agent.mcp_tools import workflow_tools
-    from agent import mcp_server as _ms
-    fr, draft = _runner_inputs(tmp_path)
-    monkeypatch.setattr(_ms._docker, "image_digest", lambda ref: None)
-    assert workflow_tools._image_usage_runner(fr, draft) is None
-
-
-def test_the_no_runner_reason_no_longer_asserts_probes_nobody_ran():
-    from agent.skills import spec_writer
-    result = spec_writer.self_test_usage(
-        {"usage": {"command_template": "tool {X} > {OUTPUT_DIR}/y",
-                   "inputs": [], "outputs": [{"name": "y", "files": ["y"]}]}},
-        env_manager=None)
-    reason = result.get("reason", "")
-    assert "neither a frozen env image nor a host" not in reason, (
-        "the old sentence claimed two probes this code cannot see (F19)")
-    assert "conda_env" in reason  # names the host-fallback condition it CAN see
 
 
 # ───────────────────────── F21 — delivery advice never targets the head node ─

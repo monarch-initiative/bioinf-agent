@@ -243,7 +243,7 @@ def test_patch_pipeline_blocks_runtime_captured_keys():
     # All of these should be rejected.
     for key in ["pipeline_steps", "install_steps", "packages", "verifications",
                 "docker", "env_status", "pipeline_status", "docker_status",
-                "usage_verified", "lock_sha256"]:
+                "usage_verified", "lock_sha256", "usage"]:
         r = ps.patch("blocked_test", {key: ["whatever"]})
         assert "error" in r, f"patch to {key} should have been rejected; got {r}"
         assert key in (r.get("rejected_keys") or []), \
@@ -261,12 +261,9 @@ def test_patch_pipeline_allows_agent_authored_keys():
     r = ps.patch("allowed_test", {
         "notes": ["hello"],
         "runtime_environment": {"type": "conda"},
-        "usage": {"description": "x", "command_template": "echo {X} > {OUTPUT_DIR}/o.txt",
-                  "inputs": [{"name": "X"}], "outputs": [{"name": "o", "files": ["o.txt"]}],
-                  "trials": [{"name": "t", "substitutions": {"X": "hi"}}]},
     })
     assert "error" not in r, f"agent-authored patch should pass; got {r}"
-    assert set(r["patched_keys"]) == {"notes", "runtime_environment", "usage"}
+    assert set(r["patched_keys"]) == {"notes", "runtime_environment"}
     ps.discard("allowed_test")
 
 

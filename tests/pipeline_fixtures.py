@@ -74,7 +74,18 @@ def _ru(wall: float, rss: float, cpu: float = 100.0) -> dict:
             "locus": "native", "i7_authoritative": True}
 
 
-def _step(tool: str, command: str, inputs: list[str], outputs: list[str], *, wall: float, rss: float) -> dict:
+def _bindings(subs: dict) -> dict:
+    """A step's input bindings: the trial's values minus the output slot (the step's own
+    working directory)."""
+    from agent.models.core_data import is_output_slot
+    return {k: v for k, v in subs.items() if not is_output_slot(k)}
+
+
+def _step(tool: str, command: str, inputs: list[str], outputs: list[str], *, wall: float, rss: float,
+          template: Optional[str] = None, subs: Optional[dict] = None, work_dir: Optional[str] = None) -> dict:
+    """A validated step. With `template` and `subs` it carries the how-to it ran — the
+    command with its slots, the values they took, the directory it ran in — as the run
+    tools record it; without them it is a step recorded by its literal command alone."""
     from agent.models.core_data import PipelineStep
     return PipelineStep.produce(
         tool=tool, command=command, returncode=0,
@@ -82,7 +93,9 @@ def _step(tool: str, command: str, inputs: list[str], outputs: list[str], *, wal
         detected_outputs=outputs,
         validation={p: {"passed": True} for p in outputs},
         resource_usage=_ru(wall, rss),
-        ran_in_container=True, container_image=IMAGE, container_image_digest=DIGEST)
+        ran_in_container=True, container_image=IMAGE, container_image_digest=DIGEST,
+        template=template, bindings=(_bindings(subs) or None) if subs is not None else None,
+        work_dir=work_dir)
 
 
 def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "reverse",
@@ -103,13 +116,15 @@ def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "
         subs = _subs(s, stranded, run, threads)
         cmds = [_resolved(t, subs) for t in templates]
         steps.append(_step("hisat2", cmds[0], [f"{INDEX}.1.ht2", _reads(s)], [f"{run}/aligned.bam"],
-                           wall=61.0 + len(steps), rss=1500.0 + 10 * len(steps)))
+                           wall=61.0 + len(steps), rss=1500.0 + 10 * len(steps),
+                           template=templates[0], subs=subs, work_dir=run))
         if len(templates) > 1:
             steps.append(_step("samtools", cmds[1], [f"{run}/aligned.bam"], [f"{run}/aligned.bam.bai"],
-                               wall=2.0, rss=40.0))
+                               wall=2.0, rss=40.0, template=templates[1], subs=subs, work_dir=run))
         if len(templates) > 2:
             steps.append(_step("htseq-count", cmds[2], [f"{run}/aligned.bam", GTF],
-                               [f"{run}/{s}.counts.tsv"], wall=30.0, rss=300.0))
+                               [f"{run}/{s}.counts.tsv"], wall=30.0, rss=300.0,
+                               template=templates[2], subs=subs, work_dir=run))
         scratch = f"/scratch/i4/{s}"
         tsubs = _subs(s, stranded, scratch, threads)
         trials.append({"name": s, "ok": True,
@@ -199,10 +214,12 @@ def sealed_deseq2_spec(samples: Optional[list[str]] = None, *, design: str = "co
     subs = {"MERGE_SCRIPT": MERGE_SCRIPT, "COUNTS_DIR": COUNTS_DIR, "DESEQ2_SCRIPT": DESEQ2_SCRIPT,
             "SAMPLESHEET": sheet, "DESIGN": design, "OUTPUT_DIR": run}
     cmds = [_resolved(t, subs) for t in templates]
-    steps = [_step("Rscript", cmds[0], [MERGE_SCRIPT, *counts], [f"{run}/counts_matrix.tsv"], wall=3.0, rss=120.0)]
+    steps = [_step("Rscript", cmds[0], [MERGE_SCRIPT, *counts], [f"{run}/counts_matrix.tsv"], wall=3.0, rss=120.0,
+                   template=templates[0], subs=subs, work_dir=run)]
     if len(templates) > 1:
         steps.append(_step("Rscript", cmds[1], [DESEQ2_SCRIPT, f"{run}/counts_matrix.tsv", sheet],
-                           [f"{run}/{o}" for o in DE_OUTPUTS], wall=25.0, rss=640.0))
+                           [f"{run}/{o}" for o in DE_OUTPUTS], wall=25.0, rss=640.0,
+                           template=templates[1], subs=subs, work_dir=run))
     for st in steps:
         st["container_image"], st["container_image_digest"] = IMAGE_DE, DIGEST_DE
     for n, st in enumerate(steps, 1):
@@ -295,7 +312,8 @@ def sealed_tree_spec(samples: Optional[list[str]] = None):
         for i, (cmd, rel) in enumerate(zip(cmds, TREE_WRITES)):
             outs = [f"{run}/{r}" for r in rel]
             ins = [KG_DIR] if i == 0 else [str(Path(written_so_far[-1]).parent)]
-            steps.append(_step(cmd.split()[0], cmd, ins, outs, wall=10.0 + i, rss=500.0))
+            steps.append(_step(cmd.split()[0], cmd, ins, outs, wall=10.0 + i, rss=500.0,
+                               template=TEMPLATES_TREE[i], subs=subs, work_dir=run))
             written_so_far += outs
         scratch = f"/scratch/i4/{s}"
         tsubs = _tree_subs(scratch)
@@ -350,7 +368,8 @@ def probe_spec(templates: list[str], trials: list[tuple[str, dict]], outputs: li
         s = dict(subs, OUTPUT_DIR=run)
         for ti, t in enumerate(templates):
             outs = step_outputs(ti, run, s) if step_outputs else []
-            steps.append(_step(t.split()[0], fill_slots(t, s), [], outs, wall=1.0, rss=10.0))
+            steps.append(_step(t.split()[0], fill_slots(t, s), [], outs, wall=1.0, rss=10.0,
+                               template=t, subs=s, work_dir=run))
         scratch = f"/scratch/i4/{name}"
         ts = dict(subs, OUTPUT_DIR=scratch)
         proven.append({"name": name, "ok": True, "commands_run": [fill_slots(t, ts) for t in templates],

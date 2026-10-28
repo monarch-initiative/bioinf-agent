@@ -95,9 +95,9 @@ def test_rerender_replaces_the_bare_bool_with_the_stated_three_state(staged):
     never = (staged / "e" / "never.RUN.html").read_text()
     ran = (staged / "e" / "ran.RUN.html").read_text()
     assert "not attempted" in never
-    assert "Usage self-tested</td><td>False" not in never, (
+    assert "How-to proven</td><td>False" not in never, (
         "the page still renders the verdict nobody reached")
-    assert "Usage self-tested</td><td>yes" in ran
+    assert "How-to proven</td><td>yes" in ran
 
     # Idempotent: a second pass finds nothing stale, so this is a convergence, not a churn.
     assert _run("--dir", str(staged), "--check").returncode == 0

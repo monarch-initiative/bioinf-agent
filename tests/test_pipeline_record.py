@@ -432,7 +432,7 @@ class TestDirectoryArtifacts:
 
 def test_the_render_says_which_values_a_value_parameter_was_proven_with():
     rec = pr.derive_pipeline_record(sealed_rnaseq_spec(), name="rnaseq_counts")
-    assert any(n.startswith("STRANDED: shared") and "the self-test ran it with ['reverse'] only" in n
+    assert any(n.startswith("STRANDED: shared") and "the sealed run bound it to ['reverse'] only" in n
                for n in rec.notes), rec.notes
     assert not any(n.startswith("SAMPLE:") and "ran it with" in n for n in rec.notes)
     declared = pr.derive_pipeline_record(sealed_rnaseq_spec(proven=False), name="rnaseq_counts")

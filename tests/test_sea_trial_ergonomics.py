@@ -8,14 +8,10 @@ were ILLEGIBLE — a full-auto agent had to read spec_writer.py source to learn 
 The fixes make the failures self-explanatory at the point of failure WITHOUT
 weakening any check. These tests lock that legibility in so it can't regress:
 
-  1. `_run_one_trial` — when an output goes through an unrecognized slot (produced
-     nothing in the scratch dir), the refusal now carries `hint` +
-     `recognized_output_slots` naming the convention and the fix. (`{OUT_TSV}` is
-     NOT an output slot; the convention itself is pinned in
-     tests/test_usage_slot_grammar.py.)
-  2. `run_pipeline_step` — rc=0 with an expected-but-undetected output now returns
-     `output_detection_hint` pointing at watch_dir (the silent-empty trap; would
-     otherwise fail I3 at seal with no explanation).
+  `run_pipeline_step` — rc=0 with nothing detected under watch_dir returns
+  `output_detection_hint` pointing at watch_dir (the silent-empty trap; would
+  otherwise fail I3 at seal with no explanation). The output-slot convention itself is
+  pinned in tests/test_usage_slot_grammar.py.
 """
 from __future__ import annotations
 
@@ -23,71 +19,6 @@ from pathlib import Path
 
 import pytest
 
-from agent.skills.spec_writer import _run_one_trial
-
-
-# ── 1. the output-slot convention, in one tested place ──────────────────────
-@pytest.mark.parametrize("slot,expected", [
-    ("OUTPUT_DIR", True),
-    ("OUT_DIR", True),
-    ("OUTDIR", True),           # the underscore is folded
-    ("MY_OUTPUT", True),        # contains 'output'
-    ("output_path", True),
-    ("OUT_TSV", False),         # the sea-trial trap — reads like output, isn't recognized
-    ("OUTFILE", False),         # 'out' alone is not the convention
-    ("FASTQ", False),
-    ("REF", False),
-])
-
-
-class _FakeEM:
-    """A stand-in env_manager: 'runs' the command by optionally writing a file
-    INTO watch_dir (the scratch dir), then returns rc=0."""
-    def __init__(self, write_rel: str | None = None):
-        self.write_rel = write_rel
-
-    def run_in_env(self, env_name, command, timeout=None, watch_dir=None, **kw):
-        if self.write_rel and watch_dir:
-            (Path(watch_dir) / self.write_rel).write_text("c1\tc2\n1\t2\n")
-        return {"returncode": 0, "stdout": "", "stderr": ""}
-
-
-# ── 1. the I4 refusal is now legible for the unrecognized-slot trap ─────────
-def test_i4_unrecognized_output_slot_refusal_is_legible():
-    """`-o {OUT_TSV}` → the file lands outside the scratch dir → produced_files
-    empty. The refusal must now DISCLOSE the convention (hint) + which slots were
-    recognized (none), not just an opaque `produced_files: []`."""
-    plan = {"name": "t1", "substitutions": {
-        "FASTQ": "/data/in.fq", "OUT_TSV": "/data/outside/stats.tsv"}}
-    template = "seqkit stats -T -o {OUT_TSV} {FASTQ}"
-    placeholders = {"FASTQ", "OUT_TSV"}
-    outputs_spec = [{"name": "OUT_TSV", "files": ["*.tsv"], "type": "tsv"}]
-
-    res = _run_one_trial(plan, template, placeholders, outputs_spec,
-                         _FakeEM(write_rel=None), "x", {"pipeline_name": "st"}, None)
-
-    assert res["ok"] is False
-    assert res["reason"] == "command ran but expected outputs missing"
-    assert res["produced_files"] == []
-    assert res["recognized_output_slots"] == []           # the smoking gun, surfaced
-    assert "hint" in res
-    assert "OUTPUT_DIR" in res["hint"]                     # names the fix
-    assert "OUT_TSV" in res["hint"]                        # names the trap concretely
-
-
-def test_i4_recognized_output_dir_slot_passes():
-    """Positive control: the documented `{OUTPUT_DIR}/stats.tsv` idiom writes into
-    the scratch dir and the trial passes — proving the fix path works, so the hint
-    above points somewhere real."""
-    plan = {"name": "t1", "substitutions": {"FASTQ": "/data/in.fq"}}
-    template = "seqkit stats -T -o {OUTPUT_DIR}/stats.tsv {FASTQ}"
-    placeholders = {"FASTQ", "OUTPUT_DIR"}
-    outputs_spec = [{"name": "OUTPUT_DIR", "files": ["*.tsv"], "type": "tsv"}]
-
-    res = _run_one_trial(plan, template, placeholders, outputs_spec,
-                         _FakeEM(write_rel="stats.tsv"), "x", {"pipeline_name": "st"}, None)
-
-    assert res["ok"] is True, res
 
 
 # ── 2. run_pipeline_step surfaces a hint on the silent-empty trap ───────────

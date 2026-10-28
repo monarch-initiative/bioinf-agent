@@ -18,7 +18,8 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
-from agent.models.core_data import PipelineStep, default_step_tool, frozen_image_ref
+from agent.models.core_data import (PipelineStep, default_step_tool, fill_template, frozen_image_ref,
+                                    step_template_problems)
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.skills.env_manager import is_os_metadata
 from agent.skills.backgroundable import backgroundable
@@ -61,6 +62,61 @@ def _inputs_refusal(inputs: list, code: str):
     return None
 
 
+#: The how-to grammar, said once for both run tools' descriptions.
+HOWTO_DOC = """\
+    THE COMMAND IS THE HOW-TO. Write the step's variable parts as `{UPPER_SNAKE}` slots and
+    bind them in `bindings={SLOT: value}`: `hisat2 -p {THREADS} -x {INDEX} -U {R1} -S
+    {OUTPUT_DIR}/{SAMPLE}.sam` with `bindings={"THREADS": "4", "INDEX": "/…/chr22", "R1":
+    "/…/SRR1039508.fastq.gz", "SAMPLE": "SRR1039508"}`. The slots are filled textually,
+    the literal command runs exactly as filled, and the step records both: the seal derives
+    the workflow's how-to from the templates (one trial per sample, grouped by agreeing
+    bindings) and nothing is typed again. Rules, all refused in ONE answer before anything
+    runs: slots are `{UPPER_SNAKE}` (never `${SLOT}` or `{{SLOT}}`); every output file is
+    written through the one directory slot, `{OUTPUT_DIR}/<name>`, which is filled with
+    this step's watch_dir (a file-shaped `{OUTPUT_FASTQ}` is refused); every other slot is
+    bound (`""` is a value); `formats={SLOT: threads|value|samplesheet}` names the slots
+    that are not paths (a thread count renders as the stage's cpu request; a URL or a path
+    inside the image is text, never staged; a samplesheet is the pipeline's own); a path
+    on this machine written into the command is a slot that was not declared. A command
+    with no slot is a legal fixed step. A path-valued binding that exists is an input of
+    the step (I8 traces it) without being repeated in `inputs`.
+
+    ONE WORKING DIRECTORY PER SAMPLE. Run a sample's steps with the same `watch_dir` and
+    read an earlier step's file as `{OUTPUT_DIR}/<name>`; binding a slot to a file a
+    per-sample step wrote is refused, naming the directory. A preparation step (an index
+    build, an annotation slice) runs once in its own directory, and a later step binds its
+    output as a slot value: that step is provenance of the value, not a how-to command.
+"""
+
+
+def _howto_refusal(code: str, command: str, bindings: dict, formats: dict, pipeline_id: str):
+    """Refuse a command the how-to grammar cannot carry BEFORE it runs: one answer naming
+    every problem (core_data.step_template_problems) and every slot bound to a file a
+    per-sample step wrote (spec_writer.binds_prior_sample_output)."""
+    from agent.skills.spec_writer import binds_prior_sample_output
+    problems = step_template_problems(command, bindings, formats)
+    if bindings and not problems:
+        problems += binds_prior_sample_output(_ms._pipeline_state.get_draft(pipeline_id) or {}, bindings)
+    if problems:
+        return refused(code, error="; ".join(problems), problems=problems,
+                       fix="write the command with `{UPPER_SNAKE}` slots, bind each in bindings={SLOT: "
+                           "value}, every output through {OUTPUT_DIR}/<name>; see the tool description")
+    return None
+
+
+def _bound_inputs(inputs: list, bindings: dict) -> list:
+    """The step's inputs: what the caller declared plus every path-valued binding that
+    exists on disk (a bound file IS an input; nobody should have to say it twice)."""
+    out = [i for i in (inputs or [])]
+    declared = {(i.get("path") if isinstance(i, dict) else i) for i in out}
+    for v in (bindings or {}).values():
+        s = str(v)
+        if s.startswith("/") and s not in declared and Path(s).exists():
+            out.append(s)
+            declared.add(s)
+    return out
+
+
 def _stamp_i7_authority(resource_usage, platform: str):
     """Mark whether captured I7 resource numbers (wall, peak RSS, peak CPU) are
     authoritative. They are real only when the step ran on a NATIVE locus; under
@@ -87,14 +143,41 @@ def run_pipeline_step(
     purpose: str = "",
     step: int = 0,
     timeout_seconds: int = 1800,
+    bindings: dict = {},
+    formats: dict = {},
 ) -> dict:
-    """Run a pipeline step and auto-validate every produced output in one call.
+    """Run a pipeline step on the HOST env and auto-validate every produced output in one
+    call — pre-freeze iteration; once frozen, run_step_in_container.
 
     Replaces the three-call dance (run_in_env → inspect detected_outputs →
     validate_output(files=[...])) with one. Internally:
-      1. Runs the command via run_in_env (with pipeline_id-merge into pipeline_steps)
+      1. Fills the command's `{SLOTS}` from `bindings` and runs it via run_in_env
+         (with pipeline_id-merge into pipeline_steps)
       2. Validates every detected_output against an inferred or supplied type
       3. Validations are merged into the same pipeline_step automatically
+
+    THE COMMAND IS THE HOW-TO. Write the step's variable parts as `{UPPER_SNAKE}` slots and
+    bind them in `bindings={SLOT: value}`: `hisat2 -p {THREADS} -x {INDEX} -U {R1} -S
+    {OUTPUT_DIR}/{SAMPLE}.sam` with `bindings={"THREADS": "4", "INDEX": "/…/chr22", "R1":
+    "/…/SRR1039508.fastq.gz", "SAMPLE": "SRR1039508"}`. The slots are filled textually,
+    the literal command runs exactly as filled, and the step records both: the seal derives
+    the workflow's how-to from the templates (one trial per sample, grouped by agreeing
+    bindings) and nothing is typed again. Rules, all refused in ONE answer before anything
+    runs: slots are `{UPPER_SNAKE}` (never `${SLOT}` or `{{SLOT}}`); every output file is
+    written through the one directory slot, `{OUTPUT_DIR}/<name>`, which is filled with
+    this step's watch_dir (a file-shaped `{OUTPUT_FASTQ}` is refused); every other slot is
+    bound (`""` is a value); `formats={SLOT: threads|value|samplesheet}` names the slots
+    that are not paths (a thread count renders as the stage's cpu request; a URL or a path
+    inside the image is text, never staged; a samplesheet is the pipeline's own); a path
+    on this machine written into the command is a slot that was not declared. A command
+    with no slot is a legal fixed step. A path-valued binding that exists is an input of
+    the step (I8 traces it) without being repeated in `inputs`.
+
+    ONE WORKING DIRECTORY PER SAMPLE. Run a sample's steps with the same `watch_dir` and
+    read an earlier step's file as `{OUTPUT_DIR}/<name>`; binding a slot to a file a
+    per-sample step wrote is refused, naming the directory. A preparation step (an index
+    build, an annotation slice) runs once in its own directory, and a later step binds its
+    output as a slot value: that step is provenance of the value, not a how-to command.
 
     output_types: optional dict mapping {basename | extension | absolute path}
                   to expected_type (e.g. `{".vcf.gz": "vcf", ".bam": "bam",
@@ -129,10 +212,16 @@ def run_pipeline_step(
                        error="pipeline_id is required for run_pipeline_step")
     if (_bad := _inputs_refusal(inputs, "run_pipeline_step.invalid_inputs")):
         return _bad
+    if (_bad := _howto_refusal("run_pipeline_step.howto_invalid", command, bindings, formats, pipeline_id)):
+        return _bad
     created = False
     if not watch_dir:
         watch_dir, created = _fresh_step_dir(), True
     watch_dir_created = created or _ensure_watch_dir(watch_dir)
+    work_dir = str(Path(watch_dir).resolve())
+    inputs = _bound_inputs(inputs, bindings)
+    # THE TEMPLATE IS WHAT THE CALLER WROTE; the literal command is what runs.
+    template, command = command, fill_template(command, bindings, work_dir)
 
     # The command runs IN its watched directory, named or fresh: a relative output
     # lands where it is detected, never beside the inputs or in the checkout.
@@ -169,6 +258,8 @@ def run_pipeline_step(
         inputs=result.get("inputs", []),
         detected_outputs=result.get("detected_outputs", []),
         output_sha256=output_sha256 or None,
+        template=template, bindings={k: str(v) for k, v in bindings.items()} or None,
+        formats=dict(formats) or None, work_dir=work_dir,
     )
     idx = _ms._pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
 
@@ -340,11 +431,36 @@ def run_step_in_container(
     step: int = 0,
     timeout_seconds: int = 1800,
     platform: str = "",
+    bindings: dict = {},
+    formats: dict = {},
 ) -> dict:
     """Run a pipeline step INSIDE the frozen env image and auto-validate every
     produced output — the validation-locus pivot: **the artifact you ship is the
     artifact you validate.** Use this instead of run_pipeline_step once the env is
     frozen, so the recorded run is the one that actually executes on HPC.
+
+    THE COMMAND IS THE HOW-TO. Write the step's variable parts as `{UPPER_SNAKE}` slots and
+    bind them in `bindings={SLOT: value}`: `hisat2 -p {THREADS} -x {INDEX} -U {R1} -S
+    {OUTPUT_DIR}/{SAMPLE}.sam` with `bindings={"THREADS": "4", "INDEX": "/…/chr22", "R1":
+    "/…/SRR1039508.fastq.gz", "SAMPLE": "SRR1039508"}`. The slots are filled textually,
+    the literal command runs exactly as filled, and the step records both: the seal derives
+    the workflow's how-to from the templates (one trial per sample, grouped by agreeing
+    bindings) and nothing is typed again. Rules, all refused in ONE answer before anything
+    runs: slots are `{UPPER_SNAKE}` (never `${SLOT}` or `{{SLOT}}`); every output file is
+    written through the one directory slot, `{OUTPUT_DIR}/<name>`, which is filled with
+    this step's watch_dir (a file-shaped `{OUTPUT_FASTQ}` is refused); every other slot is
+    bound (`""` is a value); `formats={SLOT: threads|value|samplesheet}` names the slots
+    that are not paths (a thread count renders as the stage's cpu request; a URL or a path
+    inside the image is text, never staged; a samplesheet is the pipeline's own); a path
+    on this machine written into the command is a slot that was not declared. A command
+    with no slot is a legal fixed step. A path-valued binding that exists is an input of
+    the step (I8 traces it) without being repeated in `inputs`.
+
+    ONE WORKING DIRECTORY PER SAMPLE. Run a sample's steps with the same `watch_dir` and
+    read an earlier step's file as `{OUTPUT_DIR}/<name>`; binding a slot to a file a
+    per-sample step wrote is refused, naming the directory. A preparation step (an index
+    build, an annotation slice) runs once in its own directory, and a later step binds its
+    output as a slot value: that step is provenance of the value, not a how-to command.
 
     Resolves the image from the EnvCache by `freeze_request_key` (call freeze()
     first), pulling an adopted-by-digest image local if needed. The data dir is
@@ -373,6 +489,9 @@ def run_step_in_container(
                        error="pipeline_id is required for run_step_in_container")
     if (_bad := _inputs_refusal(inputs, "run_container.invalid_inputs")):
         return _bad
+    if (_bad := _howto_refusal("run_container.howto_invalid", command, bindings, formats, pipeline_id)):
+        return _bad
+    inputs = _bound_inputs(inputs, bindings)
     # The SERVING question, not "is there a record?". This step's whole purpose is
     # `validated == shipped` — recording a run inside the shipped image AS evidence.
     # Running in an image whose own Layer-1 contract no longer holds would launder an
@@ -456,6 +575,8 @@ def run_step_in_container(
         watch_dir, created = _fresh_step_dir(), True
     watch_dir_created = created or _ensure_watch_dir(watch_dir)
     wdir = Path(watch_dir).resolve()
+    # THE TEMPLATE IS WHAT THE CALLER WROTE; the literal command is what runs.
+    template, command = command, fill_template(command, bindings, str(wdir))
     # A declared input and the watch_dir are facts of the call, so they are mounted at
     # their own host paths without being asked: a script the caller WROTE under the
     # workspace is as visible in the container as the test data under data_dir, and
@@ -518,6 +639,8 @@ def run_step_in_container(
         container_digest_nominal=(nominal_digest
                                   if nominal_digest and nominal_digest != observed_digest
                                   else None),
+        template=template, bindings={k: str(v) for k, v in bindings.items()} or None,
+        formats=dict(formats) or None, work_dir=str(wdir),
     )
     idx = _ms._pipeline_state.add_step(pipeline_id, step_data, replace_step=step)
 

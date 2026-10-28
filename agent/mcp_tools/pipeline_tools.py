@@ -138,7 +138,7 @@ def render_pipeline(sealed_workflow: str,
     they declare nothing the run wrote); the rest stays in ``work/``.
     ``publish_dir_mode: link`` in params.yaml hard-links instead of copying.
 
-    **Derived from the seal, or chosen.** The samplesheet's example rows are the I4 trials
+    **Derived from the seal, or chosen.** The samplesheet's example rows are the samples the sealed steps ran
     (``sample`` is the row key). A placeholder whose value differs across trials is a
     COLUMN; one that is the same everywhere is a shared PARAM with the sealed value as its
     default (one trial: sample id and reads per-sample, the rest shared). Override with

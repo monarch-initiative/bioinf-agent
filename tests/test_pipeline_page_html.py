@@ -1187,7 +1187,7 @@ class TestRowsSayWhereTheyCameFrom:
         rec = _record()
         assert rec.samplesheet.rows_from == "proven"
         page = _page(rec)
-        assert "the sealed run's own" in page and "its self-test did not run on them" not in page
+        assert "the sealed run's own" in page and "the seal did not run on them" not in page
 
     def test_rows_a_multi_image_how_to_only_declared_say_so(self):
         """A how-to that spans two images cannot be self-tested (the self-test runs in
@@ -1197,7 +1197,7 @@ class TestRowsSayWhereTheyCameFrom:
                                         spec_path=SPEC_PATH)
         assert rec.samplesheet.rows_from == "declared"
         page = _page(rec)
-        assert "its self-test did not run on them" in page and "the sealed run's own" not in page
+        assert "the seal did not run on them" in page and "the sealed run's own" not in page
 
 
 class TestPageShape:

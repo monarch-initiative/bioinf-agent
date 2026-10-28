@@ -24,13 +24,13 @@ from typing import Optional
 # survives monkeypatching. `config` is included because tests can swap the
 # config too, and the cost of going through `_ms.` is one attribute lookup.
 from agent import mcp_server as _ms
+from agent.models import core_data as _core_data
 from agent.models.core_data import (executed_commands as _executed_commands, key_packages as _key_packages,
                                     validated_in_shipped_image as _validated_in_shipped_image,
-                                    is_script_path as _is_script_path,
-                                    frozen_image_ref as _frozen_image_ref)
+                                    is_script_path as _is_script_path)
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
 from agent.skills.backgroundable import backgroundable
-from agent.skills.outcomes import broke, degraded, proven, refused  # terminal outcome tags
+from agent.skills.outcomes import broke, proven, refused  # terminal outcome tags
 from agent.skills import workspace as _workspace
 
 
@@ -86,300 +86,6 @@ def _refresh_reference_databases(rdbs: list) -> list:
                 except Exception:
                     pass
         out.append(e)
-    return out
-
-
-class _ImageUsageRunner:
-    """An env_manager-shaped runner that executes the I4 self-test INSIDE a frozen env
-    image, so the how-to is proven against the exact bytes the user runs.
-
-    It exists to satisfy ONE call — `env_manager.run_in_env(env, cmd, timeout, watch_dir)`
-    — which is the only thing self_test_usage asks of its runner. That seam was already
-    injectable; nothing in spec_writer needed to learn about containers.
-
-    Mounts are bound at their OWN host paths so the trial's absolute substitutions resolve
-    verbatim inside the image (the same trick run_step_in_container uses), and outputs land
-    back on the host where OutputValidator can read them.
-
-    `images_by_command` (1-based command index → (image, platform)) names the image a
-    how-to command's own sealed step ran in; a command not in it runs in the pinned image.
-    Every result names the image it ran in, which the trial transcript carries.
-    """
-    is_image_runner = True
-
-    def __init__(self, image: str, platform: str, mounts: list,
-                 images_by_command: Optional[dict] = None):
-        self.image, self.platform, self.mounts = image, platform, mounts
-        self.images_by_command = dict(images_by_command or {})
-
-    def run_in_env(self, env_name, command, timeout=600, watch_dir=None, command_index=None, **_):
-        mounts = list(self.mounts)
-        if watch_dir:
-            mounts.append((str(watch_dir), str(watch_dir)))
-        image, platform = self.images_by_command.get(command_index, (self.image, self.platform))
-        res = _ms._docker.run_in_container(
-            image, command, mounts=mounts, workdir=str(watch_dir) if watch_dir else None,
-            platform=platform, timeout=timeout)
-        return {**res, "image": image}
-
-
-def _command_images(fr: dict, draft: dict, by_digest: dict) -> tuple[dict, str]:
-    """The image each how-to command is self-tested in, when it is not the pinned env's:
-    the image the command's own sealed step ran in (matched the way the pipeline record
-    matches commands to steps). Returns `(map, reason)`: `map` is 1-based command index
-    → (image ref, docker platform) for every command whose step ran in another frozen
-    image; `reason` names the first such command whose image does not resolve in the
-    local daemon, in which case nothing here can self-test the how-to."""
-    from agent.models.core_data import is_output_slot, usage_commands, usage_slots
-    from agent.skills.pipeline_record import match_steps_to_templates
-    usage = draft.get("usage") or {}
-    templates = usage_commands(usage)
-    rows = [{"substitutions": dict(t.get("substitutions") or {})}
-            for t in (usage.get("trials") or []) if isinstance(t, dict)]
-    steps = [s for s in (draft.get("pipeline_steps") or [])
-             if isinstance(s, dict) and s.get("returncode") == 0]
-    out_slots = {p for p in usage_slots(usage) if is_output_slot(p)}
-    matched, _wrote = match_steps_to_templates(templates, rows, steps, out_slots)
-    primary = (fr.get("image_digest") or "").strip()
-    mapping: dict = {}
-    for ti, hits in matched.items():
-        digests = [d for d in dict.fromkeys(s.get("container_image_digest") for _ri, s in hits)
-                   if d and d != primary]
-        if not digests:
-            continue
-        d = digests[0]
-        _rk, rr = by_digest.get(d, ("", {}))
-        if not rr:
-            return {}, (f"how-to command {ti + 1} ran as a sealed step in image digest {d}, "
-                        f"which no frozen env record pins, so it cannot be self-tested in its own image")
-        ref = _frozen_image_ref((rr.get("image") or "").strip(), d)
-        try:
-            resolved = _ms._docker.image_digest(ref)
-        except Exception:
-            resolved = None
-        if not resolved:
-            return {}, (f"how-to command {ti + 1} ran as a sealed step in {ref} (digest {d}), which "
-                        f"does not resolve in the local Docker daemon, so it cannot be self-tested "
-                        f"in its own image")
-        mapping[ti + 1] = (ref, _ms.docker_platform(rr.get("platform", "")))
-    return mapping, ""
-
-
-def _local_trial_mounts(draft: dict, missing: list | None = None):
-    """THE one precondition for "can the I4 self-test run at THIS locus at all?".
-
-    Walks the exact substitutions `self_test_usage` will use (declared trials, else
-    inferred from pipeline_steps[*].inputs) and returns the bind-mount list an image
-    runner needs — or None when any path-valued substitution does not exist on this
-    host, i.e. the trial inputs live at another locus and NO local runner (image OR
-    host env) could execute the how-to.
-
-    Extracted from `_image_usage_runner` because the host-env fallback made the same
-    decision without asking the same question: the
-    image runner declined a cluster-only trial gracefully → not_attempted, but when the
-    draft also named a conda_env the fallback fired unconditionally, ran the trial
-    against paths that exist only on the cluster, failed it, and turned the honest
-    not_attempted into a hard seal refusal. One precondition, consulted by both.
-
-    Scalar substitutions ({THREADS}) are ignored rather than treated as missing paths.
-    Output slots are skipped — they are overwritten with the trial's fresh scratch dir
-    and are not expected to pre-exist. An empty template returns [] (nothing to run —
-    locus is not the blocker; the caller's own template checks decide).
-
-    A PREFIX is present when its family is. An aligner index is named by a prefix
-    (`/idx/chr22` for `chr22.1.ht2` … `chr22.8.ht2`) that is neither a file nor a
-    directory; treating it as absent disabled I4 for every how-to with an index
-    input while the whole family sat on disk. A path that does not exist but has at
-    least one sibling named `<basename>.<suffix>` is on this host, mounted at its
-    parent."""
-    from pathlib import Path
-    from agent.skills.spec_writer import _infer_substitutions
-    from agent.models.core_data import is_output_slot, usage_commands, usage_slots
-    usage = draft.get("usage") or {}
-    template = "\n".join(usage_commands(usage))
-    if not template:
-        return []
-    placeholders = set(usage_slots(usage))
-    trials = [t for t in (usage.get("trials") or []) if isinstance(t, dict)]
-    if trials:
-        subs_sets = [dict(t.get("substitutions") or {}) for t in trials]
-    else:
-        subs_sets = [_infer_substitutions(draft, placeholders, usage.get("inputs") or [])]
-    mounts: list[tuple[str, str]] = []
-    for subs in subs_sets:
-        for slot, val in subs.items():
-            if is_output_slot(slot):
-                continue                       # replaced by the per-trial scratch dir
-            s = str(val)
-            if not s.startswith("/"):
-                continue                       # not a path — a scalar param
-            p = Path(s)
-            if p.exists():
-                d = str(p.parent if p.is_file() else p)
-            elif p.parent.is_dir() and any(p.parent.glob(p.name + ".*")):
-                d = str(p.parent)              # a prefix naming an on-disk family
-            else:
-                if missing is not None:
-                    missing.append(s)
-                return None                    # cluster-locus / missing input
-            if d == "/":
-                continue                       # never bind-mount the host root
-            if (d, d) not in mounts:
-                mounts.append((d, d))
-    return mounts
-
-
-def _image_usage_runner(fr: dict, draft: dict, images_by_command: Optional[dict] = None):
-    """Build an _ImageUsageRunner for this frozen env, or None when the how-to can't be
-    self-tested in-image here.
-
-    Returns None (→ seal records not_attempted + reason) rather than raising, because
-    "we couldn't run it" is missing evidence, not a broken how-to. Preconditions, each of
-    which is a real case on disk:
-      - the image must resolve locally. An ADOPTED biocontainer is a remote ref that may
-        need a pull; offline, that is not the workflow's fault.
-      - every path-valued substitution must EXIST on this host. talos_validate_moi's inputs
-        are /work/... on the cluster — unreachable here, and failing it for that would be
-        refusing the environment, not the artifact.
-    Scalar substitutions ({THREADS}) are ignored rather than treated as missing paths, so a
-    non-path param can't silently disable the self-test. Output slots are skipped — they
-    are overwritten with the trial's fresh scratch dir and are not expected to pre-exist.
-
-    The substitutions are resolved EXACTLY as self_test_usage resolves them — declared
-    trials if any, else inferred from pipeline_steps[*].inputs. Checking only `usage.trials`
-    looked right and was wrong: talos_validate_moi declares `trials: []`, so the check
-    inspected an empty set, waved through a run whose inferred inputs are all on the
-    cluster, and turned a legitimately-unrunnable-here workflow into a hard seal refusal.
-    A precondition must inspect the same values the runner will use, or it guards nothing.
-    """
-    image = (fr.get("image") or "").strip()
-    if not image:
-        return None
-    usage = draft.get("usage") or {}
-    # ONE reading of command_template (str or list[str]) — core_data.usage_commands. This
-    # precondition MUST see the same placeholders self_test_usage will resolve, across
-    # every command; reading only the first would let a precondition inspect
-    # something other than what the runner actually uses.
-    from agent.models.core_data import usage_commands
-    template = "\n".join(usage_commands(usage))
-    if not template:
-        return None
-    # The locus precondition + mounts, from THE shared implementation — see
-    # _local_trial_mounts for why the host fallback must ask the same question.
-    mounts = _local_trial_mounts(draft)
-    if mounts is None:
-        return None                        # cluster-locus / missing input → not_attempted
-    image = _frozen_image_ref(image, (fr.get("image_digest") or "").strip())
-    try:
-        resolved = _ms._docker.image_digest(image)
-    except Exception:
-        resolved = None
-    if not resolved:
-        return None                        # not resolvable locally (adopted, or no daemon)
-    return _ImageUsageRunner(image, _ms.docker_platform(fr.get("platform", "")), mounts,
-                             images_by_command=images_by_command)
-
-
-def _no_image_runner_reason(fr: dict, draft: dict) -> str:
-    """Why `_image_usage_runner` returned None, as one stated fact for the seal record."""
-    image = (fr.get("image") or "").strip()
-    if not image:
-        return "the frozen record names no image"
-    from agent.models.core_data import usage_commands
-    if not "\n".join(usage_commands(draft.get("usage") or {})):
-        return "usage.command_template is empty"
-    missing: list[str] = []
-    if _local_trial_mounts(draft, missing) is None:
-        return (f"trial input {missing[0]!r} does not exist on this host (it may live at "
-                "another locus)")
-    return (f"the pinned image {image!r} (digest {fr.get('image_digest') or 'unrecorded'}) "
-            "does not resolve in the local Docker daemon")
-
-
-#: Bounds on what a proven-trial record may carry onto disk. The self-test's own
-#: result is a debugging structure — it holds a stderr tail, up to 20 produced
-#: paths per trial and a scratch dir that no longer exists by the time anyone reads
-#: the spec. A sealed WorkflowSpec is digest-pinned provenance a human opens, so it
-#: takes the reader-facing subset, capped: the commands, the substitution map, and a
-#: sample of what landed.
-_TRIAL_MAX_COMMANDS = 24
-_TRIAL_MAX_SUBS = 32
-_TRIAL_MAX_PRODUCED = 12
-
-
-def _proven_trial_records(usage_detail: dict) -> list[dict]:
-    """Distil `self_test_usage`'s per-trial results into the durable record the
-    sealed spec carries — what the I4 self-test actually ran.
-
-    Carried: the trial's name/description, whether it passed, the LITERAL commands
-    executed (`commands_run`, already substituted) and the image each ran in
-    (`images_run`), the substitution map, which of
-    those slots were the ephemeral scratch-dir override, a sample of the files that
-    landed, and **what each of those files was validated AS** (`validation_results`).
-    Read back through `core_data.usage_proven_trials` /
-    `core_data.usage_output_validations`.
-
-    `validation_results` is load-bearing: `_run_one_trial` resolves an expected type
-    for every matched output — the author's declared type if there is one, otherwise
-    inferred from the basename — and runs the type-aware validator against it.
-    Dropping it at the seal would leave the how-to panel's `Type` column nothing to
-    read but the AUTHORED `usage.outputs[*].type` — the observation thrown away, and
-    the field someone forgot to fill in printed instead.
-
-    Deliberately NOT carried: `scratch_dir` (a temp path deleted before the report is
-    read — printing it would hand a reader a command pointing at nothing) and
-    `stderr_tail` (arbitrary bytes from a run that, since seal refuses a failed
-    self-test, cannot reach disk anyway).
-
-    Defensive about shape because the alternative is worse than a missing panel: a
-    malformed self-test result must degrade to "unrecorded" on the dashboard, not
-    break the seal of an otherwise valid run."""
-    trials = usage_detail.get("trials")
-    if not isinstance(trials, list):
-        return []
-    out: list[dict] = []
-    for t in trials:
-        if not isinstance(t, dict):
-            continue
-        cmds = t.get("commands_run")
-        if not isinstance(cmds, list):
-            # Pre-multi-command shape (and the placeholder-resolution failure path,
-            # which never ran anything): fall back to the single string, or nothing.
-            one = t.get("command_run")
-            cmds = [one] if isinstance(one, str) and one.strip() else []
-        subs = t.get("substitutions")
-        subs = subs if isinstance(subs, dict) else {}
-        slots = t.get("output_slots")
-        slots = [s for s in slots if isinstance(s, str)] if isinstance(slots, list) else []
-        produced = t.get("produced_files")
-        produced = ([p for p in produced if isinstance(p, str)]
-                    if isinstance(produced, list) else [])
-        imgs = t.get("images_run")
-        rec = {
-            "name": str(t.get("name") or "trial"),
-            "ok": bool(t.get("ok")),
-            "commands_run": [str(c) for c in cmds[:_TRIAL_MAX_COMMANDS] if isinstance(c, str)],
-            # where each command ran: the image its sealed step ran in, or the pinned one
-            "images_run": ([str(i) for i in imgs[:_TRIAL_MAX_COMMANDS] if isinstance(i, str)]
-                           if isinstance(imgs, list) else []),
-            "substitutions": {str(k): str(v) for k, v
-                              in list(subs.items())[:_TRIAL_MAX_SUBS]},
-            "output_slots": slots,
-            "produced_files": produced[:_TRIAL_MAX_PRODUCED],
-        }
-        vrs = t.get("validation_results")
-        if isinstance(vrs, list):
-            rec["validation_results"] = [
-                {"pattern": str(v.get("pattern") or ""),
-                 "file": str(v.get("file") or ""),
-                 "expected_type": str(v.get("expected_type") or ""),
-                 "passed": bool(v.get("passed")),
-                 "method": str(v.get("method") or "")}
-                for v in vrs[:_TRIAL_MAX_PRODUCED] if isinstance(v, dict)
-            ]
-        if t.get("description"):
-            rec["description"] = str(t["description"])
-        out.append(rec)
     return out
 
 
@@ -576,9 +282,9 @@ def seal_workflow(
     write: bool = True,
     supersede: bool = False,
 ) -> dict:
-    """Seal the Layer-2 WORKFLOW: validate the run-side invariants, self-test the
-    how-to, PIN the frozen environment by digest, write the WorkflowSpec and render
-    the RUN dashboard (the how-to panel is part of it).
+    """Seal the Layer-2 WORKFLOW: validate the run-side invariants, DERIVE the how-to
+    from the recorded steps, PIN the frozen environment by digest, write the
+    WorkflowSpec and render the RUN dashboard (the how-to panel is part of it).
 
     The two-layer split. Layer 1 (ENVIRONMENT) = finalize + freeze: a
     content-addressed, reusable artifact. Layer 2 (WORKFLOW) CONSUMES it. Call
@@ -586,8 +292,20 @@ def seal_workflow(
     request_key to pin the env by digest — the wall that lets the workflow layer
     ignore install concerns.
 
+    THE HOW-TO IS THE RUN. Every step the run tools recorded carries the command with its
+    `{UPPER_SNAKE}` slots and the values they took (`bindings=`); the seal's how-to is
+    those templates in step order, one trial per sample (the steps grouped by agreeing
+    bindings), the outputs the steps were observed writing, with the sample's values put
+    back as slots. Nothing is typed by hand and nothing is re-run: a how-to that differs
+    from what ran cannot exist (I4). A step whose output a later step binds as a slot
+    value, and which binds no per-sample slot (an index build, an annotation slice), is a
+    preparation step: provenance of that value, not a how-to command. A sample that ran
+    only some of the commands is named under `samples_incomplete`; a draft in which no
+    sample ran every command, or whose steps were recorded without their template
+    (`run_in_env`), is refused with the step to re-run.
+
     Refuses to write if any workflow invariant fails (I0 shape · I3 validated
-    outputs · I4 the how-to self-test · I5 reference databases · I6 paths ·
+    outputs · I4 the how-to matches the steps · I5 reference databases · I6 paths ·
     I7 resources · I8 input provenance · I10 service health); the env-build
     invariants are Layer 1's concern. Writes {workflow_name}.workflow.yaml (the
     machine-verified spec) + {workflow_name}.RUN.html (the Layer-2 run dashboard
@@ -622,9 +340,8 @@ def seal_workflow(
         return refused("seal.no_frozen_env", success=False,
                        error=f"no frozen env for '{freeze_request_key}' — run freeze() first")
 
-    from agent.skills.spec_writer import (check_workflow_invariants, derive_pipeline_status,
-                                          self_test_usage, verify_test_data,
-                                          write_workflow_spec)
+    from agent.skills.spec_writer import (check_workflow_invariants, derive_pipeline_status, derive_usage,
+                                          verify_test_data, write_workflow_spec)
 
     # A WorkflowSpec is the record of a validated run, so a draft with no rc=0 step is
     # refused here: every run-side invariant iterates pipeline_steps and passes
@@ -668,8 +385,7 @@ def seal_workflow(
                            "(replace_step=N) through its run primitive, or "
                            "discard_pipeline_draft and rebuild the draft.")
 
-    # WHICH FROZEN ENVS THIS RUN TOUCHED — computed BEFORE the I4 gate, which self-tests
-    # each how-to command in the image its sealed step ran in (`_command_images`).
+    # WHICH FROZEN ENVS THIS RUN TOUCHED.
     #
     # MULTI-ENV CHAINING: a workflow may chain steps that each ran in their OWN
     # frozen env (their own freeze). Validate every step's container digest against
@@ -692,84 +408,22 @@ def seal_workflow(
             rk, rr = by_digest.get(d, ("", {}))
             envs_used.append({"request_key": rk, "image": rr.get("image", s.get("container_image", "")),
                               "image_digest": d})
-    _spans_images = len(seen_dig) > 1
 
-    # I4 gates the seal: a declared usage.command_template must self-test green against
-    # every trial, run in the frozen image when there is one (host env otherwise), and
-    # when neither can run it the record says not_attempted and why. `usage_detail` is
-    # always a stated dict so the sealed spec never drops the I4 record by absence.
-    usage_ok = False
-    usage_detail: dict
-    if draft.get("usage"):
-        from agent.skills.pipeline_state import USAGE_SHAPE, usage_block_problems
-        problems = usage_block_problems(draft["usage"])
-        if problems:
-            return refused(
-                "seal.usage_block_invalid", success=False, stage="usage_shape",
-                error=("the draft's `usage` block is not a how-to the self-test can run, so "
-                       "the seal would fail: " + "; ".join(problems)
-                       + ". Fix it with patch_pipeline(usage=…) and re-seal."),
-                problems=problems, usage_shape=USAGE_SHAPE,
-            )
-    if not draft.get("usage"):
-        usage_detail = {
-            "ok": False, "status": "not_attempted",
-            "reason": (
-                "no usage block was authored on the draft, so I4 ran nothing — this "
-                "seal proves the RUN happened, not how to re-run it. Add "
-                "patch_pipeline(usage={command_template, description, inputs, outputs}) "
-                "and re-seal to earn a verified how-to"
-                + (f"; this run spans {len(seen_dig)} shipped images, and each command is "
-                   f"self-tested in the image its sealed step ran in" if _spans_images else "")
-                + "."),
-            "spans_images": len(seen_dig),
-        }
-    else:
-        # The host env substitutes for a missing IMAGE, never for inputs that live at
-        # another locus — a fallback that skipped the locus precondition ran cluster-only
-        # trials on this host, failed them, and turned the honest not_attempted into a
-        # hard seal refusal. Same
-        # precondition as the image runner, one implementation: _local_trial_mounts.
-        # A command whose sealed step ran in another frozen image is self-tested in that
-        # image; when that image does not resolve here, nothing (not the host env either)
-        # stands in for it, and the record says so.
-        images_by_command, own_image_reason = _command_images(fr, draft, by_digest)
-        runner = None if own_image_reason else _image_usage_runner(fr, draft, images_by_command)
-        host_env_can_run = draft.get("conda_env") and _local_trial_mounts(draft) is not None
-        if runner is None and not own_image_reason and host_env_can_run:
-            runner = _ms._env_mgr
-        try:
-            usage_detail = self_test_usage(
-                draft, runner, validator=_ms._validator,
-                no_runner_reason=((own_image_reason or _no_image_runner_reason(fr, draft))
-                                  if runner is None else ""))
-            usage_ok = bool(usage_detail.get("ok"))
-        except Exception as e:
-            usage_ok = False
-            usage_detail = {"ok": False, "status": "not_attempted",
-                            "reason": f"the self-test runner raised: {type(e).__name__}: {e}"}
-        # Refuse ONLY on a real failure. `not_attempted` is missing evidence, not a
-        # broken how-to — refusing it would make legitimately unsealable-here workflows
-        # (cluster-locus inputs, no frozen image locally) permanently unsealable.
-        #
-        # FAIL CLOSED on an unrecognized shape: a result with ok=False and no `status` is
-        # read as "failed", never waved through. Reading a missing status as "not failed"
-        # would turn absence of data into a pass — and it is not hypothetical: it silently
-        # disarmed this very gate for any caller still returning the pre-three-state shape.
-        status = usage_detail.get("status") or ("verified" if usage_ok else "failed")
-        usage_detail["status"] = status
-        if status == "failed":
-            return refused(
-                "seal.usage_self_test_failed", success=False, stage="usage_self_test",
-                error="I4: usage.command_template failed its self-test — it did not "
-                      "execute green against every declared trial, so it cannot be "
-                      "sealed as the workflow's verified run contract. Fix the template "
-                      "(or the trials' substitutions) and re-seal.",
-                usage_self_test=usage_detail,
-            )
+    # I4: THE HOW-TO IS DERIVED FROM THE STEPS. The run tools recorded each step's
+    # template, bindings and working directory; the seal reads those into the `usage` +
+    # `usage_verification` record every reader already knows. Nothing is re-run — the
+    # steps' own validated outputs are the proof — and a how-to that says anything the
+    # steps did not run cannot be written.
+    derived = derive_usage(draft)
+    if derived.get("problems"):
+        return refused(
+            "seal.howto_underivable", success=False, stage="howto",
+            error=("the how-to is derived from the recorded steps and cannot be: "
+                   + "; ".join(derived["problems"])),
+            problems=derived["problems"],
+        )
+    usage_detail = derived["usage_verification"]
 
-    # (`envs_used` / `valid_digests` are computed above the I4 gate — that gate's honest
-    # "why not" needs to know whether this run spans images.)
 
     # The how-to is rendered from the verified `usage` block into the Layer-2 run
     # dashboard (HTML) below. We still pull
@@ -793,35 +447,15 @@ def seal_workflow(
         # the real status (fully_validated / partially_validated / …). See
         # spec_writer.derive_pipeline_status; the model field is now required.
         "pipeline_status":    derive_pipeline_status(draft.get("pipeline_steps", [])),
-        "usage_verified":     usage_ok,
-        # The three-state truth behind the bool. `usage_verified: False` alone cannot
-        # distinguish "tested and broken" from "never tested", and since seal refuses
-        # the former, False on disk can only mean the latter — a verdict nobody
-        # reached. Renderers must read this, not the bool, before saying anything
-        # about the how-to.
-        #
-        # UNCONDITIONAL — never `if usage_detail else None`. `usage_detail` is always
-        # a stated dict (see above), so there is no None to guard against; a
-        # conditional here would let the record go missing (exclude_none deletes a
-        # None field) instead of saying "not_attempted".
-        "usage_verification": {"status": usage_detail.get("status", "not_attempted"),
-                               "reason": usage_detail.get("reason", ""),
-                               "locus":  usage_detail.get("locus", ""),
-                               "trial_count": usage_detail.get("trial_count", 0),
-                               "passed": usage_detail.get("passed", 0),
-                               # WHAT WAS RUN, not just how many of them passed. The
-                               # self-test resolves every {PLACEHOLDER} to a concrete
-                               # path and executes the result; seal kept the two counts
-                               # and discarded the commands and the substitution map.
-                               # So the how-to panel — the one a reader consults to
-                               # review a pipeline's parameters before committing real
-                               # data to it — could only show the template, and the
-                               # question "proven against WHICH genome, WHICH reads"
-                               # had no answer anywhere in the sealed artifact.
-                               "trials": _proven_trial_records(usage_detail)},
+        "usage_verified":     True,
+        # The how-to's verification record: source `steps`, and per sample the literal
+        # commands the steps ran, the image each ran in, what they produced and what
+        # each file was validated as — the transcript a reader needs to answer "proven
+        # against WHICH genome, WHICH reads", carried through from the steps.
+        "usage_verification": usage_detail,
         "validated_in_shipped_image": _validated_in_shipped_image(
             draft, fr, valid_digests=valid_digests),
-        "usage":              draft.get("usage"),
+        "usage":              derived["usage"],
         # Stamp each step's depends_on (input↔prior-output overlap) — the edge the
         # seal already computes to CHECK I8 — so the sealed spec is self-documenting,
         # not just self-verifying.
@@ -854,38 +488,23 @@ def seal_workflow(
                        reason="constructed WorkflowSpec failed its own run-side invariants — "
                               "it would not be re-verifiable standalone",
                        violations=self_violations, violation_count=len(self_violations))
-    # THE SEAL IS GREEN ON THE RUN; THE TAG SAYS WHETHER THE HOW-TO IS GREEN TOO.
-    #
-    # A sealed spec makes two claims: this run happened and was validated (the steps), and
-    # this is how to re-run it (the usage block, proven by I4). Seal refuses outright when
-    # I4 FAILS, so the only remaining gap is "I4 never ran" — and that must not return
-    # the same unconditional `proven("seal.sealed")` as a fully-proven workflow: a green
-    # tag over a how-to nobody executed.
-    #
-    # Two literal terminals with DISTINCT codes, mirroring freeze's
-    # built / built_unobserved pair. Never re-tag `seal.sealed` itself: it is a published
-    # code that other readers (and tests/test_outcome_tags.py) join on, and flipping a
-    # code's meaning under a stable name is drift. Both
-    # branches carry the same fields and success=True — the artifact IS written either
-    # way, because a validated run with no how-to is a real, useful record. It is just
-    # not the same record as one whose how-to was executed, and the tag says which.
-    _seal_fields = dict(
-        success=True, workflow_name=wname,
+    # THE SEAL IS GREEN ON THE RUN, AND THE HOW-TO IS THE RUN: one terminal. A sample that
+    # ran only some of the commands is a stated limit on the record and on the response,
+    # never a second verdict.
+    result = proven(
+        "seal.sealed", success=True, workflow_name=wname,
         env_pinned_digest=fr.get("content_digest"), env_image=fr.get("image"),
         commands_shown=len(_executed_commands(draft)),
-        usage_verification=wf["usage_verification"],
+        howto_commands=len(_core_data.usage_commands(derived["usage"])),
+        samples=[t.get("name") for t in usage_detail.get("trials") or []],
+        usage_verification=usage_detail,
     )
-    if usage_detail.get("status") == "verified":
-        result = proven("seal.sealed", **_seal_fields)
-    else:
-        result = degraded(
-            "seal.sealed_howto_unproven", **_seal_fields,
-            advisory=(f"the RUN is sealed and validated, but I4 did not execute the how-to "
-                      f"(usage_verification.status={usage_detail.get('status')!r}): "
-                      f"{usage_detail.get('reason') or 'no reason recorded'}. Nothing here is "
-                      f"wrong — this spec simply proves less than one whose command_template "
-                      f"was run, and a pass/fail badge cannot show the difference."),
-        )
+    if usage_detail.get("partial"):
+        result["samples_incomplete"] = usage_detail["partial"]
+        result["advisory"] = ("these samples ran only some of the how-to's commands and are not "
+                              "trials of the record: " + "; ".join(
+                                  f"{p['name']} is missing command(s) {p['missing_commands']}"
+                                  for p in usage_detail["partial"]))
     if write:
         env_name = _env_name_of(fr, draft)
         out_dir = _workspace.env_dir(env_name)
@@ -1204,7 +823,6 @@ def start_pipeline(pipeline_name: str, description: str) -> dict:
             "packages_recorded":      len(draft.get("packages", []) or []),
             "test_data":              draft.get("test_data") is not None,
             "docker":                 draft.get("docker") is not None,
-            "usage":                  draft.get("usage") is not None,
             "last_install_tool":      last_install.get("tool") if last_install else None,
             "last_pipeline_tool":     last_pipeline.get("tool") if last_pipeline else None,
             "suspect_unvalidated_steps": suspect_steps,
@@ -1247,16 +865,14 @@ def patch_pipeline(pipeline_id: str, patches: dict) -> dict:
     keys no primitive produces directly (`PipelineState.PATCHABLE_KEYS`):
     description, notes, final_summary, conda_env, created_at, python_version,
     reference_free, runtime_environment, runtime_configs, reference_databases,
-    usage, accelerator, license_gated, licenses, redistributable.
+    accelerator, license_gated, licenses, redistributable.
 
-    `usage` is validated against the WorkflowSpec schema on every patch and
-    refused with the exact problems: {description, command_template, inputs:
-    [{name, format?, description?}], outputs: [{name, files, description?}],
-    trials: [{name, substitutions}]} — `description` and each `outputs[*].name`
-    are required.
+    The how-to is not patched: `usage` is DERIVED by seal_workflow from the recorded
+    steps (their command with its `{UPPER_SNAKE}` slots and the `bindings=` each took),
+    so the variable parts of a step are declared at the run call, never typed again.
 
     Patches to runtime-captured or finalize-derived fields (pipeline_steps,
-    install_steps, packages, verifications, search_cache, test_data,
+    install_steps, packages, verifications, search_cache, test_data, usage,
     authored_artifacts, service_dependencies, docker, env_status,
     pipeline_status, docker_status, usage_verified, lock_sha256, frozen_as,
     sealed_as) are rejected — use the dedicated primitive instead so the spec
