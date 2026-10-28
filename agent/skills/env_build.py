@@ -240,6 +240,7 @@ class EnvBuild:
             records.append({"label": v["label"], "tool": tool,
                             "check": v["check"], "engine_coupled": v["engine_coupled"],
                             "tool_aliases": list(v.get("tool_aliases") or []),
+                            "evidence": _honesty.evidence_kind(v["check"], tool, v.get("tool_aliases") or ()),
                             "rc": r.get("rc"), "passed": passed,
                             "out": r.get("out", ""),
                             "banner": banners.get(tool, ""),

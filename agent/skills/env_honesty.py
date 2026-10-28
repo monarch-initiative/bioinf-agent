@@ -46,6 +46,7 @@ hand-built BuildResult (no container needed).
 from __future__ import annotations
 
 import re
+import shlex
 from typing import Any, Iterable, Optional
 
 # The declared shape of the sub-records WELL_FORMED asserts. core_data is a leaf
@@ -155,16 +156,21 @@ def _references_tool(evidence: str, tool: str, aliases: Iterable[str] = ()) -> b
     return False
 
 
-#: evidence depths, weakest → strongest. 'presence' proves only that the tool is INSTALLED
-#: (a PATH/metadata lookup that never executes it); 'version'/'import'/'help' prove it
-#: loads/answers; 'smoke'/'functional' prove it RUNS. Everything up to 'help' is "shallow".
-#: 'unknown' is not on the scale — it means the classifier declined to guess.
-EVIDENCE_DEPTHS = ("presence", "version", "import", "help", "smoke", "functional")
-_SHALLOW_DEPTHS = frozenset({"presence", "version", "import", "help"})
+#: What an evidence command did in the shipped image — TWO states, read off the command's
+#: structure, so it is DISCLOSURE: the ENV report says one of two sentences and nothing gates
+#: on it (a string cannot tell what a command does at runtime; the gate is the control image).
+#:   ran    the tool EXECUTED: it is the command word of a simple command that is not a file
+#:          inspector or a PATH lookup; or an interpreter runs its module (`-m`), its script,
+#:          its jar, or loads it and then calls something.
+#:   found  everything else that passes the shape check: a PATH or package-metadata lookup, a
+#:          file read that names it, a load with nothing after it, a mention inside a string.
+#: "ran on data" is a sentence only a sealed workflow says; the ENV report says "ran".
+EVIDENCE_RAN = "ran"
+EVIDENCE_FOUND = "found"
+EVIDENCE_KINDS = (EVIDENCE_RAN, EVIDENCE_FOUND)
 
-#: Output plumbing — pipes/redirects that shape a command's OUTPUT and say nothing about
-#: what it does. These must be stripped before the "reads/writes → functional" rule, or a
-#: single `| cat` promotes any probe to 'functional'.
+#: Output plumbing — pipes into text filters and redirects that shape a command's OUTPUT and
+#: say nothing about what it does; stripped before the segments are read.
 _PLUMBING = re.compile(
     r"\s*(\|\s*(cat|head|tail|grep|sed|awk|tr|cut|wc|sort|uniq)\b[^|]*"
     r"|\d?>>?\s*/dev/null|\d?>&\d|2>&1)", re.I)
@@ -178,48 +184,37 @@ def _strip_plumbing(ev: str) -> str:
     return out.strip()
 
 
-def _bare_invocation(ev: str, tool: str) -> bool:
-    """True when the tool IS invoked as a segment's command word and EVERY such
-    invocation is bare — nothing follows it in its own segment except output
-    redirects and their capture files. A bare invocation answers with its
-    banner/usage (or exits non-zero), which proves exactly what `--help` proves;
-    the redirect that captures that banner is plumbing, not work, and must not
-    promote the probe to 'functional'.
-
-    The command word of each `;`/`|`/`&` segment comes from
-    `core_data.default_step_tool` — the SAME reading the run primitives use to
-    name a step — so `time bwa > /tmp/h.txt` and `env FOO=1 bwa` are still seen
-    as invocations of bwa (a wrapper must not hide the bare probe back into
-    'functional'), while a mention inside a grep pattern or a capture path never
-    counts. An INPUT redirect (`tool < data.gz`) is kept as an operand: stdin
-    feeding is work, not banner capture. When no invocation is visible this
-    returns False and the caller's classification is unchanged — declining to
-    see is not a finding, same rule as 'unknown'."""
-    from agent.models.core_data import default_step_tool
-    toks = {t.lower() for t in _tool_tokens(tool)}
-    found = False
-    for seg in re.split(r"[;|&]+", ev):
-        words = seg.split()
-        cmdtok = default_step_tool(seg)             # one of `words`, or ""
-        if not cmdtok or cmdtok.rsplit("/", 1)[-1].lower() not in toks:
-            continue
-        found = True
-        idx = next(i for i, w in enumerate(words) if w.lower() == cmdtok.lower())
-        rest = " ".join(words[idx + 1:])
-        rest = re.sub(r"\d?>>?\s*\S+", " ", rest)   # OUTPUT redirects + capture files
-        if rest.strip():
-            return False                            # a real operand → not bare
-    return found
-
-
-#: Commands that read files and never run a program of their own: a command made only of
-#: these, with the tool's name appearing as an operand or a pattern, inspects the image —
-#: it proves a file mentions the tool, not that the tool runs.
+#: Commands that read files and never run a program of their own: a segment whose command
+#: word is one of these looks AT the tool without running it.
 _INSPECTORS = frozenset({
     "grep", "egrep", "fgrep", "zgrep", "test", "[", "ls", "cat", "find", "stat", "file", "head",
     "tail", "wc", "readlink", "realpath", "strings", "md5sum", "sha256sum", "unzip", "tar", "zcat",
     "du", "echo", "printf", "true", "basename", "dirname",
 })
+#: PATH and shell-builtin lookups: they resolve a name, they run nothing.
+_PATH_LOOKUPS = frozenset({"command", "which", "type", "hash", "whereis", "where"})
+_INTERPRETERS = frozenset({"rscript", "r", "perl", "ruby", "node", "julia", "java", "bash", "sh", "zsh",
+                           "dash"})
+_PYTHON_RE = re.compile(r"^python[\d.]*$")
+
+
+def _is_interpreter(base: str) -> bool:
+    return base in _INTERPRETERS or bool(_PYTHON_RE.match(base))
+#: Code that looks a package UP (its metadata, its version attribute) rather than running it.
+_METADATA_LOOKUP = re.compile(
+    r"installed\.packages\s*\(|importlib\.metadata|pkg_resources\.get_distribution|conda-meta|"
+    r"\b_m\.version\s*\(|packageVersion\s*\(|__version__|find_spec\s*\(", re.I)
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+#: A load statement, in the three languages the tiers write evidence in.
+_LOAD_STMT = re.compile(
+    r"(?:\bfrom\s+[\w.]+\s+import\s+[\w.,\s*()]+|\bimport\s+[\w.,\s]+"
+    r"|\b(?:library|require|requirenamespace|suppress(?:package(?:startup)?)?messages)\s*\([^)]*\)"
+    r"|\buse\s+[\w:]+)", re.I)
+#: Calls that print, convert or exit — after a load, these alone leave a load-only probe.
+_INERT_CALLS = re.compile(
+    r"\b(?:print|cat|message|paste0?|sprintf|format|str|len|type|q|quit|exit|sys\.exit|"
+    r"as\.integer|length|nchar|repr|invisible|stopifnot|assert|sessionInfo|Sys\.time|"
+    r"Sys\.getenv|getwd|R\.version|version)\s*\(", re.I)
 _SHELL_WRAP = re.compile(r"^\s*(?:bash|sh|zsh|dash)\s+(?:-[a-z]+\s+)*?-[a-z]*c\s+([\"'])(.*)\1\s*$", re.S)
 
 
@@ -250,137 +245,144 @@ def _segments(ev: str) -> list[str]:
     return [s for s in out if s.strip()]
 
 
-def _inspection_only(ev: str, tool: str) -> bool:
-    """True when every segment's command word is a file inspector and the tool is never
-    the command: the evidence looks AT the tool without running it. Declines (False) when
-    a segment's command word cannot be read, so the caller's classification stands."""
+def _semicolon_segments(ex: str) -> list[str]:
+    """Top-level `;`-separated segments: a `;` inside quotes, backticks, `( )` or `{ }` stays
+    where it is. `&&` and `||` carry a status and are not a boundary here."""
+    out, cur, quote, depth = [], [], "", 0
+    for ch in ex:
+        if quote:
+            cur.append(ch)
+            if ch == quote:
+                quote = ""
+        elif ch in "'\"`":
+            quote = ch
+            cur.append(ch)
+        elif ch in "({":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")}":
+            depth = max(0, depth - 1)
+            cur.append(ch)
+        elif ch == ";" and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    out.append("".join(cur))
+    return [s for s in out if s.strip()]
+
+
+def _command_word_of(seg: str) -> str:
+    """The segment's command word, lower-cased and stripped of its directory — through
+    `core_data.default_step_tool`, the one reading the run primitives use, so `time bwa`,
+    `env FOO=1 bwa` and `VAR=x bwa` all read as bwa."""
     from agent.models.core_data import default_step_tool
-    toks = {t.lower() for t in _tool_tokens(tool)}
-    saw = False
-    for seg in _segments(_unwrap_shell(ev)):
-        if not seg.strip():
+    cmd = default_step_tool(seg)
+    return cmd.rsplit("/", 1)[-1].lower() if cmd else ""
+
+
+def _interpreter_runs(args: list[str], toks: set[str]) -> bool:
+    """Does an interpreter invocation RUN the tool: `-m <module>`, a `-jar`/`-cp` path or a
+    script operand naming it, or inline code (`-c` / `-e`) that uses it outside a string —
+    a load followed by a call, or a direct use? A mention only inside a string (a path
+    handed to `open(`, a grep pattern) and a metadata lookup are not a run."""
+    code: list[str] = []
+    i = 0
+    while i < len(args):
+        a, low = args[i], args[i].lower()
+        if low in ("-m", "-jar", "-cp", "-classpath") and i + 1 < len(args):
+            if any(t in args[i + 1].lower() for t in toks):
+                return True
+            i += 2
             continue
-        cmdtok = default_step_tool(seg)
-        if not cmdtok:
-            return False
-        base = cmdtok.rsplit("/", 1)[-1].lower()
-        if base in toks or base not in _INSPECTORS:
-            return False
-        saw = True
-    return saw and _references_tool(ev, tool)
+        if low in ("-c", "-e") and i + 1 < len(args):
+            code.append(args[i + 1])
+            i += 2
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        if not code and any(t in low for t in toks):
+            return True                     # the script the interpreter runs names the tool
+        i += 1
+    if not code:
+        return False
+    text = " ".join(code)
+    if _METADATA_LOOKUP.search(text):
+        return False
+    nostr = _QUOTED.sub("''", text)
+    ident = re.compile(r"(?<![\w.])(?:" + "|".join(re.escape(t) for t in sorted(toks)) + r")(?![\w])", re.I)
+    if not ident.search(nostr):
+        return False                        # named only inside a string, or not at all
+    residue = _LOAD_STMT.sub(" ", nostr)
+    if ident.search(residue):
+        return True                         # called, dereferenced or passed as an argument
+    residue = _INERT_CALLS.sub(" ", residue)
+    return bool(re.search(r"[\w.$:]+\s*\(", residue))
 
 
-def evidence_depth(evidence: str, tool: str = "") -> str:
-    """Classify how deeply an evidence command exercises the tool — DISCLOSURE ONLY.
+def evidence_kind(evidence: str, tool: str = "", aliases: Iterable[str] = ()) -> str:
+    """`ran` or `found` — see EVIDENCE_KINDS. Disclosure only; nothing gates on it.
 
-    NOTHING GATES ON THIS, and nothing should. A string cannot tell you what a command
-    does at runtime; this reads structure and is wrong often enough that gating on it
-    refuses the correct artifact and the known-broken one identically — a genuine
-    authors' build and a broken reconstruction can both read all-shallow, zero
-    discriminating power exactly where a depth gate would be asked to help. Its job is
-    to make a report honest, not to refuse a build.
-
-    Returns one of EVIDENCE_DEPTHS, or 'unknown' when the shape is not recognizable —
-    guessing 'smoke' for anything unparsed would itself be a small lie.
-
-    Three rules that keep the DISCLOSURE honest:
-      - `command -v samtools` is 'presence', never 'version': a PATH lookup that never
-        runs the tool is the weakest evidence there is, whatever its `-v` looks like.
-      - `_conda_presence_check(...)` — freeze's own auto-generated probe, and therefore
-        the evidence on nearly every real record — is 'presence': a conda-meta path
-        operand must not read as "reads a file", the strongest possible proof.
-      - `samtools --version | head -1` is 'version': one pipe must not outrank the
-        thing being piped. Plumbing is stripped first, and version/help are decided
-        before the reads-a-path rule rather than after it.
-    """
+    Comments are dropped, a `bash -c` wrapper opened, output plumbing stripped, then each
+    segment's command word is read: a PATH lookup or a file inspector proves nothing ran; the
+    tool (or a command the package ships, `aliases`) as the command word is a run; an
+    interpreter is a run when `_interpreter_runs` says so. With no tool token to anchor on,
+    any segment whose command word is neither a lookup nor an inspector counts as a run."""
+    from agent.models.core_data import _SHELL_PRELUDE
     raw = (evidence or "").strip()
     if not raw:
-        return "unknown"          # nothing to classify; the shape check refuses it anyway
-    ev = _strip_plumbing(raw)
-    low = ev.lower()
-
-    # -- presence: resolves the tool on PATH / in package metadata, never runs it. The
-    #    weakest evidence, and (via _conda_presence_check) by far the commonest.
-    if re.search(r"\b(command\s+-v|which|type\s+-p|hash)\b", low) or \
-            re.search(r"conda-meta|importlib\.metadata|_m\.version\(|installed\.packages\(", low):
-        return "presence"
-    # -- version / help: the tool EXECUTES and answers. Decided BEFORE both the import rule
-    #    and the path rule: `python -m talos.validate_moi --help` RUNS the module's
-    #    entrypoint (→ 'help'), which is a strictly stronger claim than "it imported", and
-    #    `tool --version /etc/x.cfg` must not be promoted by an incidental path operand.
-    if re.search(r"(--version|-version|\bversion\b|\s-V\b)", ev):
-        return "version"
-    if re.search(r"(--help|\s-h\b|\busage\b)", ev):
-        return "help"
-    # -- import / load-only: the module loads. Proves more than presence, still not a run.
-    # The python arm matches only an actual module invocation (`python -m mod`), never a
-    # loose `-m`-ish pattern: this branch runs BEFORE the functional check below, so a
-    # pattern that catches ordinary CLI flags DEMOTES commands that plainly move data —
-    #
-    #     bwa mem -M ref.fa                    -> import   (a file operand!)
-    #     bcftools call -mv -Oz -o out.vcf.gz  -> import   (an -o operand!)
-    #
-    # A misfire here can only under-claim (`import` is in _SHALLOW_DEPTHS, so it renders
-    # the ⚠ badge), never dress a shallow proof as a functional run — but a wrong
-    # disclosure is still a wrong disclosure.
-    if re.search(r"\bimport\b|requirenamespace|library\s*\(|perl\s+-m"
-                 r"|\bpython[\d.]*\s+-m\s", low):
-        # A LOAD FOLLOWED BY SELF-CHECKING WORK IS NOT LOAD-ONLY. Stopping at the
-        # first load shape discloses `Rscript -e 'library(DESeq2); dds <-
-        # DESeq(...); stopifnot(...)'` — authored evidence that RUNS the tool's main
-        # entrypoint on an inline dataset and asserts on the result — as [import].
-        # Strip the load-family calls; when what remains BOTH calls functions AND
-        # asserts on their results, the command fails unless the tool's output is
-        # right — a stronger claim than any path operand, so it earns 'functional'.
-        # Anything less keeps 'import': a load followed by unasserted calls may run
-        # nothing of the tool (`library(x); print(1)`), and a misfire there can only
-        # WEAKEN disclosure — so the promotion needs the assertion, and only this
-        # branch can promote (a bare `tool --assert-mode` never reaches it).
-        residue = re.sub(
-            r"\b(?:suppress(?:package(?:startup)?)?messages|library|require(?:namespace)?)"
-            r"\s*\([^)]*\)", " ", low)
-        residue = re.sub(r"\bimport\s+[\w.,\s]+", " ", residue)
-        if re.search(r"\bstopifnot\s*\(|\bassert\b", residue) and \
-                re.search(r"\b\w+\s*\(", residue):
-            return "functional"
-        return "import"
-
-    # -- presence by inspection: the tool is never invoked — every segment's command word is
-    #    a file inspector (grep/test/ls/cat/find/…) and the tool's name occurs only as an
-    #    operand or a pattern. `grep -qi apollo /launch.sh` proves a file mentions the tool
-    #    and runs nothing of it. Decided before the reads-a-path rule below, which would
-    #    otherwise read the inspected path as data the tool moved.
-    if tool and _inspection_only(ev, tool):
-        return "presence"
-    # -- a BARE invocation: the tool runs at a command position with NO operands beyond
-    #    redirects/capture files. It can only answer with its banner/usage — exactly as
-    #    weak as `--help` — so it must not fall through to 'functional' on the strength
-    #    of its own capture plumbing: in
-    #    `bwa > /tmp/bwa_help.txt 2>&1; grep -q 'Program: bwa' /tmp/…`
-    #    the `>` and the /tmp path are the CAPTURE, not work, and 'functional' there
-    #    is an over-report — the direction that inflates an assurance claim on a page
-    #    that already admits it under-reports. Decided BEFORE the functional rule,
-    #    only when the tool token is known, and only when an invocation is actually
-    #    visible at a command position — anything else falls through unchanged.
-    if tool and _bare_invocation(ev, tool):
-        return "help"
-    # -- functional: moves real data — a genuine pipe/redirect (plumbing already stripped),
-    #    a file path operand, or an explicit -i/-o.
-    if re.search(r"[<>|]", ev) or re.search(r"/\w[\w./-]*\.\w+", ev) or " -o " in ev or " -i " in ev:
-        return "functional"
-    # -- a bare invocation of the tool with no recognizable shape.
-    if tool and _references_tool(ev, tool):
-        return "smoke"
-    return "unknown"
+        return EVIDENCE_FOUND
+    ev = _strip_plumbing(_unwrap_shell(_COMMENT.sub(" ", raw)))
+    toks = {t.lower() for t in _tool_tokens(tool, aliases)} if tool else set()
+    for seg in _segments(ev):
+        base = _command_word_of(seg)
+        if not base or base in _PATH_LOOKUPS or base in _INSPECTORS or base in _SHELL_PRELUDE:
+            continue
+        if not toks or _references_tool(base, tool, aliases):
+            return EVIDENCE_RAN         # the tool (or a name it ships) is the command word
+        if _is_interpreter(base):
+            try:
+                words = shlex.split(seg)
+            except ValueError:
+                words = seg.split()
+            idx = next((i for i, w in enumerate(words) if w.rsplit("/", 1)[-1].lower() == base), None)
+            if _interpreter_runs(words[idx + 1:] if idx is not None else words, toks):
+                return EVIDENCE_RAN
+    return EVIDENCE_FOUND
 
 
-def is_shallow_evidence(evidence: str, tool: str = "") -> bool:
-    """True if the evidence only proves the tool is present/loads, not that it RUNS.
+def _discards_tool_status(ex: str, tool: str, aliases: Iterable[str] = ()) -> Optional[str]:
+    """`tool … > f 2>&1; grep P f` — the `;` throws the tool's exit status away, so a tool
+    that crashed or exited non-zero AFTER printing the pattern passes all the same (a crash
+    banner has matched a grep). Refused when a segment before the last runs the tool, the
+    last segment only inspects, and nothing reads `$?`. Returns the reason, or None."""
+    if not tool or "$?" in ex:
+        return None
+    segs = _semicolon_segments(_unwrap_shell(ex))
+    if len(segs) < 2:
+        return None
+    last = _command_word_of(segs[-1])
+    if last not in _INSPECTORS:
+        return None
+    if not any(evidence_kind(s, tool, aliases) == EVIDENCE_RAN for s in segs[:-1]):
+        return None
+    return (f"evidence {ex!r} runs the tool, then `;`, then `{last}` reads what it printed — the "
+            f"`;` discards the tool's own exit status, so a tool that crashed or exited non-zero "
+            f"after printing the pattern passes all the same. Make the status count: "
+            f"`tool … > /tmp/out.txt 2>&1 && grep -q PATTERN /tmp/out.txt`; for a tool that exits "
+            f"non-zero when run bare, keep its status and test it: "
+            f"`tool … > /tmp/out.txt 2>&1; rc=$?; grep -q PATTERN /tmp/out.txt && [ \"$rc\" -eq 1 ]`")
 
-    DISCLOSURE ONLY — never a refusal, and never a gate. See evidence_depth: gating on
-    this was measured to refuse the correct artifact and the broken one identically.
-    'unknown' is NOT shallow — declining to classify is not evidence of shallowness."""
-    return evidence_depth(evidence, tool) in _SHALLOW_DEPTHS
+
+#: A tool that died: the signatures a shell or a runtime prints when a process is killed by a
+#: signal. In a check's captured output they mean the tool did not run, whatever the exit code.
+_CRASH_SIGNATURE = re.compile(
+    r"Illegal instruction|Segmentation fault|Bus error|core dumped|Aborted \(core|\bKilled\b", re.I)
+#: The runner's own timeout line (agent/skills/_proc.py) and the `timeout(1)` exit code.
+_TIMED_OUT = re.compile(r"timed out after \d+\s*s|command timed out", re.I)
+TIMEOUT_RC = 124
+
 
 
 #: Writes into the image's own tree, or a package install, inside an evidence command. The
@@ -474,12 +476,14 @@ def evidence_shape_violation(evidence: str, tool: str = "",
         return (f"evidence {ev!r} pipes into another command, and a pipeline exits with "
                 f"its LAST stage's status — so the recorded `passed` reports "
                 f"`{_last_stage}`, not the tool. It would pass in an image without the "
-                f"tool at all. Two honest shapes: capture then check — "
-                f"`tool ... > /tmp/out.txt 2>&1; grep -q PATTERN /tmp/out.txt` (that "
-                f"redirect ORDER matters: most bioinformatics CLIs print to stderr, and "
-                f"`2>&1 > file` leaves the file empty) — or keep the pipe and make it "
-                f"honest: `set -o pipefail; ...` (note the tool's own exit code then "
-                f"counts, and many tools exit non-zero when run bare)")
+                f"tool at all. Two honest shapes: capture then check, with the tool's own "
+                f"status kept — `tool ... > /tmp/out.txt 2>&1 && grep -q PATTERN /tmp/out.txt` "
+                f"(that redirect ORDER matters: most bioinformatics CLIs print to stderr, and "
+                f"`2>&1 > file` leaves the file empty; a tool that exits non-zero when run bare "
+                f"keeps its status with `rc=$?` and tests it) — or keep the pipe and make it "
+                f"honest: `set -o pipefail; ...` (the tool's own exit code then counts)")
+    if tool and (why := _discards_tool_status(ex, tool, aliases)):
+        return why
     if _BARE_ECHO.match(ex) and "$(" not in ex and "`" not in ex:
         return f"evidence {ev!r} only echoes a string — it never invokes the tool"
     if tool:
@@ -631,10 +635,10 @@ def coverage_disclosure(contract: BuildContract) -> dict:
 
     THE DEGRADE RULE (`contract.unobserved`) IS STRUCTURAL, NOT HEURISTIC, deliberately.
     It fires on "this clause had nothing to look at" — a fact about the record. It does
-    NOT fire on shallow evidence depth, even though shallow evidence is the commonest
-    real weakness: `evidence_depth` is a string reader that classifies the correct
+    NOT fire on evidence that only finds the tool, even though that is the commonest
+    real weakness: `evidence_kind` is a string reader that classifies the correct
     artifact and the known-broken one identically, so driving the primary outcome tag
-    off it would put a known-unreliable signal in the load-bearing position. Depth
+    off it would put a known-unreliable signal in the load-bearing position. The kind
     stays an advisory and a line in the coverage detail."""
     if contract.violations:
         raise AssertionError(
@@ -1079,7 +1083,8 @@ CONTROL_UNCHECKED = "unchecked"             # the experiment could not be run �
 #: to be claimed by exactly one clause.
 _VII_COVERS = ("VALIDATED_IN_IMAGE.no_evidence",
                "VALIDATED_IN_IMAGE.evidence_shape",
-               "VALIDATED_IN_IMAGE.evidence_passed")
+               "VALIDATED_IN_IMAGE.evidence_passed",
+               "VALIDATED_IN_IMAGE.tool_crashed")
 
 
 #: THE LAYER-1 ROSTER, AS DATA — the counterpart of `agent/skills/invariants.py` for
@@ -1400,33 +1405,17 @@ def evaluate_build(result: dict) -> BuildContract:
                            "message": "the build declared no tool evidence — an env with nothing "
                                       "proven in the shipped image is an unverified claim."})
     else:
-        # Depth is DISCLOSURE, never a gate (see evidence_depth). Reporting it here is
-        # what stops "5 tools validated" from reading as "5 tools were run" when all five
-        # evidences are PATH lookups — the commonest real shape in this repo's records.
-        depths = [evidence_depth(v.get("check", ""), v.get("tool", "")) for v in verifications]
-        deep = sum(1 for d in depths if d not in _SHALLOW_DEPTHS and d != "unknown")
-        # STATE WHAT THE HEURISTIC SAW, NOT WHAT IS TRUE. "{deep} of them RUN the
-        # tool" would be an assertion of fact about the commands, sourced from a
-        # classifier whose own docstring says a string cannot tell you what a command
-        # does at runtime. The load pattern (`library(`, `perl -M`, `import`) is
-        # tested BEFORE the functional signals and claims a command first, so
-        # authored evidence that loads a library and then RUNS it (calls the
-        # entrypoint, asserts on the result) can classify as `import` — stated as
-        # fact, "0 of them RUN the tool" over such a command is a flat falsehood
-        # delivered with the confidence of a measurement. Cleanly separating those
-        # from real load-only imports (`python -c 'import pyfaidx; assert …'`)
-        # needs a classifier that reasons about residue rather than patterns, so the
-        # CLAIM is scoped instead: the line reports a structural reading as a
-        # structural reading. Depth is disclosure and never gates, so under-claiming
-        # costs a reader nothing; asserting it as fact costs them the truth.
+        # What each check did is DISCLOSURE, never a gate (see evidence_kind): it stops
+        # "5 tools validated" from reading as "5 tools were run" when all five checks are
+        # PATH lookups — the commonest shape in this repo's records. A structural reading
+        # of the command text, said as one.
+        kinds = [evidence_kind(v.get("check", ""), v.get("tool", ""), v.get("tool_aliases") or ())
+                 for v in verifications]
+        ran = sum(1 for k in kinds if k == EVIDENCE_RAN)
         coverage.append(ClauseCoverage(
             "VALIDATED_IN_IMAGE", _VII_COVERS, CHECKED, len(verifications),
-            f"{len(verifications)} evidence command(s) re-run in the shipped image; "
-            f"{deep} of them LOOK like a functional run to a structural reading of the "
-            f"command text (the rest read as presence/version/help/load probes). That "
-            f"reading is a heuristic over strings, not an observation of what ran — it "
-            f"under-reports commands that load a library and then use it "
-            f"[{', '.join(sorted(set(depths)))}]"))
+            f"{len(verifications)} evidence command(s) re-run in the shipped image; by the "
+            f"command text, {ran} of them run the tool and {len(kinds) - ran} only find it present"))
     for ver in verifications:
         label = ver.get("label", "?")
         shape = evidence_shape_violation(ver.get("check", ""), ver.get("tool", ""),
@@ -1435,6 +1424,21 @@ def evaluate_build(result: dict) -> BuildContract:
             violations.append({"invariant": "VALIDATED_IN_IMAGE.evidence_shape",
                                "where": f"verifications[{label}]",
                                "message": f"{label}: {shape}"})
+        _out = str(ver.get("out") or "").strip()
+        crash = _CRASH_SIGNATURE.search(_out)
+        if ver.get("passed") and crash:
+            # The tool DIED and the check passed anyway: a capture-then-check grep matched
+            # the crash banner (the path it names is in the banner). A pass over a dead
+            # process is the one outcome this clause exists to refuse.
+            violations.append({"invariant": "VALIDATED_IN_IMAGE.tool_crashed",
+                               "where": f"verifications[{label}]",
+                               "message": f"{label}: evidence {ver.get('check','')!r} passed, but the "
+                                          f"captured output carries a crash signature "
+                                          f"({crash.group(0)!r}) — the tool died, and the check "
+                                          f"passed only because what it read matched the crash "
+                                          f"banner. The tool's own exit status must decide: "
+                                          f"`tool … > /tmp/out.txt 2>&1 && grep -q PATTERN "
+                                          f"/tmp/out.txt`. Captured output begins: {_out[:200]!r}"})
         if not ver.get("passed"):
             # SAY WHAT THE RECORD SAYS. "The tool is not provably present/runnable
             # in what we ship", stated unconditionally, can sit over a verification
@@ -1444,8 +1448,24 @@ def evaluate_build(result: dict) -> BuildContract:
             # when the correct action was in the shell line. When the run captured
             # output, the refusal points at the command and quotes the disproof
             # instead of asserting its opposite.
-            _out = str(ver.get("out") or "").strip()
-            if _out:
+            if ver.get("rc") == TIMEOUT_RC or _TIMED_OUT.search(_out):
+                # Not a wrong command and not a missing tool: the tool did not FINISH in
+                # the time the check was given. A JVM, a TensorFlow import under emulation
+                # or a module that loads a dataset can take minutes to answer `--help`.
+                limit = ver.get("timeout_s")
+                diag = (f"— the check TIMED OUT{f' after {limit} s' if limit else ''} (rc={TIMEOUT_RC}): "
+                        f"the tool did not finish, which says nothing about whether it is "
+                        f"present. Give it longer with `evidence_timeout_s` (up to 1800) on "
+                        f"freeze_from_image / build_env_from_authors_recipe, or probe something "
+                        f"that answers faster than this command. Captured output begins: "
+                        f"{_out[:200]!r}")
+            elif crash:
+                diag = (f"— the tool DIED ({crash.group(0)!r}): a binary this host cannot execute "
+                        f"(an x86-only build under emulation, a CPU feature the image assumes), "
+                        f"not a wrong command. The proof belongs to a locus that can run it, or to "
+                        f"a release built for this architecture. Captured output begins: "
+                        f"{_out[:200]!r}")
+            elif _out:
                 diag = (f"— but the run CAPTURED OUTPUT, so something executed and "
                         f"printed. Suspect the evidence COMMAND (redirect order — "
                         f"`2>&1 > file` leaves the file empty; a grep pattern that "

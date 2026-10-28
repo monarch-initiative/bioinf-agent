@@ -109,15 +109,15 @@ TIER_DEFAULT_RULE = {"C0": "completed", "C1": "sealed", "C2": "sealed", "C3": "p
 #: records (the attestation, the workflow spec, main.nf). The criteria are artifact-level:
 #: what the records say the tool did, never which route built it, what the tool was
 #: called or how a slot was spelled.
-#:   evidence_depth_min every `validated_in_image` check in the attestation is at least this
-#:                      deep on env_honesty's ladder (presence < version < import < help <
-#:                      smoke < functional)
+#:   evidence           what every `validated_in_image` check in the attestation did, by
+#:                      env_honesty.evidence_kind: `ran` (the tool executed) or `found` (it
+#:                      was only found present; satisfied by any check)
 #:   accessions         each accession appears, as a whole token, in the bound workflow spec
 #:   accessions_min     at least this many distinct SRA-style accessions appear in the spec
 #:   cohort_stage       main.nf calls a process over a collected channel (a stage that runs
 #:                      once over every sample)
-EXPECT_KEYS = ("evidence_depth_min", "accessions", "accessions_min", "cohort_stage")
-EVIDENCE_DEPTHS = ("presence", "version", "import", "help", "smoke", "functional")
+EXPECT_KEYS = ("evidence", "accessions", "accessions_min", "cohort_stage")
+EVIDENCE_KINDS = ("found", "ran")
 
 #: The one metric set — every row has every column, in this order. (name, description.)
 METRIC_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -577,9 +577,9 @@ def inspect_workspace(workspace: Path, final_text: str = "") -> dict:
 _ACCESSION_RE = re.compile(r"(?<![A-Za-z0-9])[SED]RR\d{5,}(?![A-Za-z0-9])")
 
 
-def _depth_of(check: str, tool: str) -> str:
-    from agent.skills.env_honesty import evidence_depth
-    return evidence_depth(check, tool)
+def _kind_of(check: str, tool: str) -> str:
+    from agent.skills.env_honesty import evidence_kind
+    return evidence_kind(check, tool)
 
 
 def check_expect(expect: dict, workspace: Path, bound: dict) -> tuple[list[str], int]:
@@ -595,21 +595,18 @@ def check_expect(expect: dict, workspace: Path, bound: dict) -> tuple[list[str],
     fails: list[str] = []
     checked = 0
 
-    if "evidence_depth_min" in expect:
+    if "evidence" in expect:
         checked += 1
-        floor = EVIDENCE_DEPTHS.index(str(expect["evidence_depth_min"]))
+        want = str(expect["evidence"])
         checks = (((attestation or {}).get("predicate") or {}).get("buildDefinition") or {}) \
             .get("internalParameters", {}).get("validated_in_image") if attestation else None
         if not checks:
-            fails.append("expect:evidence_depth_min: no validated_in_image checks in the attestation")
-        else:
-            shallow = []
-            for c in checks:
-                depth = _depth_of(str(c.get("check") or ""), str(c.get("tool") or ""))
-                if depth not in EVIDENCE_DEPTHS or EVIDENCE_DEPTHS.index(depth) < floor:
-                    shallow.append(f"{c.get('tool')}={depth}")
-            if shallow:
-                fails.append(f"expect:evidence_depth_min: below {expect['evidence_depth_min']}: {', '.join(shallow)}")
+            fails.append("expect:evidence: no validated_in_image checks in the attestation")
+        elif want == "ran":
+            found = [f"{c.get('tool')}={k}" for c in checks
+                     if (k := _kind_of(str(c.get("check") or ""), str(c.get("tool") or ""))) != "ran"]
+            if found:
+                fails.append(f"expect:evidence: not every check ran the tool: {', '.join(found)}")
     if "accessions" in expect:
         checked += 1
         if spec is None:

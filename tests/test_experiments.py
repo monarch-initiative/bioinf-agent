@@ -1411,25 +1411,25 @@ class TestExpectBlock:
                                             workspace_files=_record_files(**(files or {}))))
 
     def test_a_complete_record_meets_every_check(self, tmp_path):
-        row = self._row(tmp_path, "a", {"evidence_depth_min": "version", "accessions": ["SRR1039508"], "accessions_min": 1})
+        row = self._row(tmp_path, "a", {"evidence": "ran", "accessions": ["SRR1039508"], "accessions_min": 1})
         assert row["expect_checked"] == 3 and row["expect_failed"] == [] and row["verdict"] == "pass"
 
-
-
-    def test_evidence_depth_reads_the_attestation(self, tmp_path):
+    def test_evidence_reads_the_attestation(self, tmp_path):
         presence = _attestation([("seqkit", "command -v seqkit || python -c 'import importlib.metadata as _m; _m.distribution(\"seqkit\")'"),
                                  ("samtools", "samtools --version")])
-        row = self._row(tmp_path, "c", {"evidence_depth_min": "version"}, {"environments/seqkit/seqkit.attestation.json": presence})
-        assert row["expect_failed"] == ["expect:evidence_depth_min: below version: seqkit=presence"]
-        row = self._row(tmp_path, "d", {"evidence_depth_min": "help"},
+        row = self._row(tmp_path, "c", {"evidence": "ran"}, {"environments/seqkit/seqkit.attestation.json": presence})
+        assert row["expect_failed"] == ["expect:evidence: not every check ran the tool: seqkit=found"]
+        row = self._row(tmp_path, "d", {"evidence": "ran"},
                         {"environments/seqkit/seqkit.attestation.json": _attestation([("seqkit", "seqkit --help")])})
         assert row["expect_failed"] == []
-        row = self._row(tmp_path, "e", {"evidence_depth_min": "help"},
+        row = self._row(tmp_path, "e", {"evidence": "ran"},
                         {"environments/seqkit/seqkit.attestation.json": _attestation([("talos", 'python -c "import importlib.metadata; print(importlib.metadata.version(\'talos\'))"')])})
-        assert row["expect_failed"] == ["expect:evidence_depth_min: below help: talos=presence"]
-        row = self._row(tmp_path, "f", {"evidence_depth_min": "version"}, {"environments/seqkit/seqkit.attestation.json": "{}"})
-        assert row["expect_failed"] == ["expect:evidence_depth_min: no validated_in_image checks in the attestation"]
-        assert metrics.EVIDENCE_DEPTHS == ("presence", "version", "import", "help", "smoke", "functional")
+        assert row["expect_failed"] == ["expect:evidence: not every check ran the tool: talos=found"]
+        row = self._row(tmp_path, "g", {"evidence": "found"}, {"environments/seqkit/seqkit.attestation.json": presence})
+        assert row["expect_failed"] == [], "found is satisfied by any check that is there"
+        row = self._row(tmp_path, "f", {"evidence": "ran"}, {"environments/seqkit/seqkit.attestation.json": "{}"})
+        assert row["expect_failed"] == ["expect:evidence: no validated_in_image checks in the attestation"]
+        assert metrics.EVIDENCE_KINDS == ("found", "ran")
 
     def test_accessions_read_the_bound_spec(self, tmp_path):
         three = _spec(trials=3, accessions=("SRR1039508", "SRR1039509", "SRR1039512"))
@@ -1469,7 +1469,7 @@ class TestExpectBlock:
 
     def test_the_definition_validates_its_expect_block(self, tmp_path):
         e = experiments.load_experiment(_exp(tmp_path, expect={"accessions": ["SRR1039508"], "accessions_min": 2,
-                                                              "evidence_depth_min": "help", "cohort_stage": False}))
+                                                              "evidence": "ran", "cohort_stage": False}))
         assert e["expect"]["accessions"] == ["SRR1039508"] and e["expect"]["accessions_min"] == 2
         assert experiments.load_experiment(_exp(tmp_path))["expect"] == {}
         # the criteria are artifact-level: a route, a tool name or a slot spelling is an unknown key
@@ -1477,11 +1477,11 @@ class TestExpectBlock:
                          ({"build_method": "adopt"}, "unknown keys"), ({"slots": ["THREADS"]}, "unknown keys"),
                          ({"trials_min": 2}, "unknown keys"), ({"accessions": []}, "non-empty list"),
                          ({"accessions": "SRR1"}, "non-empty list"), ({"accessions_min": 0}, "positive integer"),
-                         ({"accessions_min": "3"}, "positive integer"), ({"evidence_depth_min": "deep"}, "one of"),
+                         ({"accessions_min": "3"}, "positive integer"), ({"evidence": "deep"}, "one of"),
                          ({"cohort_stage": "yes"}, "true or false")):
             with pytest.raises(experiments.ExperimentError, match=msg):
                 experiments.load_experiment(_exp(tmp_path, expect=bad))
-        assert set(metrics.EXPECT_KEYS) == {"evidence_depth_min", "accessions", "accessions_min", "cohort_stage"}
+        assert set(metrics.EXPECT_KEYS) == {"evidence", "accessions", "accessions_min", "cohort_stage"}
 
 
 # ---------------------------------------------------------------------------

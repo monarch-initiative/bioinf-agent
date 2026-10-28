@@ -94,122 +94,147 @@ def test_legitimate_invocation_accepted():
 
 
 # ---------------------------------------------------------------------------
-# Evidence DEPTH — the disclosure sibling of the shape rule. Not a gate: it
-# classifies how deeply evidence exercises the tool so a shallow proof (presence
-# only) can't read as a functional run — the honesty lever the Talos
-# reconstruction slipped past (imported clean, but didn't RUN).
+# Evidence KIND — the disclosure sibling of the shape rule. Not a gate: it says
+# whether a check RAN the tool or only FOUND it present, so a presence probe can
+# never read as a run on the ENV report (the honesty lever the Talos reconstruction
+# slipped past: it imported clean, it never ran).
 # ---------------------------------------------------------------------------
-from agent.skills.env_honesty import evidence_depth, is_shallow_evidence  # noqa: E402
+from agent.skills.env_honesty import EVIDENCE_FOUND, EVIDENCE_RAN, evidence_kind  # noqa: E402
 
 
 @pytest.mark.parametrize("ev,tool,expected", [
-    ("samtools --version", "samtools", "version"),
-    ("bcftools --version", "bcftools", "version"),
-    ('python -c "import talos"', "talos", "import"),
-    ("perl -MBio::DB::HTS -e1", "x", "import"),
-    ("mytool --help", "mytool", "help"),
-    ("python -m talos.validate_moi --help", "talos", "help"),
-    ("samtools sort -o /tmp/out.bam /data/in.bam", "samtools", "functional"),
-    ("seqkit stats /data/reads.fq", "seqkit", "functional"),
-    # A BARE invocation reads 'help', not 'smoke' (CS19): with no operands the tool
-    # can only answer with its banner/usage — the same claim `--help` proves — and
-    # 'smoke' sits on the RUNS side of the shallow line, so the old reading dressed
-    # a banner probe as a run on the report's summary count.
-    ("mytool", "mytool", "help"),
-    ("", "mytool", "unknown"),          # decline to guess rather than assume a depth
-    ("tool --frobnicate", "other", "unknown"),
-    # `| head`, `| cat`, `2>&1`, `> /dev/null` shape a command's OUTPUT and say nothing
-    # about what it does. They used to promote anything to 'functional' — one pipe
-    # outranking the thing being piped, and a one-character bypass for any depth rule.
-    ("samtools --version | head -1", "samtools", "version"),
-    ("samtools --version 2>&1", "samtools", "version"),
-    # A bare invocation + plumbing is still a bare invocation (CS19): measured on a
-    # real freeze, `set -o pipefail; bwa > /tmp/bwa_help.txt 2>&1; grep -q … /tmp/…`
-    # graded 'functional' off its own CAPTURE redirect while the samtools row beside
-    # it was correctly ⚠ 'version'. The banner-capture idiom the shape rule itself
-    # recommends must not out-grade the flag it replaces.
-    ("bwa 2>&1 | head", "bwa", "help"),
-    ("set -o pipefail; bwa > /tmp/h.txt 2>&1; grep -q 'Program: bwa' /tmp/h.txt",
-     "bwa", "help"),
-    # a wrapper must not hide the bare probe back into 'functional' (audit) —
-    # the segment's command word comes from the same reading the run
-    # primitives use to name a step, which unwraps time/nice/env
-    ("time bwa > /tmp/h.txt 2>&1", "bwa", "help"),
-    # an INPUT redirect is work (stdin feeding), never banner capture
-    ("gunzip < /data/x.gz > /tmp/y.txt", "gunzip", "functional"),
-    ("mytool --help | cat", "mytool", "help"),
-    ("pigz --version > /dev/null", "pigz", "version"),
+    # the tool is the command word: it executed, whatever it was asked
+    ("samtools --version", "samtools", EVIDENCE_RAN),
+    ("bcftools --version", "bcftools", EVIDENCE_RAN),
+    ("mytool --help", "mytool", EVIDENCE_RAN),
+    ("mytool", "mytool", EVIDENCE_RAN),
+    ("samtools sort -o /tmp/out.bam /data/in.bam", "samtools", EVIDENCE_RAN),
+    ("seqkit stats /data/reads.fq", "seqkit", EVIDENCE_RAN),
+    ("samtools --version | head -1", "samtools", EVIDENCE_RAN),
+    ("samtools --version 2>&1", "samtools", EVIDENCE_RAN),
+    ("bwa 2>&1 | head", "bwa", EVIDENCE_RAN),
+    ("time bwa > /tmp/h.txt 2>&1", "bwa", EVIDENCE_RAN),
+    ("gunzip < /data/x.gz > /tmp/y.txt", "gunzip", EVIDENCE_RAN),
+    ("pigz --version > /dev/null", "pigz", EVIDENCE_RAN),
+    ("run_deepvariant --version", "deepvariant", EVIDENCE_RAN),      # a name that carries the token
+    # an interpreter runs the tool's module, script or jar
+    ("python -m talos.validate_moi --help", "talos", EVIDENCE_RAN),
+    ("python /opt/deepvariant/bin/run_deepvariant.py --version", "deepvariant", EVIDENCE_RAN),
+    ("java -jar /opt/exomiser/exomiser-cli-15.1.0.jar --help", "exomiser", EVIDENCE_RAN),
+    # a load with nothing after it, a load followed by a print, a metadata lookup: found
+    ('python -c "import talos"', "talos", EVIDENCE_FOUND),
+    ('python -c "import talos; print(\'talos ok\')"', "talos", EVIDENCE_FOUND),
+    ('python -c "import spliceai; print(spliceai.__version__)"', "spliceai", EVIDENCE_FOUND),
+    ("perl -MBio::DB::HTS -e1", "Bio::DB::HTS", EVIDENCE_FOUND),
+    # a load, then the tool is called: ran
+    ("Rscript -e 'library(DESeq2); dds <- DESeq(dds)'", "bioconductor-deseq2", EVIDENCE_RAN),
+    ("Rscript -e 'library(DESeq2); sessionInfo()'", "bioconductor-deseq2", EVIDENCE_FOUND),
+    # the tool's name only inside a string handed to a file read: found
+    ('python3 -c "compile(open(\'/opt/deepvariant/bin/run_deepvariant.py\').read(), \'x\', \'exec\')"',
+     "deepvariant", EVIDENCE_FOUND),
+    # nothing to classify, or a tool that is not the one asked about
+    ("", "mytool", EVIDENCE_FOUND),
+    ("tool --frobnicate", "other", EVIDENCE_FOUND),
 ])
-def test_evidence_depth_classifies(ev, tool, expected):
-    assert evidence_depth(ev, tool) == expected
+def test_evidence_kind_classifies(ev, tool, expected):
+    assert evidence_kind(ev, tool) == expected
 
 
 @pytest.mark.parametrize("ev,tool", [
     ("command -v samtools", "samtools"),          # PATH lookup — never runs the tool
     ("which bwa", "bwa"),
     ('python -c "import importlib.metadata as _m; _m.version(\'cyvcf2\')"', "cyvcf2"),
+    ("grep -q apollo /etc/apollo.conf", "apollo"),
+    ("unzip -p /apollo/apollo.war META-INF/MANIFEST.MF > /tmp/m.txt 2>&1 && grep -q apollo /tmp/m.txt", "apollo"),
 ])
-def test_presence_probes_are_named_presence_not_promoted(ev, tool):
-    """A PATH/metadata lookup is the WEAKEST evidence there is and must say so.
-
-    `command -v samtools` used to classify as 'version' — the regex matched the `-v` of
-    `command -v` — and `_conda_presence_check(...)`, which is freeze's own auto-generated
-    probe and therefore the evidence on nearly every real record, classified as
-    'functional' because the path `/opt/conda/envs/*/conda-meta/*.json` matched "reads a
-    file". The weakest evidence in the system was reporting as the strongest.
-    """
-    assert evidence_depth(ev, tool) == "presence"
-    assert is_shallow_evidence(ev, tool) is True
+def test_lookups_and_file_reads_only_find_the_tool(ev, tool):
+    """A PATH or metadata lookup and a file read are the WEAKEST evidence there is and
+    must say so: `command -v samtools` once classified as a version probe (the `-v`), and
+    freeze's own conda probe as a functional run (its conda-meta path read as data)."""
+    assert evidence_kind(ev, tool) == EVIDENCE_FOUND
 
 
-def test_shallow_flags_presence_only_not_functional():
-    # presence/version/import/help prove the tool is there; smoke/functional prove it RUNS.
-    assert is_shallow_evidence("samtools --version", "samtools") is True
-    assert is_shallow_evidence('python -c "import x"', "x") is True
-    assert is_shallow_evidence("tool --help", "tool") is True
-    assert is_shallow_evidence("samtools view -c /data/in.bam", "samtools") is False
-    # 'unknown' is NOT shallow — declining to classify is not evidence of shallowness.
-    assert is_shallow_evidence("", "mytool") is False
-
-
-def test_depth_is_disclosure_not_a_gate():
-    # A shallow proof is NOT a shape violation — it still validly references the tool.
-    # The two checks are orthogonal: shape rejects cheats; depth discloses thinness.
-    assert evidence_shape_violation("samtools --version", "samtools") is None
-    assert is_shallow_evidence("samtools --version", "samtools") is True
+def test_kind_is_disclosure_not_a_gate():
+    # A check that only finds the tool is NOT a shape violation — it still validly
+    # references the tool. The two checks are orthogonal: shape rejects cheats; kind
+    # discloses what the check did.
+    assert evidence_shape_violation("command -v samtools", "samtools") is None
+    assert evidence_kind("command -v samtools", "samtools") == EVIDENCE_FOUND
 
 
 def test_freezes_own_auto_generated_evidence_is_classified_honestly():
-    """The depth of freeze's OWN probes decides whether the disclosure means anything —
-    they are the evidence on nearly every real record, so getting them wrong makes the
-    report wrong for almost every env.
-
-    This also pins WHY depth must never become a gate: the conda probe reports 'presence'
-    (weakest) and the pip probe reports 'presence' too. A gate on shallow would refuse
-    freeze's own defaults on pip while passing conda — no benefit where it matters,
-    breakage where it doesn't.
-    """
+    """freeze's OWN probes are the evidence on nearly every real record, so getting them
+    wrong makes the report wrong for almost every env: both only FIND the tool."""
     from agent.skills.env_freeze import _conda_presence_check, _pip_presence_check
-    assert evidence_depth(_conda_presence_check("pigz"), "pigz") == "presence"
-    assert evidence_depth(_pip_presence_check("cyvcf2"), "cyvcf2") == "presence"
+    assert evidence_kind(_conda_presence_check("pigz"), "pigz") == EVIDENCE_FOUND
+    assert evidence_kind(_pip_presence_check("cyvcf2"), "cyvcf2") == EVIDENCE_FOUND
 
 
-def test_nothing_in_the_contract_gates_on_depth():
-    """check_build must NOT refuse on shallow evidence. Measured (audit 2026-07-16 Tier 2):
-    a depth gate refuses the flagship-CORRECT artifact and the known-BROKEN one
-    identically — `talos_authors` (which really does carry the bcftools fork) is
-    [help, version, version] and the broken `talos_v11` reconstruction is [import]: all
-    shallow. Zero discriminating power on the exact war story depth was proposed to catch.
-    """
+def test_nothing_in_the_contract_gates_on_the_kind():
+    """check_build must NOT refuse evidence that only finds the tool: a string reading
+    cannot tell the correct artifact from the broken one, so it is disclosed on the ENV
+    report ("found present · not exercised") and never load-bearing."""
     from agent.skills.env_honesty import check_build
     record = {
-        "image": "x:1", "image_digest": "sha256:abc",
-        # the real talos_authors evidence set — all shallow, and CORRECT
+        "image": "x:1", "image_digest": "sha256:abc", "image_arch": "amd64", "platform": "linux/amd64",
         "verifications": [
-            {"label": "talos", "tool": "talos", "check": "python -m talos.validate_moi --help", "passed": True},
-            {"label": "bcftools", "tool": "bcftools", "check": "bcftools --version", "passed": True},
-            {"label": "echtvar", "tool": "echtvar", "check": "echtvar --version", "passed": True},
+            {"label": "samtools", "tool": "samtools", "check": "command -v samtools", "passed": True,
+             "control": "discriminating"},
         ],
     }
-    assert all(is_shallow_evidence(v["check"], v["tool"]) for v in record["verifications"])
-    assert check_build(record) == [], "shallow evidence must not refuse a build"
+    assert evidence_kind("command -v samtools", "samtools") == EVIDENCE_FOUND
+    assert check_build(record) == [], "evidence that only finds the tool must not refuse a build"
+
+
+# ---------------------------------------------------------------------------
+# The tool's own exit status counts
+# ---------------------------------------------------------------------------
+
+def test_a_semicolon_between_the_tool_and_the_grep_is_refused_with_both_honest_forms():
+    """`tool … > f 2>&1; grep P f`: the `;` discards the tool's exit status, so a tool that
+    crashed after printing the pattern passes (DeepVariant's SIGILL banner matched the
+    grep). The remedy names the `&&` form and the `rc=$?` form."""
+    why = evidence_shape_violation("run_deepvariant --version > /tmp/dv.txt 2>&1; grep -q /opt/deepvariant /tmp/dv.txt",
+                                   "deepvariant")
+    assert why and "discards the tool's own exit status" in why
+    assert "&& grep -q PATTERN" in why and 'rc=$?' in why
+    # the recommended shapes pass
+    assert evidence_shape_violation("tool --version > /tmp/out.txt 2>&1 && grep -q 1.0 /tmp/out.txt", "tool") is None
+    assert evidence_shape_violation("tool > /tmp/out.txt 2>&1; rc=$?; grep -q Usage /tmp/out.txt && [ \"$rc\" -eq 1 ]",
+                                    "tool") is None
+    # a `;` that does not end in an inspector, or whose tool runs LAST, keeps its status
+    assert evidence_shape_violation("cd /tmp; tool --version", "tool") is None
+    assert evidence_shape_violation("set -o pipefail; tool --version | head -1", "tool") is None
+
+
+def test_a_crash_banner_in_a_passing_check_fails_the_contract():
+    """The gate's own capture-then-check idiom let a dead tool register: the grep matched
+    the path inside `Illegal instruction … /opt/deepvariant/bin/run_deepvariant.py`."""
+    from agent.skills.env_honesty import check_build
+    record = {
+        "image": "x:1", "image_digest": "sha256:abc", "image_arch": "amd64", "platform": "linux/amd64",
+        "verifications": [{
+            "label": "deepvariant", "tool": "deepvariant",
+            "check": "run_deepvariant --version > /tmp/dv.txt 2>&1 && grep -q /opt/deepvariant /tmp/dv.txt",
+            "passed": True, "rc": 0, "control": "discriminating",
+            "out": "/opt/deepvariant/bin/run_deepvariant: line 2:     8 Illegal instruction  /usr/bin/python3 -u "
+                   "/opt/deepvariant/bin/run_deepvariant.py --version"}],
+    }
+    ids = [v["invariant"] for v in check_build(record)]
+    assert "VALIDATED_IN_IMAGE.tool_crashed" in ids, ids
+    msg = next(v["message"] for v in check_build(record) if v["invariant"] == "VALIDATED_IN_IMAGE.tool_crashed")
+    assert "Illegal instruction" in msg and "the tool died" in msg
+
+
+def test_a_timed_out_check_is_diagnosed_as_a_timeout_and_names_the_knob():
+    from agent.skills.env_honesty import check_build
+    record = {
+        "image": "x:1", "image_digest": "sha256:abc", "image_arch": "amd64", "platform": "linux/amd64",
+        "verifications": [{
+            "label": "talos", "tool": "talos", "check": "run_workflow --help",
+            "passed": False, "rc": 124, "timeout_s": 300,
+            "out": "[_proc] command timed out after 300s"}],
+    }
+    msg = next(v["message"] for v in check_build(record) if v["invariant"] == "VALIDATED_IN_IMAGE.evidence_passed")
+    assert "TIMED OUT after 300 s" in msg and "evidence_timeout_s" in msg
+    assert "redirect order" not in msg, "a timeout is not a wrong command"

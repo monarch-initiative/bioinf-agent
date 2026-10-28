@@ -98,13 +98,11 @@ def _grid_jar_evidence() -> str:
     return ft.tier("jar")["build"]["install_method"]["evidence"]
 
 
-def test_grid_jar_recipe_evidence_is_functional_depth():
-    """The recipe's evidence must classify FUNCTIONAL (it RUNS Picard on data),
-    not 'presence' — otherwise the report would over- or under-claim what the jar
-    tier proved. This is the reports-never-lie honesty anchor for the tier."""
+def test_grid_jar_recipe_evidence_runs_the_tool():
+    """The recipe's evidence must read as a RUN (it runs Picard on data), not as a
+    presence check — the reports-never-lie honesty anchor for the tier."""
     ev = _grid_jar_evidence()
-    assert env_honesty.evidence_depth(ev, "picard") == "functional"
-    assert not env_honesty.is_shallow_evidence(ev, "picard")
+    assert env_honesty.evidence_kind(ev, "picard") == env_honesty.EVIDENCE_RAN
 
 
 def test_grid_jar_recipe_evidence_passes_the_anti_cheat_shape_rule():

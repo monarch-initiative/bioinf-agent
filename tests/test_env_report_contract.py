@@ -108,11 +108,11 @@ def test_the_failure_notice_precedes_the_content_it_undermines():
 
 def test_a_clean_record_still_renders_green():
     """A passing contract is a green pill. The fixture's evidence is `--version`,
-    which proves presence, so the green pill is the presence one."""
+    which RUNS the tool, so the green pill is the validated one."""
     rec = env_record(name="fine")
     assert not H.check_build(rec)
     html = render_env_report_html(rec)
-    assert _headline(html) == ("ok", "✓ Present in shipped image · not exercised"), _headline(html)
+    assert _headline(html) == ("ok", "✓ Validated in shipped image"), _headline(html)
 
 
 # ---------------------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def test_one_exercised_tool_among_presence_checks_earns_validated_and_the_tools_
                      verifications=[_present("samtools"), _ran("bwa")])
     html = render_env_report_html(rec)
     assert _headline(html) == ("ok", "✓ Validated in shipped image")
-    assert "For 1 of them the check only confirmed the tool is present" in html
+    assert "For 1 of them the check only found the tool present" in html
 
 
 def test_a_failed_check_is_not_softened_into_present():

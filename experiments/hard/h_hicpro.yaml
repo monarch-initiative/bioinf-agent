@@ -12,7 +12,7 @@ name: h_hicpro
 tier: C1
 success: frozen
 expect:
-  evidence_depth_min: version
+  evidence: ran
 prompt: |
   Install HiC-Pro (https://github.com/nservant/HiC-Pro) at its latest release the way its
   authors ship it, and freeze it as a shippable image in which `HiC-Pro -h` runs. Say which

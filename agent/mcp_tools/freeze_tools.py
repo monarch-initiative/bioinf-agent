@@ -898,7 +898,7 @@ def freeze(
     # question a pass/fail gate cannot: how much did it actually LOOK at? A clean contract
     # with an UNOBSERVED clause is `degraded`, not `proven` — same artifact, same
     # registration, honest tag. See env_honesty.coverage_outcome for why the rule is
-    # structural (unobserved clauses) and not evidence depth.
+    # structural (unobserved clauses) and not what the evidence did (ran or found).
     # merge (not kwargs) — `record` is a build result that may already carry a
     # `success` key; a dict-literal merge makes the explicit values last-wins
     # instead of a kwarg collision. `contract` is the SAME evaluation that gated the

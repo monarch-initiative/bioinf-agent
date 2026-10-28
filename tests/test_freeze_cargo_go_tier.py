@@ -117,13 +117,11 @@ def test_map_install_go_still_attaches_provenance():
 # ── #B the grid recipes' evidence is genuinely FUNCTIONAL + non-cheat ─────────
 
 @pytest.mark.parametrize("tname,tool", [("cargo", "nanoq"), ("go", "gofasta")])
-def test_grid_recipe_evidence_is_functional_depth(tname, tool):
-    """Each recipe's evidence must classify FUNCTIONAL (it RUNS the built binary on
-    data) — not 'version'/'presence' — so the report honestly renders validated==ran.
-    This is the reports-never-lie honesty anchor for the tier."""
+def test_grid_recipe_evidence_runs_the_tool(tname, tool):
+    """Each recipe's evidence must read as a RUN (it runs the built binary on data), not
+    as a presence check — the reports-never-lie honesty anchor for the tier."""
     ev = _ft().tier(tname)["build"]["install_method"]["evidence"]
-    assert env_honesty.evidence_depth(ev, tool) == "functional"
-    assert not env_honesty.is_shallow_evidence(ev, tool)
+    assert env_honesty.evidence_kind(ev, tool) == env_honesty.EVIDENCE_RAN
 
 
 @pytest.mark.parametrize("tname,tool", [("cargo", "nanoq"), ("go", "gofasta")])

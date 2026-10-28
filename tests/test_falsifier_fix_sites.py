@@ -63,11 +63,11 @@ class TestPullableImageThreeStates:
 
 # ─────────────────────────── FD2 — a load followed by self-checking work ────────────
 
-class TestEvidenceDepthLoadThenWork:
-    """`Rscript -e 'library(DESeq2); …; DESeq(dds); stopifnot(…)'` was disclosed as
-    [import] on a real freeze while the command ran the tool's main entrypoint and
-    asserted on the result. Promotion requires calls AND an assertion — a misfire
-    without the assertion could only weaken disclosure, so it stays import."""
+class TestEvidenceKindLoadThenWork:
+    """`Rscript -e 'library(DESeq2); …; DESeq(dds); stopifnot(…)'` was disclosed as a
+    load-only probe on a real freeze while the command ran the tool's main entrypoint.
+    A load followed by a call is a run; a load alone, or a load followed by printing or
+    session utilities, only finds the tool."""
 
     FD2_COMMAND = ("Rscript -e 'suppressMessages(library(DESeq2)); set.seed(1); "
                    "m <- matrix(rnbinom(240, mu=50, size=10), nrow=40); "
@@ -75,26 +75,24 @@ class TestEvidenceDepthLoadThenWork:
                    "dds <- DESeq(dds, quiet=TRUE); r <- results(dds); "
                    "stopifnot(nrow(r)==40); cat(\"ok\")'")
 
-    def test_the_fd2_command_is_functional(self):
-        from agent.skills.env_honesty import evidence_depth
-        assert evidence_depth(self.FD2_COMMAND, "bioconductor-deseq2") == "functional"
+    def test_the_fd2_command_ran(self):
+        from agent.skills.env_honesty import EVIDENCE_RAN, evidence_kind
+        assert evidence_kind(self.FD2_COMMAND, "bioconductor-deseq2") == EVIDENCE_RAN
 
     @pytest.mark.parametrize("cmd", [
         "Rscript -e 'library(DESeq2)'",
         "python -c 'import numpy'",
         "python3 -m talos",
-        # a load followed by UNASSERTED calls may run nothing of the tool — stays import
+        # a load followed by a session utility runs nothing of the tool
         "Rscript -e 'library(DESeq2); sessionInfo()'",
     ])
-    def test_load_only_and_unasserted_stay_import(self, cmd):
-        from agent.skills.env_honesty import evidence_depth
-        assert evidence_depth(cmd, "bioconductor-deseq2") == "import"
+    def test_load_only_and_session_utilities_only_find_the_tool(self, cmd):
+        from agent.skills.env_honesty import EVIDENCE_FOUND, evidence_kind
+        assert evidence_kind(cmd, "bioconductor-deseq2") == EVIDENCE_FOUND
 
-    def test_assert_flag_on_a_bare_tool_cannot_reach_the_promotion(self):
-        # the promotion lives INSIDE the import branch; a command with no load shape
-        # never sees it, so `--assert-mode` cannot dress a probe as functional
-        from agent.skills.env_honesty import evidence_depth
-        assert evidence_depth("sometool --assert-mode", "sometool") != "functional"
+    def test_a_load_followed_by_a_call_ran(self):
+        from agent.skills.env_honesty import EVIDENCE_RAN, evidence_kind
+        assert evidence_kind("Rscript -e 'library(DESeq2); dds <- DESeq(dds)'", "bioconductor-deseq2") == EVIDENCE_RAN
 
 
 # ─────────────────────────── FD3 — both truths on the dashboard headline ────────────
