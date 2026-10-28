@@ -801,8 +801,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         if v in test_paths:
             key = next(k for k, p in core_data.test_data_paths(spec_d.get("test_data") or {}).items() if p == v)
             slot = key.rsplit(".", 1)[-1]                 # `samples.2.r1` → `r1`
-            if slot in ("r1", "r2") or slot.startswith(("r1_", "r2_")):
-                return "per_sample", f"bound to test_data.{key} (reads)"
+            if slot in ("r1", "r2", "phenopacket") or slot.startswith(("r1_", "r2_")):
+                return "per_sample", f"bound to test_data.{key} (per-sample data)"
         return "shared", "one trial, not a reads input"
 
     # an index file the how-to binds as an input of its own is staged through that input

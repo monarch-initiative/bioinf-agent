@@ -62,6 +62,8 @@ AssayType = Literal[
     "fiberseq",
     # Array / GWAS
     "gwas_array", "gwas_wgs", "qtl_array", "expression_array", "snp_array",
+    # A patient's phenotypes (GA4GH phenopacket JSON) — per-sample input data, not reads
+    "phenopacket",
 ]
 Platform  = Literal["illumina", "ont", "pacbio_hifi", "pacbio_isoseq", "pacbio_fiberseq"]
 FileType  = Literal[
@@ -1396,7 +1398,7 @@ def anchor_for_path(path: Any) -> Optional[ContentAnchor]:
 #: covered without editing this tuple; the explicit names are the ones whose spelling
 #: gives no hint (`r1`, `bam`, `file`).
 TEST_DATA_PATH_KEYS = (
-    "r1", "r2", "vcf", "tbi", "bam", "bai", "cram", "crai", "ped", "bed", "gtf",
+    "r1", "r2", "phenopacket", "vcf", "tbi", "bam", "bai", "cram", "crai", "ped", "bed", "gtf",
     "reference_fasta", "fasta", "fai", "file", "provenance", "core_data_dir",
 )
 _TEST_DATA_PATH_SUFFIXES = ("_path", "_dir", "_file", "_fasta", "_vcf", "_bam", "_bed")
@@ -1475,6 +1477,7 @@ class TestSample(BaseModel):
     num_reads:       Optional[int] = None
     r1:              Optional[str] = None
     r2:              Optional[str] = None
+    phenopacket:     Optional[str] = None   # the patient's phenopacket JSON (assay_type phenopacket)
     file_format:     Optional[str] = None
     chemistry:       Optional[str] = None
     suggested_model: Optional[str] = None
@@ -1507,6 +1510,7 @@ class TestDataRef(BaseModel):
     num_reads:          Optional[int] = None
     r1:                 Optional[str] = None
     r2:                 Optional[str] = None
+    phenopacket:        Optional[str] = None
     file_format:        Optional[str] = None
     chemistry:          Optional[str] = None
     suggested_model:    Optional[str] = None

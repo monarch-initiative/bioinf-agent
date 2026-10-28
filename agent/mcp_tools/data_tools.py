@@ -530,12 +530,20 @@ def select_test_data(
     `file_format` ("fastq" | "pod5" | "fast5" | …) lets a basecaller pipeline
     pick the raw-signal entry deterministically when both pod5 and the same
     project's basecalled FASTQ exist under the same assay_type. Defaults to
-    "" (don't filter on format)."""
+    "" (don't filter on format).
+
+    A PHENOPACKET IS A PER-SAMPLE INPUT TOO. `assay_type="phenopacket"` selects a
+    registered patient phenopacket (`accession` = its phenopacket id, `sample` = its
+    subject): the block records its JSON under `phenopacket`, anchored like reads, so a
+    step that takes the phenopacket itself traces at seal. Only asked for by that
+    assay_type — a reads request never lands on one."""
     # ONE read of the manifests: the datasets to match against, and the genome each
     # core dir declares (the reference half, below).
     _resources = _ms._list_resources({"resource_type": "both"}, _ms.config)
     all_data = _resources.get("test_data", [])
-    sequencing = [d for d in all_data if d.get("type") not in ("phenopacket", "pipeline_output")]
+    sequencing = [_as_candidate(d) for d in all_data
+                  if d.get("type") != "pipeline_output"
+                  and (d.get("type") != "phenopacket" or assay_type == "phenopacket")]
 
     # SOME CRITERIA SAY *WHAT KIND OF DATA*; OTHERS SAY *WHICH INSTANCE*. Only the
     # second kind are preferences.
@@ -568,8 +576,9 @@ def select_test_data(
 
     if not sequencing:
         return refused("data.no_test_data_on_disk",
-                       error="no sequencing test data on disk — fetch a dataset with "
-                             "add_core_test_data (reads) or add_core_pod5_data (pod5)")
+                       error="no test data on disk — fetch a dataset with add_core_test_data "
+                             "(reads), add_core_pod5_data (pod5) or add_phenopacket (a patient's "
+                             "phenopacket)")
     eligible = [d for d in sequencing if not _unmet(d)]
     if not eligible:
         # EARN THE REFUSAL: say which requirement nothing met, and what IS here, so the
@@ -607,6 +616,7 @@ def select_test_data(
         "num_reads":       best.get("num_reads"),
         "r1":              best.get("r1"),
         "r2":              best.get("r2"),
+        "phenopacket":     best.get("phenopacket"),
         # Pod5 / nanopore extensions — None on conventional FASTQ entries; an
         # empty string on file_format would be the same. Filtered below.
         "file_format":     best.get("file_format") if best.get("file_format") != "fastq" else None,
@@ -668,6 +678,17 @@ def select_test_data(
         if ok:
             result["test_data"] = block
     return result
+
+
+def _as_candidate(d: dict) -> dict:
+    """A manifest entry in the vocabulary the match reads: a phenopacket entry names its
+    id as the accession, its subject as the sample, its JSON under `phenopacket`, and the
+    assay `phenopacket`; every other entry is read as it is."""
+    if d.get("type") != "phenopacket":
+        return d
+    return {**d, "assay_type": "phenopacket", "accession": d.get("phenopacket_id"),
+            "sample": d.get("subject_id"), "phenopacket": d.get("file"),
+            "file_format": "phenopacket"}
 
 
 def _with_added_sample(existing: dict, sample: dict) -> dict:
