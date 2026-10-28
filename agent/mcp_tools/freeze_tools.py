@@ -413,7 +413,12 @@ def freeze(
     # at the CALL: without this disclosure nothing tells the caller their request did
     # not pin, and an old artifact comes back looking like a fresh solve.
     unpinned = sorted(n for n, v in parsed_filled if not v)
-    cached = _ms._env_cache.lookup_anchored(rkey, _ms._container_build.image_present)
+    # The draft's install record is part of what the cached image must have been built
+    # from: a fix installed on the host env after a build is a different env, under the
+    # same request key.
+    install_digest = _ms._freeze.install_record_digest(draft)
+    cached = _ms._env_cache.lookup_anchored(rkey, _ms._container_build.image_present,
+                                            install_record_digest=install_digest)
     if cached and unpinned:
         served = {}
         try:
@@ -820,6 +825,8 @@ def freeze(
     # Checking the registered bytes is also what makes the check total: `register` asserts
     # SHAPE, `lookup_verified` asserts the CONTRACT at serve time, and the write path
     # asserts it too — so a record on disk is never one the serving path refuses.
+    # The install record this image was built from, for the next lookup to compare.
+    record["install_record_digest"] = install_digest
     contract = _ms._env_honesty.evaluate_build(record)
     if contract.violations:
         if mode == "adopt":
