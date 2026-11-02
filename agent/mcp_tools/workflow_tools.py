@@ -30,7 +30,7 @@ from agent.models.core_data import (executed_commands as _executed_commands, key
                                     is_script_path as _is_script_path)
 from agent.mcp_server import mcp  # the FastMCP app is never monkeypatched
 from agent.skills.backgroundable import backgroundable
-from agent.skills.outcomes import broke, proven, refused  # terminal outcome tags
+from agent.skills.outcomes import broke, degraded, proven, refused  # terminal outcome tags
 from agent.skills import workspace as _workspace
 
 
@@ -490,15 +490,28 @@ def seal_workflow(
                        violations=self_violations, violation_count=len(self_violations))
     # THE SEAL IS GREEN ON THE RUN, AND THE HOW-TO IS THE RUN: one terminal. A sample that
     # ran only some of the commands is a stated limit on the record and on the response,
-    # never a second verdict.
-    result = proven(
-        "seal.sealed", success=True, workflow_name=wname,
+    # never a second verdict. A run validated OUTSIDE the image this seal pins is the other
+    # stated limit: the record is sealed, but what was validated is not what ships, so the
+    # answer is degraded — the pipeline layer refuses such a seal (no stage has an image).
+    fields = dict(
+        success=True, workflow_name=wname,
         env_pinned_digest=fr.get("content_digest"), env_image=fr.get("image"),
         commands_shown=len(_executed_commands(draft)),
         howto_commands=len(_core_data.usage_commands(derived["usage"])),
         samples=[t.get("name") for t in usage_detail.get("trials") or []],
         usage_verification=usage_detail,
+        validated_in_shipped_image=wf["validated_in_shipped_image"],
     )
+    if wf["validated_in_shipped_image"]:
+        result = proven("seal.sealed", **fields)
+    else:
+        result = degraded(
+            "seal.sealed_host_only", **fields,
+            reason="the record is sealed, but the steps it validated did not run inside the image this seal "
+                   "pins (the host, or another image): what was validated is not what ships, and "
+                   "render_pipeline refuses a seal whose stages have no image",
+            remedy="run the data steps with run_step_in_container (the same commands, bindings and "
+                   "watch_dir) and seal again")
     if usage_detail.get("partial"):
         result["samples_incomplete"] = usage_detail["partial"]
         result["advisory"] = ("these samples ran only some of the how-to's commands and are not "

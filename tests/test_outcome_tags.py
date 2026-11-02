@@ -147,6 +147,7 @@ def test_extractor_round_trips_the_seal_terminals():
         "seal.self_verify_failed":     "refused",
         "seal.spec_write_failed":      "broke",
         "seal.sealed":                 "proven",
+        "seal.sealed_host_only":       "degraded",
     }
     for code, outcome in expected.items():
         assert codes.get(code) == outcome, \

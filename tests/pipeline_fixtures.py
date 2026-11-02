@@ -413,6 +413,8 @@ def sealed_spec_on_disk(tmp_path, samples: Optional[list[str]] = None, *, refere
     (root / "reads").mkdir()
     for s in (samples if samples is not None else SAMPLES):
         (root / "reads" / f"{s}_10K_R1.fastq.gz").write_bytes(b"\x1f\x8b")
+    (root / "genome").mkdir()
+    (root / "genome" / "chr22.fa").write_text(">chr22\nACGT\n")
     if reference:
         d["reference_databases"] = [{"name": "hisat2_chr22", "version": "47", "local_path": str(idx), "available": True}]
     return WorkflowSpec.model_validate(d)

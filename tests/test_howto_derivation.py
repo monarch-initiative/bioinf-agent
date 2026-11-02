@@ -323,3 +323,40 @@ class TestTheDerivedInputFormat:
         assert f("A", ["/r/bundle.tar.gz"], {}) == "tar.gz" and f("B", ["/r/README"], {}) is None
         assert f("D", [str(idx)], {}) == "directory" and f("I", [f"{idx}/chr22"], {}) == "prefix"
         assert f("T", ["4"], {"T": "threads"}) == "threads" and f("S", ["A"], {}) is None
+
+
+class TestTheSealsAnswer:
+    """A seal whose validated steps ran inside the pinned image is proven; one validated on
+    the host is sealed but degraded: what was validated is not what ships, and the render
+    refuses it. (An agent sealed host-only right after the protocol said not to; the answer
+    is where it reads the limit.)"""
+
+    def _seal(self, monkeypatch, tmp_path, *, in_image: bool):
+        from agent import mcp_server as m
+        from agent.mcp_tools import workflow_tools as WT
+        from pipeline_fixtures import DIGEST, IMAGE, REQUEST_KEY, sealed_spec_on_disk
+        draft = sealed_spec_on_disk(tmp_path, ["SRR1039508"]).model_dump()
+        draft["pipeline_name"] = "p"
+        draft["reference_databases"].append({"name": "gencode", "version": "47", "available": True,
+                                             "local_path": f"{tmp_path}/data/annotation/chr22.gtf"})
+        if not in_image:
+            for s in draft["pipeline_steps"]:
+                s["ran_in_container"] = False
+                s["container_image"] = None
+                s["container_image_digest"] = None
+        fr = {"request_key": REQUEST_KEY, "image": IMAGE, "image_digest": DIGEST,
+              "content_digest": "sha256:c", "hpc_delivery": {}}
+        monkeypatch.setattr(m._pipeline_state, "get_draft", lambda pid: draft)
+        monkeypatch.setattr(m._env_cache, "lookup_verified", lambda key: (fr, []))
+        monkeypatch.setattr(m._env_cache, "all", lambda: {REQUEST_KEY: fr})
+        return WT.seal_workflow("p", REQUEST_KEY, write=False)
+
+    def test_a_seal_validated_in_the_pinned_image_is_proven(self, monkeypatch, tmp_path):
+        out = self._seal(monkeypatch, tmp_path, in_image=True)
+        assert out["code"] == "seal.sealed" and out["validated_in_shipped_image"] is True, out
+
+    def test_a_seal_validated_on_the_host_is_sealed_but_degraded(self, monkeypatch, tmp_path):
+        out = self._seal(monkeypatch, tmp_path, in_image=False)
+        assert out["outcome"] == "degraded" and out["code"] == "seal.sealed_host_only", out
+        assert out["success"] is True and out["validated_in_shipped_image"] is False
+        assert "run_step_in_container" in out["remedy"] and "not what ships" in out["reason"]
