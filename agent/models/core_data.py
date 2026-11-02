@@ -1677,6 +1677,25 @@ def is_path_like(s: Any) -> bool:
     return True
 
 
+def prefix_family(path: Any) -> list[str]:
+    """The files a bound value names as a PREFIX — an aligner index, `/ref/idx/chr22` for
+    `chr22.1.ht2` … `chr22.8.ht2` — when nothing exists at the value itself: every sibling
+    FILE named `<stem>.<more>`, sorted; [] for a file, a directory, a bare token, a slot or
+    a stem with no family. ONE reading: the run tools admit the bound value as an input by
+    it (the family's directory, which the step reads and a container must see), the render
+    classifies the placeholder as a prefix by it, and the proof checks its presence by it."""
+    if not is_path_like(path) or not str(path).startswith("/"):
+        return []
+    p = Path(str(path))
+    if not p.name or p.exists() or not p.parent.is_dir():
+        return []
+    stem = p.name + "."
+    try:
+        return sorted(str(c) for c in p.parent.iterdir() if c.name.startswith(stem) and c.is_file())
+    except OSError:
+        return []
+
+
 def violates_absolute_rule(p: Any) -> bool:
     """True when a path-like string is RELATIVE — the one reading of the
     absoluteness rule. PipelineStep._paths_are_absolute enforces it at

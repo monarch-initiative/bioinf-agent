@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from pipeline_fixtures import fake_proof, sealed_rnaseq_spec
+from pipeline_fixtures import fake_proof, sealed_rnaseq_spec, sealed_spec_on_disk
 
 from agent.mcp_tools import pipeline_tools as PT
 from agent.skills import pipeline_proof as PP
@@ -92,6 +92,23 @@ class TestPreconditions:
         r = PP.check_preconditions(rec)
         assert r["code"] == "pipeline.proof_inputs_missing"
         assert any(p.endswith("SRR1039508_10K_R1.fastq.gz") for p in r["missing_inputs"]), r
+
+    def test_an_index_prefix_whose_family_is_here_is_a_present_input(self, monkeypatch, tmp_path):
+        """c3: `-x {INDEX}` bound to `…/chr22`, a prefix of `chr22.1.ht2` …; nothing exists at
+        the value itself, and the proof refused it as a missing file."""
+        from agent.skills import run_production as rp
+        rt = pr.LocalRuntime(activate=str(tmp_path / "a.sh"), nextflow=str(tmp_path / "nf"))
+        (tmp_path / "a.sh").write_text("")
+        (tmp_path / "nf").write_text("")
+        monkeypatch.setattr(rp, "_docker_image_present", lambda image: True)
+        rec = pr.derive_pipeline_record(sealed_spec_on_disk(tmp_path, ["SRR1039508"]), name="p", local_runtime=rt)
+        prefix = rec.param("HISAT2_INDEX").default
+        assert rec.param("HISAT2_INDEX").value_kind == "prefix"
+        assert PP.check_preconditions(rec) is None
+        for f in Path(prefix).parent.iterdir():
+            f.unlink()
+        r = PP.check_preconditions(rec)
+        assert r["code"] == "pipeline.proof_inputs_missing" and r["missing_inputs"] == [prefix], r
 
 
 class TestRunProof:

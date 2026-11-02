@@ -18,8 +18,8 @@ from pathlib import Path
 # so test monkeypatching on mcp_server reaches us.
 from agent import mcp_server as _ms
 from agent.mcp_server import mcp  # FastMCP app, never monkeypatched
-from agent.models.core_data import (PipelineStep, default_step_tool, fill_template, frozen_image_ref,
-                                    step_template_problems)
+from agent.models.core_data import (THREADS_FORMAT, VALUE_FORMAT, PipelineStep, default_step_tool, fill_template,
+                                    frozen_image_ref, prefix_family, step_template_problems)
 from agent.skills.pipeline_state import validation_key as _validation_key
 from agent.skills.env_manager import is_os_metadata
 from agent.skills.backgroundable import backgroundable
@@ -78,8 +78,10 @@ HOWTO_DOC = """\
     that are not paths (a thread count renders as the stage's cpu request; a URL or a path
     inside the image is text, never staged; a samplesheet is the pipeline's own); a path
     on this machine written into the command is a slot that was not declared. A command
-    with no slot is a legal fixed step. A path-valued binding that exists is an input of
-    the step (I8 traces it) without being repeated in `inputs`.
+    with no slot is a legal fixed step. A path-valued binding is an input of the step (I8
+    traces it) without being repeated in `inputs`: a file or a directory by its path, an
+    index prefix (`-x {INDEX}` bound to `/…/chr22`, the family `chr22.*.ht2` beside it) by
+    its directory, so a container sees it and the seal traces it.
 
     ONE WORKING DIRECTORY PER SAMPLE. Run a sample's steps with the same `watch_dir` and
     read an earlier step's file as `{OUTPUT_DIR}/<name>`; binding a slot to a file a
@@ -104,16 +106,29 @@ def _howto_refusal(code: str, command: str, bindings: dict, formats: dict, pipel
     return None
 
 
-def _bound_inputs(inputs: list, bindings: dict) -> list:
-    """The step's inputs: what the caller declared plus every path-valued binding that
-    exists on disk (a bound file IS an input; nobody should have to say it twice)."""
+def _bound_inputs(inputs: list, bindings: dict, formats: dict) -> list:
+    """The step's inputs: what the caller declared plus every path-valued binding on disk
+    (a bound file IS an input; nobody should have to say it twice): a file or a directory
+    by its path, an index prefix (`/ref/idx/chr22` naming `chr22.1.ht2` …) by its FAMILY'S
+    DIRECTORY — what the step reads, what a container must see, what I8 traces to the
+    registered reference or the preparation step that built it. A slot declared `threads`
+    or `value` is text, never an input."""
     out = [i for i in (inputs or [])]
     declared = {(i.get("path") if isinstance(i, dict) else i) for i in out}
-    for v in (bindings or {}).values():
+    text = {slot for slot, fmt in (formats or {}).items() if fmt in (THREADS_FORMAT, VALUE_FORMAT)}
+    for slot, v in (bindings or {}).items():
         s = str(v)
-        if s.startswith("/") and s not in declared and Path(s).exists():
-            out.append(s)
-            declared.add(s)
+        if slot in text or not s.startswith("/"):
+            continue
+        if Path(s).exists():
+            add = s
+        elif prefix_family(s):
+            add = str(Path(s).parent)
+        else:
+            continue
+        if add not in declared:
+            out.append(add)
+            declared.add(add)
     return out
 
 
@@ -170,8 +185,10 @@ def run_pipeline_step(
     that are not paths (a thread count renders as the stage's cpu request; a URL or a path
     inside the image is text, never staged; a samplesheet is the pipeline's own); a path
     on this machine written into the command is a slot that was not declared. A command
-    with no slot is a legal fixed step. A path-valued binding that exists is an input of
-    the step (I8 traces it) without being repeated in `inputs`.
+    with no slot is a legal fixed step. A path-valued binding is an input of the step (I8
+    traces it) without being repeated in `inputs`: a file or a directory by its path, an
+    index prefix (`-x {INDEX}` bound to `/…/chr22`, the family `chr22.*.ht2` beside it) by
+    its directory, so a container sees it and the seal traces it.
 
     ONE WORKING DIRECTORY PER SAMPLE. Run a sample's steps with the same `watch_dir` and
     read an earlier step's file as `{OUTPUT_DIR}/<name>`; binding a slot to a file a
@@ -219,7 +236,7 @@ def run_pipeline_step(
         watch_dir, created = _fresh_step_dir(), True
     watch_dir_created = created or _ensure_watch_dir(watch_dir)
     work_dir = str(Path(watch_dir).resolve())
-    inputs = _bound_inputs(inputs, bindings)
+    inputs = _bound_inputs(inputs, bindings, formats)
     # THE TEMPLATE IS WHAT THE CALLER WROTE; the literal command is what runs.
     template, command = command, fill_template(command, bindings, work_dir)
 
@@ -453,8 +470,10 @@ def run_step_in_container(
     that are not paths (a thread count renders as the stage's cpu request; a URL or a path
     inside the image is text, never staged; a samplesheet is the pipeline's own); a path
     on this machine written into the command is a slot that was not declared. A command
-    with no slot is a legal fixed step. A path-valued binding that exists is an input of
-    the step (I8 traces it) without being repeated in `inputs`.
+    with no slot is a legal fixed step. A path-valued binding is an input of the step (I8
+    traces it) without being repeated in `inputs`: a file or a directory by its path, an
+    index prefix (`-x {INDEX}` bound to `/…/chr22`, the family `chr22.*.ht2` beside it) by
+    its directory, so a container sees it and the seal traces it.
 
     ONE WORKING DIRECTORY PER SAMPLE. Run a sample's steps with the same `watch_dir` and
     read an earlier step's file as `{OUTPUT_DIR}/<name>`; binding a slot to a file a
@@ -491,7 +510,7 @@ def run_step_in_container(
         return _bad
     if (_bad := _howto_refusal("run_container.howto_invalid", command, bindings, formats, pipeline_id)):
         return _bad
-    inputs = _bound_inputs(inputs, bindings)
+    inputs = _bound_inputs(inputs, bindings, formats)
     # The SERVING question, not "is there a record?". This step's whole purpose is
     # `validated == shipped` — recording a run inside the shipped image AS evidence.
     # Running in an image whose own Layer-1 contract no longer holds would launder an

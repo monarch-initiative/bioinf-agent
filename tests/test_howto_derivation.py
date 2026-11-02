@@ -271,3 +271,55 @@ class TestTheBareShape:
         main = render_pipeline_files(rec)["main.nf"]
         assert 'samtools sort -o ${meta.sample}.sorted.bam ${meta.sample}.sam' in main
         assert 'tuple val(meta), path("${meta.sample}.counts.txt"), emit: counts_txt' in main
+
+
+class TestThePrefixFamily:
+    """One reading of an index prefix: the files named after a value that is itself nothing
+    on disk (`/ref/idx/chr22` for `chr22.1.ht2` …)."""
+
+    def test_a_prefix_names_the_files_beside_it_and_nothing_else_is_one(self, tmp_path):
+        from agent.models.core_data import prefix_family
+        idx = tmp_path / "idx"
+        idx.mkdir()
+        fam = [idx / f"chr22.{i}.ht2" for i in (1, 2, 8)]
+        for f in fam:
+            f.write_text("x")
+        (idx / "chr22b.fa").write_text("x")          # shares the letters, not the family
+        (idx / "chr22.notes").mkdir()                 # a directory is not a member
+        assert prefix_family(f"{idx}/chr22") == sorted(str(f) for f in fam)
+        assert prefix_family(str(fam[0])) == []        # a file is a file
+        assert prefix_family(str(idx)) == []           # a directory is a directory
+        assert prefix_family(f"{idx}/chr21") == []     # no family
+        assert prefix_family(f"{tmp_path}/gone/chr22") == []
+        assert prefix_family("chr22") == [] and prefix_family("{INDEX}") == [] and prefix_family(None) == []
+
+    def test_the_run_call_admits_a_prefix_by_its_directory_and_a_text_slot_never(self, tmp_path):
+        """c3: `-x {INDEX}` bound to a HISAT2 prefix was no input, so the container never saw
+        the index's directory and hisat2 reported it missing."""
+        from agent.mcp_tools import run_tools as R
+        idx = tmp_path / "idx"
+        idx.mkdir()
+        for i in (1, 2):
+            (idx / f"chr22.{i}.ht2").write_text("x")
+        reads = tmp_path / "A_R1.fastq.gz"
+        reads.write_text("x")
+        inside = tmp_path / "inside_the_image"
+        inside.mkdir()
+        got = R._bound_inputs([], {"THREADS": "4", "INDEX": f"{idx}/chr22", "R1": str(reads), "DB": str(inside),
+                                   "SAMPLE": "A", "LONE": f"{tmp_path}/nothing"},
+                              {"THREADS": "threads", "DB": "value"})
+        assert got == [str(idx), str(reads)], got
+        assert R._bound_inputs([str(reads)], {"R1": str(reads)}, {}) == [str(reads)], "declared once, listed once"
+
+
+class TestTheDerivedInputFormat:
+    def test_the_format_is_the_last_extension_with_its_compression_a_directory_or_a_prefix(self, tmp_path):
+        idx = tmp_path / "idx"
+        idx.mkdir()
+        (idx / "chr22.1.ht2").write_text("x")
+        f = sw._input_format
+        assert f("GTF", ["/r/gencode.v47.basic.chr22.gtf"], {}) == "gtf"
+        assert f("VCF", ["/r/sample.vcf.gz"], {}) == "vcf.gz" and f("R1", ["/r/x_10K_R1.fastq.gz"], {}) == "fastq.gz"
+        assert f("A", ["/r/bundle.tar.gz"], {}) == "tar.gz" and f("B", ["/r/README"], {}) is None
+        assert f("D", [str(idx)], {}) == "directory" and f("I", [f"{idx}/chr22"], {}) == "prefix"
+        assert f("T", ["4"], {"T": "threads"}) == "threads" and f("S", ["A"], {}) is None

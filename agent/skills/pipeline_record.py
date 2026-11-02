@@ -828,6 +828,11 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         # address, a path inside the image); otherwise a slash makes it a path to stage
         value_kind = ("value" if fmt_declared == VALUE_FORMAT
                       else "path" if any(core_data.is_path_like(v) for v in given) else "value")
+        if value_kind == "path" and kind == "shared" and (family := core_data.prefix_family(v0)):
+            # an index: the value names a family of files, staged whole, named in the task by its stem
+            value_kind = "prefix"
+            shown = ", ".join(Path(f).name for f in family[:3]) + (", …" if len(family) > 3 else "")
+            notes.append(f"{ph}: a prefix — {len(family)} file(s) named after it sit beside it ({shown})")
         if value_kind == "path" and len(given) < len(values):
             raise PipelineDerivationError(
                 "pipeline.optional_path",
@@ -837,7 +842,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         source = "usage_input" if ph in declared_inputs else "literal"
         if value_kind == "value":
             source = "literal"
-        if kind == "shared" and value_kind == "path":
+        if kind == "shared" and value_kind in ("path", "prefix"):
             for rd in ref_dbs:
                 lp = str(rd.get("local_path") or "")
                 if lp and (v0 == lp or v0.startswith(lp.rstrip("/") + "/")):
@@ -926,7 +931,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     for s in unmatched:
         outs = [str(o) for o in (s.get("detected_outputs") or [])]
         for p in params:
-            if p.kind != "shared" or p.value_kind != "path" or not p.default:
+            if p.kind != "shared" or p.value_kind not in ("path", "prefix") or not p.default:
                 continue
             v = p.default
             exact = any(o == v or str(Path(o).parent) == v.rstrip("/") for o in outs)

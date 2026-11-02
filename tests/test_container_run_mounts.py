@@ -40,10 +40,11 @@ def _container_run(monkeypatch, tmp_path):
                 "resource_usage": {"wall_seconds": 0.01, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0}}
     monkeypatch.setattr(m._docker, "run_in_container", _fake_run)
 
-    def _run(inputs, watch_dir, data_dir="", extra_mounts=()):
-        out = R.run_step_in_container(pipeline_id=pid, freeze_request_key="k", command="tool",
+    def _run(inputs, watch_dir, data_dir="", extra_mounts=(), command="tool", bindings=None, formats=None):
+        out = R.run_step_in_container(pipeline_id=pid, freeze_request_key="k", command=command,
                                       inputs=list(inputs), watch_dir=str(watch_dir), data_dir=data_dir,
-                                      extra_mounts=list(extra_mounts))
+                                      extra_mounts=list(extra_mounts), bindings=dict(bindings or {}),
+                                      formats=dict(formats or {}))
         return out, seen.get("mounts", [])
     return _run
 
@@ -72,6 +73,20 @@ def test_a_path_already_under_a_mount_adds_no_second_mount(_container_run, tmp_p
     out, mounts = _container_run([str(data / "reads" / "r1.fq")], data / "out", data_dir=str(data))
     assert out["code"] == "run_container.step_ran", out
     assert [Path(h) for h, _ in mounts] == [data.resolve()], mounts
+
+
+def test_an_index_prefix_binding_mounts_the_familys_directory(_container_run, tmp_path):
+    """c3: `hisat2 -x {INDEX}` bound to `…/hisat2_chr22_index/chr22`, a prefix of
+    `chr22.1.ht2` …; nothing exists at the value, so its directory was never mounted and
+    hisat2 reported the index missing inside the container."""
+    idx = tmp_path / "common_data" / "hisat2_chr22_index"
+    idx.mkdir(parents=True)
+    for i in range(1, 9):
+        (idx / f"chr22.{i}.ht2").write_text("x")
+    out, mounts = _container_run([], tmp_path / "crun_A", data_dir=str(tmp_path / "data"),
+                                 command="hisat2 -x {INDEX} -S {OUTPUT_DIR}/a.sam", bindings={"INDEX": f"{idx}/chr22"})
+    assert out["code"] == "run_container.step_ran", out
+    assert idx.resolve() in [Path(h) for h, _ in mounts], mounts
 
 
 def test_a_missing_input_is_not_a_mount_to_invent(tmp_path):

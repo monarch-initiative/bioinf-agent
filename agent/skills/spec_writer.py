@@ -454,9 +454,15 @@ def _templatize(name: str, bindings: Mapping[str, str], slots: set[str]) -> str:
     return out
 
 
+#: A compression extension rides on the format it wraps: `vcf.gz`, never `gz`.
+_COMPRESSION = ("gz", "bgz", "bz2", "xz", "zst")
+
+
 def _input_format(slot: str, values: list[str], formats: Mapping[str, str]) -> Optional[str]:
     """The format a derived input states: the declared one, else what the bound values
-    look like (a directory, a file's suffix chain), else nothing."""
+    look like — a directory, a prefix naming a family of files (an index), or a file's
+    extension with its compression (`gencode.v47.basic.chr22.gtf` is `gtf`, `x.vcf.gz` is
+    `vcf.gz`) — else nothing."""
     if slot in formats:
         return formats[slot]
     for v in values:
@@ -465,9 +471,13 @@ def _input_format(slot: str, values: list[str], formats: Mapping[str, str]) -> O
         p = Path(v)
         if p.is_dir():
             return "directory"
-        suffixes = "".join(p.suffixes).lstrip(".").lower()
-        if suffixes:
-            return suffixes
+        if _core_data.prefix_family(v):
+            return "prefix"
+        exts = [s.lstrip(".").lower() for s in p.suffixes if s.lstrip(".")]
+        if len(exts) > 1 and exts[-1] in _COMPRESSION:
+            return ".".join(exts[-2:])
+        if exts:
+            return exts[-1]
     return None
 
 
