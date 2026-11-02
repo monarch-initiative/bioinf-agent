@@ -117,9 +117,10 @@ def run_proof(record: PipelineRecord, pipeline_dir: Path, *, files: list[str],
     """Run the rendered directory once over the sealed samples and say what happened.
 
     `files` are the rendered files (relative paths) to carry into the proof directory —
-    the manifest's set, so the proof runs exactly what was written. The run's `runs/<stamp>/`
-    is moved into `pipeline_dir` whatever the verdict; the rest of the proof (work/,
-    results/) stays under scratch."""
+    the manifest's set, so the proof runs exactly what was written. When the proof passes,
+    the run's `runs/<stamp>/` moves into `pipeline_dir`: the template carries its own proof.
+    A failed run's records stay in the proof directory beside its work/ and results/, where
+    the diagnosis is."""
     stamp = _stamp()
     proof_dir = workspace.scratch_dir("pipeline_proofs", record.name, stamp)
     for rel in files:
@@ -148,18 +149,17 @@ def run_proof(record: PipelineRecord, pipeline_dir: Path, *, files: list[str],
                    (e.stderr or b"").decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
     duration = time.monotonic() - started
     run_rel = f"runs/{stamp}"
-    src_run = proof_dir / run_rel
-    if src_run.is_dir():
-        dst_run = pipeline_dir / run_rel
-        dst_run.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src_run), str(dst_run))
-    else:
-        (pipeline_dir / run_rel).mkdir(parents=True, exist_ok=True)
-    (pipeline_dir / run_rel / "proof.stdout").write_text(out[-20000:])
-    (pipeline_dir / run_rel / "proof.stderr").write_text(err[-20000:])
-    tasks = read_trace(pipeline_dir / run_rel / "trace.txt")
+    run_dir = proof_dir / run_rel
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "proof.stdout").write_text(out[-20000:])
+    (run_dir / "proof.stderr").write_text(err[-20000:])
+    tasks = read_trace(run_dir / "trace.txt")
     expected = _expected_tasks(record)
     verdict, reason = _verdict(rc, tasks, expected, timed_out)
+    if verdict == "passed":
+        dst_run = pipeline_dir / run_rel
+        dst_run.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(run_dir), str(dst_run))
     return PipelineProof(
         verdict=verdict, reason=reason, stamp=stamp, run_dir=str(proof_dir), run_record=run_rel,
         launch=launch, samples=[r.get("sample", "") for r in record.samplesheet.rows],

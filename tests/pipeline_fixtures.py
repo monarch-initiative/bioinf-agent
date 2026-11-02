@@ -393,10 +393,36 @@ def probe_spec(templates: list[str], trials: list[tuple[str, dict]], outputs: li
 
 # ── the proof, faked for the tests that render without docker or nextflow ────
 
+def sealed_spec_on_disk(tmp_path, samples: Optional[list[str]] = None, *, reference: bool = True):
+    """`sealed_rnaseq_spec` with its data under `tmp_path` and ON DISK: the reads, the GTF,
+    and the HISAT2 index as the family `chr22.1.ht2 … chr22.8.ht2` with nothing at the
+    prefix itself — built outside the record (no preparation step) and, with `reference`,
+    registered as a reference database by its directory. For the readers that look at the
+    disk: the run tools' inputs, the render's classification, the proof's preconditions."""
+    import json
+    from agent.models.core_data import WorkflowSpec
+    spec = sealed_rnaseq_spec(samples, with_index_step=False)
+    root = Path(tmp_path) / "data"
+    d = json.loads(json.dumps(spec.model_dump(mode="json")).replace("/data/", f"{root}/"))
+    idx = root / "idx"
+    idx.mkdir(parents=True)
+    for i in range(1, 9):
+        (idx / f"chr22.{i}.ht2").write_text("x")
+    (root / "annotation").mkdir()
+    (root / "annotation" / "chr22.gtf").write_text("chr22\tx\tgene\t1\t2\t.\t+\t.\tgene_id \"g\";\n")
+    (root / "reads").mkdir()
+    for s in (samples if samples is not None else SAMPLES):
+        (root / "reads" / f"{s}_10K_R1.fastq.gz").write_bytes(b"\x1f\x8b")
+    if reference:
+        d["reference_databases"] = [{"name": "hisat2_chr22", "version": "47", "local_path": str(idx), "available": True}]
+    return WorkflowSpec.model_validate(d)
+
+
 def fake_proof(monkeypatch, verdict: str = "passed", tasks_per_row: int = 1):
     """Stand in for the render's proof run: the preconditions pass and `run_proof` reports
     `verdict` with one COMPLETED task per per-sample stage and sample, writing the run's
-    record directory the real proof would leave. Returns the list of calls made."""
+    record directory where the real proof leaves it (in the pipeline directory on a pass,
+    in the scratch proof directory on a failure). Returns the list of calls made."""
     from agent.skills import pipeline_proof as PP
     from agent.skills.pipeline_record import PipelineProof, ProofTask
     calls: list[dict] = []
@@ -407,15 +433,18 @@ def fake_proof(monkeypatch, verdict: str = "passed", tasks_per_row: int = 1):
     def _run(record, pipeline_dir, *, files, timeout_s=PP.PROOF_TIMEOUT_S_DEFAULT):
         calls.append({"record": record, "pipeline_dir": Path(pipeline_dir), "files": list(files), "timeout_s": timeout_s})
         stamp = "20261028_120000"
-        (Path(pipeline_dir) / "runs" / stamp).mkdir(parents=True, exist_ok=True)
-        (Path(pipeline_dir) / "runs" / stamp / "trace.txt").write_text("task_id\tname\tstatus\texit\n")
+        from agent.skills import workspace
+        proof_dir = Path(workspace.scratch_dir("pipeline_proofs", record.name, stamp))
+        home = Path(pipeline_dir) if verdict == "passed" else proof_dir
+        (home / "runs" / stamp).mkdir(parents=True, exist_ok=True)
+        (home / "runs" / stamp / "trace.txt").write_text("task_id\tname\tstatus\texit\n")
         rows = record.samplesheet.rows
         tasks = [ProofTask(name=f"{s.name} ({r.get('sample', '')})" if s.scope == "per_sample" else s.name,
                            status="COMPLETED" if verdict == "passed" else "FAILED",
                            exit="0" if verdict == "passed" else "1", realtime="1s", peak_rss="10 MB",
                            container=s.image or "")
                  for s in record.stages for r in (rows if s.scope == "per_sample" else [{}])]
-        return PipelineProof(verdict=verdict, reason="faked", stamp=stamp, run_dir=str(Path(pipeline_dir) / "_proof"),
+        return PipelineProof(verdict=verdict, reason="faked", stamp=stamp, run_dir=str(proof_dir),
                              run_record=f"runs/{stamp}", launch="nextflow run main.nf -profile local",
                              samples=[r.get("sample", "") for r in rows], tasks_expected=len(tasks), tasks=tasks,
                              nextflow_exit=0 if verdict == "passed" else 1, duration_s=1.0)

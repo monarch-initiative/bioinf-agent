@@ -312,14 +312,18 @@ def write_record_files(record: PipelineRecord, out_dir: Path) -> list[str]:
 
 
 def remove_render(out_dir: Path, files: list[str]) -> None:
-    """Take a render back: the files it wrote and its record directory, and the directory
-    itself when nothing else is in it. A run's own `runs/`, `results/` and `work/` and the
-    user's files are never touched."""
-    out_dir = Path(out_dir)
+    """Take a render back: the files it wrote, the directories only they filled (`bin/`,
+    the record directory), and the directory itself when nothing else is in it. A run's
+    own `runs/`, `results/` and `work/` and the user's files are never touched."""
+    out_dir = Path(out_dir).resolve()
     for rel in files:
         p = out_dir / rel
         if p.is_file():
             p.unlink()
+        d = p.parent
+        while d != out_dir and d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+            d = d.parent
     rec = out_dir / RECORD_DIR
     if rec.is_dir() and not any(rec.iterdir()):
         rec.rmdir()

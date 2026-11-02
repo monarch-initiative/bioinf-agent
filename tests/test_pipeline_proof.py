@@ -143,6 +143,10 @@ class TestRunProof:
         proof = PP.run_proof(rec, pdir, files=[], timeout_s=10)
         assert proof.verdict == "failed" and "HTSEQ_COUNT (SRR1039508) (FAILED, exit 1)" in proof.reason
         assert proof.nextflow_exit == 1
+        run = Path(proof.run_dir) / proof.run_record
+        assert (run / "trace.txt").is_file() and (run / "proof.stderr").read_text() == "err", \
+            "a failed run's records stay beside its work/, where the remedy points"
+        assert not (pdir / "runs").exists(), "nothing of a failed proof lands in the pipeline directory"
         self._fake_run(monkeypatch, timeout=True)
         proof = PP.run_proof(rec, pdir, files=[], timeout_s=10)
         assert proof.verdict == "timed_out" and proof.nextflow_exit is None
@@ -178,9 +182,9 @@ class TestTheTool:
         out = PT.render_pipeline(sealed_workflow=sealed)
         assert out["outcome"] == "broke" and out["code"] == "pipeline.proof_failed", out
         assert out["proof"]["verdict"] == "failed" and "render again" in out["remedy"]
-        d = workspace.pipelines_dir() / sealed
-        assert not (d / "main.nf").exists() and not (d / ".pipeline" / "pipeline.yaml").exists()
-        assert (d / "runs").is_dir(), "the run's records stay for diagnosis"
+        assert not (workspace.pipelines_dir() / sealed).exists(), "a failed proof leaves no pipeline directory"
+        run = Path(out["proof"]["run_dir"]) / out["proof"]["run_record"]
+        assert (run / "trace.txt").is_file() and f"read {run}/" in out["remedy"], out["remedy"]
 
     def test_a_precondition_refuses_before_a_file_is_written(self, sealed, monkeypatch):
         from agent import mcp_server as _ms
