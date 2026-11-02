@@ -40,6 +40,29 @@ def test_an_image_that_built_and_failed_its_evidence_is_an_evidence_failure():
     assert r["build"]["image_digest"].startswith("sha256:")
 
 
+def test_a_cheat_shaped_verify_command_is_refused_naming_the_install_step_that_recorded_it():
+    """Five freezes refused the same piped verify_command while the caller changed `evidence=`
+    each time: the check came from the jar install, and nothing said so."""
+    piped = "exomiser --help 2>&1 | grep -i exomiser"
+    br = {"success": False, "code": "env_build.evidence_shape", "stage": "evidence_preflight",
+          "tool": "exomiser", "label": "exomiser", "evidence": piped,
+          "error": f"evidence {piped!r} pipes into another command, and a pipeline exits with its LAST stage's status"}
+    draft = {"install_steps": [
+        {"step": 1, "tool": "install_conda_packages", "returncode": 0, "command": "conda install openjdk=21",
+         "installed_packages": []},
+        {"step": 2, "tool": "install_jar_tool", "returncode": 0, "command": "install_jar_tool --jar-url https://x/e.zip",
+         "installed_packages": [{"name": "exomiser", "version": "15.1.0",
+                                 "install_method": {"type": "jar", "source": "https://x/e.zip", "verify_command": piped}}]}]}
+    r = ft._build_failure(br, draft, [], "k", {}, {})
+    assert r["outcome"] == "refused" and r["code"] == "freeze.evidence_shape" and r["stage"] == "evidence_preflight"
+    assert r["check"] == piped and "pipes into another command" in r["error"]
+    assert r["recorded_by"] == "install step 2's verify_command"
+    assert "step=2" in r["remedy"] and "evidence={'exomiser'" in r["remedy"]
+    # a shape that came with evidence= itself is blamed on evidence=
+    r = ft._build_failure({**br, "evidence": "true || exomiser --help"}, draft, [], "k", {}, {})
+    assert r["code"] == "freeze.evidence_shape" and r["recorded_by"] == "evidence=" and "step=" not in r["remedy"]
+
+
 def test_two_violations_are_both_in_the_error():
     br = _built_br()
     br["honesty_violations"].append({"invariant": "VALIDATED_IN_IMAGE.discriminates",
