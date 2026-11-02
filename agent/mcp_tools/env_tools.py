@@ -1073,6 +1073,17 @@ def install_jar_tool(
     up automatically and the spec ends up with install_method.type=jar.
     """
     flags = list(java_flags) if java_flags else ["-Xmx4g"]
+    # The recipe downloads the jar AGAIN inside the build container, where this machine's
+    # files do not exist: only a URL the build can fetch is a reproducible source.
+    from urllib.parse import urlparse as _urlparse
+    scheme = (_urlparse(jar_url).scheme or "").lower()
+    if scheme not in ("http", "https", "ftp"):
+        return refused("env_manager.jar_url_not_fetchable", success=False,
+                       error=f"jar_url {jar_url!r} is not a URL the image build can fetch "
+                             f"({'scheme ' + scheme if scheme else 'no scheme'}): freeze downloads the jar again "
+                             f"inside the build container, where a file on this machine does not exist",
+                       remedy="pass the URL the authors publish for the release (https://…); a jar already on "
+                              "disk is not a reproducible source")
     result = _ms._env_mgr.install_jar_tool(
         env_name      = env_name,
         tool_name     = tool_name,
