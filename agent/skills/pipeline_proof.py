@@ -11,8 +11,10 @@ Nextflow's exit status and its trace — every expected task completed with exit
 written into the record (`PipelineRecord.proof`), which the page renders.
 
 What stops a proof before anything is written is said as a refusal: no local Nextflow
-runtime, a stage image absent from the daemon, a sealed input path missing. A proof that
-fails leaves no pipeline directory; its run stays under scratch for diagnosis.
+runtime, a stage image absent from the daemon, a sealed input path missing, a sealed
+reference whose bytes are not the ones the workflow was sealed with (the production
+launch's own comparison, `data_pins`, read here as a refusal). A proof that fails leaves
+no pipeline directory; its run stays under scratch for diagnosis.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from agent.skills import workspace
+from agent.skills import data_pins, workspace
 from agent.skills.outcomes import refused
 from agent.skills.pipeline_record import PipelineProof, PipelineRecord, ProofTask
 
@@ -42,8 +44,9 @@ def _stamp() -> str:
 
 def check_preconditions(record: PipelineRecord) -> Optional[dict]:
     """What would stop the proof, said before a file is written: the runtime, every
-    stage's image in the local daemon, every sealed input on this machine. Returns the
-    refusal (an outcome payload with its code and remedy) or None."""
+    stage's image in the local daemon, every sealed input on this machine, and every
+    sealed reference with the content it was sealed with. Returns the refusal (an outcome
+    payload with its code and remedy) or None."""
     from agent.skills import run_production as rp
     rt = record.local_runtime
     if rt is None or not Path(rt.activate).is_file():
@@ -73,6 +76,20 @@ def check_preconditions(record: PipelineRecord) -> Optional[dict]:
                        missing_inputs=res.get("missing_inputs", []),
                        remedy="the proof runs over the sealed samples' own files; restore them (or re-seal on data "
                               "that is here) and render again")
+    # The proof runs over the sealed inputs THEMSELVES, so a reference whose bytes changed
+    # since the seal would prove a different pipeline. The production launch already
+    # compares every shared reference it binds with the seal's anchor; the same reading,
+    # on this machine, is a refusal here (a reference the seal never pinned is stated by
+    # the launch, not refused).
+    pins = rp._reference_check(record, shared, locus="local", env={}, timeout=0, prefixes=prefixes)
+    bad = [f for f in pins.get("findings", []) if f.get("verdict") == data_pins.DIVERGED]
+    if bad:
+        return refused("pipeline.proof_inputs_diverged", success=False,
+                       error=f"{len(bad)} sealed reference(s) on this machine are not what the workflow was sealed "
+                             f"with: " + "; ".join(f"{f['path']} ({f.get('reason', '')})" for f in bad[:5]),
+                       diverged=[f["path"] for f in bad],
+                       remedy="restore the sealed file, or re-seal on the data that is here, and render again: "
+                              "the proof runs over the sealed samples' own inputs")
     return None
 
 

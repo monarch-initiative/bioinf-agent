@@ -110,6 +110,30 @@ class TestPreconditions:
         r = PP.check_preconditions(rec)
         assert r["code"] == "pipeline.proof_inputs_missing" and r["missing_inputs"] == [prefix], r
 
+    def test_a_sealed_reference_whose_content_changed_refuses_before_the_proof(self, monkeypatch, tmp_path):
+        """The production launch compares every shared reference it binds with the seal's
+        anchor; the proof runs over the sealed inputs themselves, so the same reading
+        refuses a reference whose bytes are not the sealed ones."""
+        from agent.models.core_data import WorkflowSpec, sha256_text
+        from agent.skills import run_production as rp
+        rt = pr.LocalRuntime(activate=str(tmp_path / "a.sh"), nextflow=str(tmp_path / "nf"))
+        (tmp_path / "a.sh").write_text("")
+        (tmp_path / "nf").write_text("")
+        monkeypatch.setattr(rp, "_docker_image_present", lambda image: True)
+        gtf = tmp_path / "data" / "annotation" / "chr22.gtf"
+        d = sealed_spec_on_disk(tmp_path, ["SRR1039508"]).model_dump(mode="json")
+        d["reference_databases"].append({"name": "gencode", "version": "47", "local_path": str(gtf), "available": True,
+                                         "sha256": sha256_text(gtf.read_text()), "size_bytes": gtf.stat().st_size})
+        spec = WorkflowSpec.model_validate(d)
+        out = write_workflow_spec(spec.model_dump(), {}, env_name="rnaseq_cli")
+        assert "workflow_spec_path" in out, out
+        rec = pr.derive_pipeline_record(spec, name="p", spec_path=out["workflow_spec_path"], local_runtime=rt)
+        assert PP.check_preconditions(rec) is None
+        gtf.write_text("a different annotation\n")
+        r = PP.check_preconditions(rec)
+        assert r["code"] == "pipeline.proof_inputs_diverged" and r["diverged"] == [str(gtf)], r
+        assert "re-seal" in r["remedy"]
+
 
 class TestRunProof:
     def _fake_run(self, monkeypatch, *, rc=0, trace=TRACE, timeout=False):
