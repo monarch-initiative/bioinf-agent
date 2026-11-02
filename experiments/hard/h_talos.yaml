@@ -12,7 +12,7 @@ name: h_talos
 tier: C1
 success: frozen
 expect:
-  evidence_depth_min: version
+  evidence: ran
 prompt: |
   Install Talos, the variant prioritisation tool from https://github.com/populationgenomics/talos,
   at its latest release, using the authors' own Dockerfile, and freeze it as a shippable image

@@ -39,6 +39,17 @@ def jar_route(monkeypatch):
     return run
 
 
+def test_a_jar_on_this_machine_is_refused_before_anything_is_installed(monkeypatch):
+    """The recipe fetches the jar again inside the build container; a file:// or bare path
+    reached the freeze as `curl: (37) Couldn't open file` after the install had succeeded."""
+    monkeypatch.setattr(ms._env_mgr, "install_jar_tool",
+                        lambda **kw: pytest.fail("the install ran on an unfetchable jar_url"))
+    for url in ("file:///Users/x/envs/e/share/exomiser/exomiser-cli-15.1.0.jar", "/Users/x/picard.jar"):
+        r = env_tools.install_jar_tool(env_name="e", tool_name="exomiser", jar_url=url)
+        assert (r["outcome"], r["code"]) == ("refused", "env_manager.jar_url_not_fetchable"), r
+        assert "inside the build container" in r["error"] and "authors publish" in r["remedy"]
+
+
 def test_a_verify_that_exits_non_zero_is_degraded_with_both_streams(jar_route):
     r, cached, _ = jar_route("picard --version", 1,
                              stderr="'--version' is not a valid command. See PicardCommandLine -h")

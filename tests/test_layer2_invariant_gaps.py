@@ -5,7 +5,6 @@ Each was reproduced against the live checker before being fixed, and each has th
 same shape: the clause ran, found nothing to object to, and its silence was read
 as a verdict.
 
-  I4  `usage.outputs == []` — the trial is judged on its outputs, so with none
       declared both judgement loops iterate zero times and the trial returns
       ok=True having established only that the command exited 0. `touch` passes.
   I8  the "suffix" fallback was an ANY-DIRECTORY basename match: it refused the
@@ -137,42 +136,6 @@ def test_sidecar_parent_is_full_path_not_basename():
     assert sw._sidecar_parent("/run/x.bam") is None
     assert sw._sidecar_parent(".bai") is None          # nothing left after stripping
     assert sw._sidecar_parent(None) is None
-
-
-# ---------------------------------------------------------------------------
-# I4 — a how-to with nothing declared is not a verified how-to.
-# ---------------------------------------------------------------------------
-
-def _usage(**over) -> dict:
-    u = {"description": "d", "command_template": "tool {IN} -o {OUTPUT_DIR}/x.bam",
-         "inputs": [{"name": "IN"}], "outputs": [{"name": "O", "files": ["*.bam"]}]}
-    u.update(over)
-    return {"usage": u, "conda_env": "bioinf_x"}
-
-
-def test_empty_usage_outputs_is_not_attempted_not_verified():
-    """THE HOLE. Before: ok=True, status='verified', and `usage_verified: True` reached
-    the sealed spec and the run dashboard over a how-to whose results nobody checked."""
-    r = sw.self_test_usage(_usage(outputs=[]), object())
-    assert r["ok"] is False and r["status"] == "not_attempted"
-    assert "usage.outputs is empty" in r["reason"]
-    # ...and the reason must be ACTIONABLE — it names the field and the slot convention.
-    assert "OUTPUT_DIR" in r["reason"]
-
-
-def test_the_declaration_check_precedes_the_environment_excuses():
-    """With no runner AND no declared outputs, the actionable reason is the one the
-    author can fix from where they are. A missing runner is our problem; a missing
-    declaration is theirs."""
-    r = sw.self_test_usage({"usage": dict(_usage(outputs=[])["usage"])}, None)
-    assert "usage.outputs is empty" in r["reason"], r["reason"]
-
-
-def test_not_attempted_does_not_refuse_a_seal():
-    """Deliberate: `not_attempted` is missing evidence, not a broken how-to. It records
-    `usage_verified: False` plus a reason. Turning this hole into a refusal would have
-    made legitimately unsealable-here workflows permanently unsealable."""
-    assert sw.self_test_usage(_usage(outputs=[]), object())["status"] == "not_attempted"
 
 
 # ---------------------------------------------------------------------------

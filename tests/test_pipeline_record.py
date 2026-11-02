@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 from pipeline_fixtures import (DIGEST, GTF, INDEX, REQUEST_KEY, SAMPLES, TEMPLATES,
-                               sealed_rnaseq_spec)
+                               sealed_rnaseq_spec, sealed_spec_on_disk)
 
 from agent.skills import pipeline_record as pr
 
@@ -44,6 +44,21 @@ class TestShapeAndParams:
         assert rec.param("STRANDED").value_kind == "value"
         assert [p.produces_param for p in rec.provenance_steps] == ["HISAT2_INDEX"]
         assert rec.unmatched_steps == []
+
+    def test_a_shared_input_that_is_an_index_prefix_on_disk_is_a_prefix_traced_to_its_reference(self, tmp_path):
+        """c3: the index was built once and registered as a reference database by its
+        directory, and the how-to binds the prefix `…/chr22`. The record stages the family,
+        not a file, and the render reads it as every file named after it."""
+        from agent.skills.pipeline_render_nextflow import render_nextflow
+        rec = pr.derive_pipeline_record(sealed_spec_on_disk(tmp_path), name="rnaseq_counts")
+        idx = rec.param("HISAT2_INDEX")
+        assert idx.value_kind == "prefix" and idx.source == "reference_database:hisat2_chr22"
+        assert rec.provenance_steps == [] and rec.unmatched_steps == []
+        assert any("HISAT2_INDEX: a prefix" in n and "chr22.1.ht2" in n for n in rec.notes), rec.notes
+        main = render_nextflow(rec)["main.nf"]
+        assert 'files("${params.hisat2_index}*")' in main and "${file(params.hisat2_index).name}" in main
+        bare = pr.derive_pipeline_record(sealed_spec_on_disk(tmp_path / "bare", reference=False), name="rnaseq_counts")
+        assert bare.param("HISAT2_INDEX").value_kind == "prefix" and bare.param("HISAT2_INDEX").source == "usage_input"
 
     def test_one_trial_makes_a_one_row_samplesheet_and_reads_are_per_sample_by_format(self):
         rec = pr.derive_pipeline_record(sealed_rnaseq_spec(["SRR1039508"]), name="one")
@@ -432,7 +447,7 @@ class TestDirectoryArtifacts:
 
 def test_the_render_says_which_values_a_value_parameter_was_proven_with():
     rec = pr.derive_pipeline_record(sealed_rnaseq_spec(), name="rnaseq_counts")
-    assert any(n.startswith("STRANDED: shared") and "the self-test ran it with ['reverse'] only" in n
+    assert any(n.startswith("STRANDED: shared") and "the sealed run bound it to ['reverse'] only" in n
                for n in rec.notes), rec.notes
     assert not any(n.startswith("SAMPLE:") and "ran it with" in n for n in rec.notes)
     declared = pr.derive_pipeline_record(sealed_rnaseq_spec(proven=False), name="rnaseq_counts")

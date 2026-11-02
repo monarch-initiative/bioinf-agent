@@ -302,37 +302,26 @@ def _badge(passed: Optional[bool], check: str = "", tool: str = "") -> str:
         return '<span class="badge na">—</span>'
     cls, mark = ("ok", "✓") if passed else ("bad", "✗")
     c = f' <code>{_e(check)}</code>' if check else ""
-    # DISCLOSURE: how deeply the evidence exercised the tool. A shallow proof (version/
-    # import/help = presence only) is labelled so it can't read as a functional run — the
-    # honesty lever the Talos reconstruction slipped past (imported clean, didn't RUN).
-    depth = ""
+    # DISCLOSURE: whether the check RAN the tool or only FOUND it present, read through the
+    # classifier so a check that only finds the tool can never read as a run.
+    kind = ""
     if check:
         try:
-            from agent.skills.env_honesty import evidence_depth, is_shallow_evidence
-            d = evidence_depth(check, tool)
-            # ASK the classifier; never re-derive its answer — a hand-copied depth list
-            # drifts from _SHALLOW_DEPTHS, which matters most on adopted envs, whose
-            # evidence IS a presence check. `unknown` (the classifier declining to
-            # guess) counts as shallow too: rendering it as a functional run would be
-            # an assertion built out of a shrug.
-            shallow = is_shallow_evidence(check, tool) or d == "unknown"
-            depth = (f' <span class="note" title="evidence depth: {d} '
-                     f'({"presence only — not a functional run" if shallow else "runs the tool"})">'
-                     f'{"⚠ " if shallow else ""}{_e(d)}</span>')
+            from agent.skills.env_honesty import EVIDENCE_FOUND, evidence_kind
+            k = evidence_kind(check, tool)
+            found = k == EVIDENCE_FOUND
+            kind = (f' <span class="note" title="{_e(_KIND_WORDS[k])}">'
+                    f'{"⚠ " if found else ""}{_e(k)}</span>')
         except Exception:
-            depth = ""
-    return f'<span class="badge {cls}">{mark}</span>{c}{depth}'
+            kind = ""
+    return f'<span class="badge {cls}">{mark}</span>{c}{kind}'
 
 
-# What each evidence-depth class means to a reader. Keyed by the classifier's own
-# vocabulary; an unlisted class falls back to its name so nothing renders blank.
-_DEPTH_WORDS = {
-    "presence":   "present in the image",
-    "version":    "present and reports a version",
-    "help":       "present and prints its help",
-    "import":     "loads as a library",
-    "functional": "ran on data",
-    "unknown":    "check ran (what it exercised is unclassified)",
+# What each evidence kind means to a reader, keyed by the classifier's own vocabulary.
+# "ran on data" is a sentence only a sealed workflow earns; the ENV report says "ran".
+_KIND_WORDS = {
+    "ran":   "ran in the shipped image",
+    "found": "found present in the shipped image",
 }
 
 
@@ -342,17 +331,15 @@ def _evidence_cell(v: dict, tool: str) -> str:
     under a disclosure. Reads depth through the classifier, never re-derives it —
     a hand-copied depth list drifts from `_SHALLOW_DEPTHS`."""
     from agent.skills.env_honesty import (
-        CONTROL_DISCRIMINATING, CONTROL_UNCHECKED, CONTROL_VACUOUS,
-        evidence_depth, is_shallow_evidence)
+        CONTROL_DISCRIMINATING, CONTROL_UNCHECKED, CONTROL_VACUOUS, EVIDENCE_FOUND,
+        evidence_kind)
     check = v.get("check", "")
     passed = v.get("passed")
     bits: list[str] = []
     if passed:
-        d = evidence_depth(check, tool)
-        shallow = is_shallow_evidence(check, tool) or d == "unknown"
-        words = _DEPTH_WORDS.get(d, d)
-        bits.append('<span class="badge ok">✓</span> ' + _e(words))
-        if shallow:
+        k = evidence_kind(check, tool, v.get("tool_aliases") or ())
+        bits.append('<span class="badge ok">✓</span> ' + _e(_KIND_WORDS.get(k, k)))
+        if k == EVIDENCE_FOUND:
             bits.append('<span class="muted">· not exercised</span>')
     else:
         rc = v.get("rc")
@@ -372,20 +359,14 @@ def _evidence_cell(v: dict, tool: str) -> str:
     return out
 
 
-def _shallow_evidence_tools(r: dict) -> list[str]:
-    """Which of this record's PASSING evidence commands only read as presence.
+def _found_only_tools(r: dict) -> list[str]:
+    """Which of this record's PASSING evidence commands only FOUND the tool present.
 
-    ONE reading, shared by the per-tool badge above and the header summary: computed
-    separately, the table can say `⚠ version` per tool while the header says
+    ONE reading, shared by the per-tool badge and the header summary: computed
+    separately, the table can say `⚠ found` per tool while the header says
     `1/1 validated in image` flat — a page that qualifies its small print and not
-    its headline. Two spellings of one question is how that happens.
-
-    Only PASSING evidence is counted — a failed check is already refusing, and
-    calling it shallow on top would answer a question nobody is asking. `unknown`
-    counts as shallow here for the same reason the badge does: a classifier
-    declining to guess is not a functional run.
-    """
-    from agent.skills.env_honesty import evidence_depth, is_shallow_evidence
+    its headline. Only PASSING evidence is counted: a failed check is already refusing."""
+    from agent.skills.env_honesty import EVIDENCE_FOUND, evidence_kind
     out = []
     for v in (r.get("verifications") or []):
         if not isinstance(v, dict) or not v.get("passed"):
@@ -393,7 +374,7 @@ def _shallow_evidence_tools(r: dict) -> list[str]:
         check, tool = v.get("check", ""), v.get("tool", "")
         if not check:
             continue
-        if is_shallow_evidence(check, tool) or evidence_depth(check, tool) == "unknown":
+        if evidence_kind(check, tool, v.get("tool_aliases") or ()) == EVIDENCE_FOUND:
             out.append(tool or v.get("label", "?"))
     return out
 
@@ -667,7 +648,8 @@ def _created_line(iso: str) -> str:
 
 
 def _tools_line(requested: int, passed: int, total: int, is_adopt: bool, shallow: int) -> str:
-    """The header's one sentence about the requested tools, qualified by evidence depth."""
+    """The header's one sentence about the requested tools, qualified by what each check did
+    (`shallow` = how many only found the tool present)."""
     if requested == 0:
         return "none requested"
     s = f"{requested} requested"
@@ -689,8 +671,7 @@ def _tools_line(requested: int, passed: int, total: int, is_adopt: bool, shallow
             who = "all of them"
         else:
             who = f"{shallow} of them"
-        s += (f". For {who} the check only confirmed the tool is present and reports "
-              f"a version; it did not exercise it")
+        s += f". For {who} the check only found the tool present; it did not run it"
     return s + "."
 
 
@@ -868,7 +849,7 @@ def render_env_report_html(record: dict) -> str:
         _contract_error = ""
 
     # Evidence depth, read ONCE for the pill, the tools line and the per-tool badges.
-    _shallow_tools = _shallow_evidence_tools(r)
+    _shallow_tools = _found_only_tools(r)
 
     P: list[str] = []
     P.append(_open_page(f"Environment report — {name}"))
@@ -887,11 +868,11 @@ def render_env_report_html(record: dict) -> str:
     elif is_adopt:
         pill = '<span class="pill adopt">Adopted by digest</span>'
     elif total and passed == total:
-        # THE HEADLINE CLAIMS WHAT THE EVIDENCE SHOWED. A presence / version / help /
-        # import check proves the tool is IN the image and nothing about whether it
-        # runs; only a check that ran the tool earns "validated". Both are green —
-        # the contract passed either way, and freeze gates on neither depth — but the
-        # strongest sentence on the page must not outrun the Tools table under it.
+        # THE HEADLINE CLAIMS WHAT THE EVIDENCE SHOWED. A check that only finds the
+        # tool present proves it is IN the image and nothing about whether it runs;
+        # only a check that ran the tool earns "validated". Both are green — the
+        # contract passed either way, and freeze gates on neither — but the strongest
+        # sentence on the page must not outrun the Tools table under it.
         if len(_shallow_tools) >= passed:
             pill = '<span class="pill ok">✓ Present in shipped image · not exercised</span>'
         else:
@@ -918,11 +899,9 @@ def render_env_report_html(record: dict) -> str:
     # -- THE TOOLS LINE. The count a reader takes away, and unqualified it can sit
     # over an env whose tool cannot import its own plotting module — `--help`
     # evidence is answered by argparse before any dependency is touched. The
-    # per-tool table badges depth (`⚠ version`); the headline must too, or the
-    # strongest sentence on the page is the least qualified one. The qualifier
-    # says what the check confirmed, not what the tool is: `evidence_depth` is a
-    # structural reading of command TEXT and under-reports a command that loads a
-    # library and then uses it. Under-claiming costs a reader nothing.
+    # per-tool table badges what the check did (`⚠ found`); the headline must too, or
+    # the strongest sentence on the page is the least qualified one. `evidence_kind` is
+    # a structural reading of command TEXT; under-claiming costs a reader nothing.
     tools_line = _tools_line(len(requested), passed, total, is_adopt, len(_shallow_tools))
     also = []
     if ride:

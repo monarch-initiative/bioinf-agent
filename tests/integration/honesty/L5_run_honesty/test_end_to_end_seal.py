@@ -10,8 +10,8 @@ field cheated gets refused.
 This is the "positive path through the full lifecycle" test the suite was
 missing. It uses a programmatically-assembled validated-run draft (real
 on-disk authored artifacts so G1's integrity check passes, real EnvCache
-entry so the freeze pin resolves), monkeypatches the usage self-test to
-short-circuit (no need for a real conda env), and calls seal_workflow.
+entry so the freeze pin resolves, the step recorded with its template so the seal
+derives the how-to; no real conda env is needed), and calls seal_workflow.
 
 CHEAT GUARD LEVELS:
   L5a (run-locus: shipped-image digest match)
@@ -74,16 +74,6 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
         "description":     "Hermetic full-lifecycle seal test.",
         "conda_env":       "bioinf_fake_pkg",
         "python_version":  "3.11",
-        "usage": {
-            # Both placeholders declared in usage.inputs[*].name (I6).
-            "description":      "fake_pkg canonical command.",
-            "command_template": "fake_pkg --in {INPUT} --out {OUTPUT_DIR}/result.txt",
-            "inputs":  [{"name": "INPUT",  "format": "txt"}],
-            "outputs": [{"name": "OUTPUT_DIR", "files": ["*.txt"]}],
-            # One trial binding the input slot (the write requires it); usage_verified
-            # gets short-circuited below via the spec_writer.self_test_usage monkeypatch.
-            "trials":  [{"name": "t", "substitutions": {"INPUT": "/data/in.txt"}}],
-        },
     })
     m._pipeline_state.add_install_step(pipeline_id, {
         "tool": "conda", "subcommand": "install",
@@ -106,6 +96,10 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
         "step": 1, "tool": "fake_pkg", "subcommand": "run",
         "purpose": "Produce output.txt",
         "command": f"fake_pkg --in {art_path} --out {out_path}",
+        # the how-to the step ran, as the run tools record it: the seal derives usage from it
+        "template": "fake_pkg --in {INPUT} --out {OUTPUT_DIR}/result.txt",
+        "bindings": {"INPUT": str(art_path)},
+        "work_dir": str(out_path.parent),
         "returncode": 0,
         "inputs": [{"path": str(art_path)}],
         "outputs": [str(out_path)],
@@ -133,11 +127,6 @@ def _staged_pipeline(tmp_path, monkeypatch, request):
         "hpc_delivery":    {"format": "tarball", "path": "/tmp/fake_pkg.tar"},
     }}))
     monkeypatch.setattr(m._env_cache, "path", cache_path)
-
-    # ---- short-circuit usage self-test (no real conda env on the box) -------
-    from agent.skills import spec_writer
-    monkeypatch.setattr(spec_writer, "self_test_usage",
-                        lambda *_a, **_kw: {"ok": True})
 
     # ---- where the deliverables land ---------------------------------------
     # write_workflow_spec and the Layer-2 {workflow}.RUN.html renderer both write
@@ -297,107 +286,41 @@ def test_e2e_seal_refuses_step_without_resource_usage(_staged_pipeline):
 
 
 @pytest.mark.integration
-def test_e2e_seal_refuses_failed_usage_self_test(_staged_pipeline, monkeypatch):
-    """H2 — I4 now GATES the seal. The draft declares a usage block; if its
-    command_template fails the self-test (doesn't run green against every
-    declared trial), seal must REFUSE rather than write usage_verified=False
-    cosmetically. We override the fixture's short-circuit to simulate a
-    failing template."""
-    pipeline_id, request_key, *_ = _staged_pipeline
-    from agent.skills import spec_writer
-    monkeypatch.setattr(spec_writer, "self_test_usage",
-                        lambda *_a, **_kw: {"ok": False, "status": "failed",
-                                            "reason": "command ran but expected outputs missing"})
-
+def test_e2e_seal_derives_the_howto_from_the_recorded_step(_staged_pipeline):
+    """I4: the how-to IS the run. The spec's usage is the step's template with its bindings
+    as the one trial, its outputs the step's observed outputs, and the verification
+    record says so (source `steps`) and carries the literal command the step ran."""
+    pipeline_id, request_key, art_path, out_path, *_ = _staged_pipeline
     result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
-                              workflow_name="e2e_seal_bad_usage")
-    assert result.get("success") is False, \
-        f"a failing usage self-test must refuse the seal (H2): {result}"
-    assert result.get("stage") == "usage_self_test", \
-        f"refusal should be at the usage_self_test gate: {result}"
-    assert (result.get("usage_self_test") or {}).get("ok") is False
-
-
-@pytest.mark.integration
-def test_e2e_seal_fails_closed_on_an_unrecognized_self_test_shape(_staged_pipeline, monkeypatch):
-    """A self-test result with ok=False and NO `status` must be read as FAILED.
-
-    Reading a missing status as "not failed" turns absence of data into a pass, and it is
-    not hypothetical: when self_test_usage grew three states, this exact shape (the old
-    two-state return) silently disarmed the H2 gate — a seal that should have been refused
-    went green. Fail closed on anything unrecognized.
-    """
-    pipeline_id, request_key, *_ = _staged_pipeline
-    from agent.skills import spec_writer
-    monkeypatch.setattr(spec_writer, "self_test_usage",
-                        lambda *_a, **_kw: {"ok": False, "reason": "legacy two-state shape"})
-    result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
-                              workflow_name="e2e_seal_legacy_shape")
-    assert result.get("success") is False, \
-        f"ok=False with no status must fail closed, not seal: {result}"
-    assert result.get("stage") == "usage_self_test"
-
-
-@pytest.mark.integration
-def test_e2e_seal_records_not_attempted_rather_than_a_fabricated_false(_staged_pipeline, monkeypatch):
-    """`not_attempted` must SEAL (it is missing evidence, not a broken how-to) and must be
-    recorded WITH its reason.
-
-    Before three-state, "we never ran it" and "we ran it and it failed" were both
-    usage_verified=False, and the dashboard rendered that as a verdict on the command. Since
-    seal refuses real failures, every False on disk actually meant "never attempted" — a
-    verdict nobody ever reached.
-    """
-    pipeline_id, request_key, *_ = _staged_pipeline
-    from agent.skills import spec_writer
-    monkeypatch.setattr(spec_writer, "self_test_usage",
-                        lambda *_a, **_kw: {"ok": False, "status": "not_attempted",
-                                            "reason": "inputs live on the cluster"})
-    result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
-                              workflow_name="e2e_seal_not_attempted")
-    assert result.get("success") is True, f"not_attempted must not refuse the seal: {result}"
+                             workflow_name="e2e_seal_derived")
+    assert result.get("success") is True, result
+    assert result["howto_commands"] == 1 and result["samples"] == ["trial_1"]
     import yaml
     spec = yaml.safe_load(open(result["workflow_spec_path"]))
-    assert spec["usage_verified"] is False
+    assert spec["usage"]["command_template"] == ["fake_pkg --in {INPUT} --out {OUTPUT_DIR}/result.txt"]
+    assert [i["name"] for i in spec["usage"]["inputs"]] == ["INPUT"]
+    assert spec["usage"]["outputs"] == [{"name": "OUTPUT_DIR", "files": ["result.txt"]}]
+    assert spec["usage"]["trials"][0]["substitutions"] == {"INPUT": str(art_path)}
     uv = spec["usage_verification"]
-    assert uv["status"] == "not_attempted"
-    assert "cluster" in uv["reason"], "the REASON must survive to the artifact"
-    # ...and the TAG must say so too. A seal whose how-to was never executed proves
-    # strictly less than one whose was, and `proven` cannot express the difference.
-    assert result["outcome"] == "degraded"
-    assert result["code"] == "seal.sealed_howto_unproven"
+    assert uv["status"] == "verified" and uv["source"] == "steps" and spec["usage_verified"] is True
+    assert uv["trials"][0]["commands_run"] == [f"fake_pkg --in {art_path} --out {out_path}"]
+    assert uv["trials"][0]["produced_files"] == ["result.txt"]
+    assert "patch" not in (uv.get("reason") or "").lower()
 
 
 @pytest.mark.integration
-def test_e2e_seal_degrades_when_the_draft_has_no_usage_block(_staged_pipeline):
-    """NO usage block at all — the case that produced a fully green seal over nothing.
-
-    The I4 block was gated behind `if draft.get("usage")`, so with no usage block
-    `usage_detail` stayed None, `usage_verification` was written as None, exclude_none
-    DELETED it, and the terminal returned an unconditional proven("seal.sealed"). Every
-    reader then fell back to the bare `usage_verified: False` — reintroducing the
-    two-states-in-one-bool defect by way of the field being ABSENT rather than wrong.
-    talos_cluster_pytest on disk is exactly that artifact.
-
-    The spec must still be WRITTEN (a validated run with no how-to is a real record) and
-    it must SAY which of the two it is."""
+def test_e2e_seal_refuses_a_step_recorded_without_its_template(_staged_pipeline):
+    """A step recorded by its literal command alone (run_in_env, a record predating
+    bindings) cannot be the how-to: the seal refuses and names the step to re-run,
+    rather than writing a spec with no how-to or a how-to nobody ran."""
     pipeline_id, request_key, *_ = _staged_pipeline
-    m._pipeline_state.mutate_on_disk(pipeline_id, lambda d: d.pop("usage", None))
-
+    m._pipeline_state.mutate_on_disk(pipeline_id, lambda d: [s.pop("template", None) for s in d["pipeline_steps"]])
     result = m.seal_workflow(pipeline_id, freeze_request_key=request_key,
-                             workflow_name="e2e_seal_no_usage")
-    assert result.get("success") is True, f"a validated run must still seal: {result}"
-    assert result["outcome"] == "degraded"
-    assert result["code"] == "seal.sealed_howto_unproven"
-    assert "advisory" in result and result["advisory"]
-
-    import yaml
-    spec = yaml.safe_load(open(result["workflow_spec_path"]))
-    uv = spec.get("usage_verification")
-    assert uv is not None, ("usage_verification was dropped from the artifact — absence "
-                            "is exactly what renders as a verdict downstream")
-    assert uv["status"] == "not_attempted"
-    assert uv["reason"], "the producer must state WHY, not merely that it did not happen"
+                             workflow_name="e2e_seal_untemplated")
+    assert result.get("success") is False
+    assert result["outcome"] == "refused" and result["code"] == "seal.howto_underivable"
+    assert "step 1 (fake_pkg)" in result["error"] and "bindings" in result["error"]
+    assert "workflow_spec_path" not in result, "a refused seal must write no artifact"
 
 
 @pytest.mark.integration
@@ -410,6 +333,7 @@ def test_e2e_seal_tags_a_fully_proven_workflow_proven(_staged_pipeline):
                              workflow_name="e2e_seal_proven_tag")
     assert result["outcome"] == "proven" and result["code"] == "seal.sealed"
     assert result["usage_verification"]["status"] == "verified"
+    assert result["usage_verification"]["source"] == "steps"
 
 
 @pytest.mark.integration

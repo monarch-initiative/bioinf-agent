@@ -98,17 +98,16 @@ def test_every_registered_active_invariant_is_actually_enforced():
         f"registry {sorted(declared_l1)} vs source {sorted(emitted_l1)}")
 
 
-def test_i4_is_registered_as_enforced_somewhere_other_than_the_structural_walk():
-    """I4 needs a RUNNER, so it is not part of the structural walk and emits no
-    I4-prefixed violation — which is precisely why it kept drifting in and out of
-    hand-written rosters. The registry states where it really lives."""
+def test_i4_is_a_walk_clause_over_the_derived_howto():
+    """The how-to is derived from the steps, so I4 no longer needs a runner: it is a
+    structural clause the walk emits, and the seal's own refusal names what stopped the
+    derivation."""
     i4 = reg.REGISTRY["I4"]
     assert i4.status == reg.ACTIVE
-    assert i4.enforced_by.endswith("self_test_usage")
-    assert "I4" not in _emitted_ids("agent/skills/spec_writer.py")
-    # ...and the seam that refuses on it really exists
+    assert i4.enforced_by.endswith("check_workflow_invariants")
+    assert "I4" in _emitted_ids("agent/skills/spec_writer.py")
     wf = (ROOT / "agent" / "mcp_tools" / "workflow_tools.py").read_text()
-    assert "seal.usage_self_test_failed" in wf
+    assert "seal.howto_underivable" in wf and "derive_usage" in wf
 
 
 def test_registry_entries_are_well_formed():

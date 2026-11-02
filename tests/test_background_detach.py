@@ -57,6 +57,10 @@ MINIMAL_ARGS: dict[str, dict] = {
     "seal_workflow": {
         "pipeline_id": "pid-detach", "freeze_request_key": "rk-detach",
         "workflow_name": "detach_wf"},
+    # The render ends with a proof run over every sealed sample: a multi-sample proof
+    # outlasts the stream watchdog.
+    "render_pipeline": {
+        "sealed_workflow": "detach_wf", "name": "detach_pipe"},
     # A directory pulled over Globus outlasts the ~9-minute sync wait: a results tree
     # of tens of thousands of files does, at the rate measured against the cluster.
     "upload": {
@@ -76,6 +80,7 @@ EXPECTED_SLUG = {
     "install_release_binary": "dorado",        # tool_name before env_name
     "run_step_in_container": "samtools",         # `tool` before pipeline_id
     "seal_workflow": "detach_wf",                # workflow_name before pipeline_id
+    "render_pipeline": "detach_pipe",            # name before sealed_workflow
     "upload": "detach_proj",
     "download": "detach_proj",
 }

@@ -20,12 +20,11 @@ _NOT_TOOLS = {"pipeline_id", "outcome", "code", "result", "state", "job_id", "us
               "tools", "evidence", "patches", "github_repo", "background", "wait_s", "exited", "degraded",
               "proven", "refused", "broke", "vanished", "loop", "env_name", "tool", "command", "name",
               "description", "file", "find", "replace", "reason", "where", "grep", "ls", "test",
-              "evidence_timeout_s"}
+              "evidence_timeout_s", "bindings", "formats", "watch_dir"}
 
 #: The protocol, in the order the instructions must give it.
 _PROTOCOL_ORDER = ("agent_status", "interpret_request", "resolve_tool", "start_pipeline", "freeze",
-                   "select_test_data", "run_pipeline_step", "patch_pipeline", "run_step_in_container",
-                   "seal_workflow")
+                   "select_test_data", "run_pipeline_step", "run_step_in_container", "seal_workflow")
 #: The route order: one tool per resolver tier, in the resolver's order.
 _ROUTE_ORDER = ("freeze_from_image", "install_conda_packages", "build_env_from_authors_recipe", "synth_fetch")
 _ROUTE_TIERS = ("author_image", "conda", "authors_recipe", "synthesis")

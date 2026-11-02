@@ -243,7 +243,7 @@ def test_patch_pipeline_blocks_runtime_captured_keys():
     # All of these should be rejected.
     for key in ["pipeline_steps", "install_steps", "packages", "verifications",
                 "docker", "env_status", "pipeline_status", "docker_status",
-                "usage_verified", "lock_sha256"]:
+                "usage_verified", "lock_sha256", "usage"]:
         r = ps.patch("blocked_test", {key: ["whatever"]})
         assert "error" in r, f"patch to {key} should have been rejected; got {r}"
         assert key in (r.get("rejected_keys") or []), \
@@ -261,12 +261,9 @@ def test_patch_pipeline_allows_agent_authored_keys():
     r = ps.patch("allowed_test", {
         "notes": ["hello"],
         "runtime_environment": {"type": "conda"},
-        "usage": {"description": "x", "command_template": "echo {X} > {OUTPUT_DIR}/o.txt",
-                  "inputs": [{"name": "X"}], "outputs": [{"name": "o", "files": ["o.txt"]}],
-                  "trials": [{"name": "t", "substitutions": {"X": "hi"}}]},
     })
     assert "error" not in r, f"agent-authored patch should pass; got {r}"
-    assert set(r["patched_keys"]) == {"notes", "runtime_environment", "usage"}
+    assert set(r["patched_keys"]) == {"notes", "runtime_environment"}
     ps.discard("allowed_test")
 
 
@@ -1631,7 +1628,7 @@ def test_freeze_cache_hit_returns_proven_artifact_by_hash(monkeypatch):
     monkeypatch.setattr(_ms, "_check_disk_failsafe", lambda: None)
     monkeypatch.setattr(_ms, "_check_docker_available", lambda: None)
     monkeypatch.setattr(_ms._env_cache, "lookup_anchored",
-                        lambda rkey, present: {"image": "img", "image_digest": digest,
+                        lambda rkey, present, **kw: {"image": "img", "image_digest": digest,
                                                "content_digest": digest, "mode": "build"})
     out = freeze_tools.freeze(env_name="bioinf_cached_zzz", tools=["samtools=1.21"])
     assert out.get("outcome") == "proven", out
@@ -1653,7 +1650,7 @@ def test_freeze_adopt_honesty_refuses_policy_violating_biocontainer(monkeypatch)
     monkeypatch.setattr(_ms._biocontainers, "resolve_biocontainer",
                         lambda parsed, **k: {"found": True, "digest": digest,
                                              "image_by_digest": f"quay.io/biocontainers/samtools@{digest}"})
-    monkeypatch.setattr(_ms._env_cache, "lookup_anchored", lambda rkey, present: None)
+    monkeypatch.setattr(_ms._env_cache, "lookup_anchored", lambda rkey, present, **kw: None)
     monkeypatch.setattr(_ms, "_check_disk_failsafe", lambda: None)
     monkeypatch.setattr(_ms, "_check_docker_available", lambda: None)
 
@@ -7084,7 +7081,7 @@ def test_freeze_invokes_post_failure_prune_only_when_disk_stressed(monkeypatch, 
     monkeypatch.setattr(ms, "_check_disk_failsafe", lambda min_gb=None: None)
     monkeypatch.setattr(ms._pipeline_state, "get_draft", lambda pid: None)
     monkeypatch.setattr(ms._freeze, "request_key", lambda *a, **kw: "rk")
-    monkeypatch.setattr(ms._env_cache, "lookup_anchored", lambda rk, present: None)
+    monkeypatch.setattr(ms._env_cache, "lookup_anchored", lambda rk, present, **kw: None)
     monkeypatch.setattr(ms._freeze, "compute_content_digest", lambda d: "cd")
     monkeypatch.setattr(ms._biocontainers, "resolve_biocontainer",
                         lambda parsed: {"found": False})
@@ -7194,7 +7191,7 @@ def test_freeze_does_not_prune_on_pre_docker_failure(monkeypatch):
     monkeypatch.setattr(ms, "_check_disk_failsafe", lambda min_gb=None: None)
     monkeypatch.setattr(ms._pipeline_state, "get_draft", lambda pid: None)
     monkeypatch.setattr(ms._freeze, "request_key", lambda *a, **kw: "rk")
-    monkeypatch.setattr(ms._env_cache, "lookup_anchored", lambda rk, present: None)
+    monkeypatch.setattr(ms._env_cache, "lookup_anchored", lambda rk, present, **kw: None)
     monkeypatch.setattr(ms._freeze, "compute_content_digest", lambda d: "cd")
     monkeypatch.setattr(ms._biocontainers, "resolve_biocontainer",
                         lambda parsed: {"found": False})

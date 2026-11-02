@@ -71,14 +71,14 @@ REGISTRY: dict[str, Invariant] = {inv.id: inv for inv in [
          note="exists+non-empty (expected_type='any') is a legitimate primary validation "
               "— the record states validation_method, nothing refuses on depth"),
     _inv(id="I4", layer=LAYER_WORKFLOW, status=ACTIVE,
-         statement="usage.command_template executes against every declared trial and each "
-                   "produced file passes type-aware validation",
-         # NOT check_workflow_invariants: I4 needs a RUNNER (a frozen image or a host env),
-         # so it is a separate execution rather than a structural walk, and seal refuses on
-         # it with `seal.usage_self_test_failed`. Being enforced elsewhere is exactly why
-         # it kept appearing in and disappearing from hand-written rosters.
-         enforced_by="agent.skills.spec_writer.self_test_usage",
-         note="run by seal_workflow; sets usage_verified. Emits no I4-prefixed violation."),
+         statement="every how-to command is the template a validated step ran, every trial "
+                   "the bindings such steps ran with, and the outputs are those steps' validated outputs",
+         enforced_by="agent.skills.spec_writer.check_workflow_invariants",
+         note="The how-to is DERIVED, never authored: spec_writer.derive_usage reads each rc=0 "
+              "step's template, bindings and work_dir into `usage` + `usage_verification` "
+              "(source `steps`), and the walk re-checks a derived block against the steps "
+              "(I4.howto_from_steps, I4.trial_unproven). A block authored before the "
+              "derivation existed is not asked this; it stands as its day's self-test proved it."),
     _inv(id="I5", layer=LAYER_WORKFLOW, status=ACTIVE,
          statement="every declared reference_database still exists, is non-empty, and "
                    "hashes to what was recorded (locus-aware: a cluster DB is checked over ssh)",

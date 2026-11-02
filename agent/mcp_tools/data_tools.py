@@ -530,12 +530,20 @@ def select_test_data(
     `file_format` ("fastq" | "pod5" | "fast5" | …) lets a basecaller pipeline
     pick the raw-signal entry deterministically when both pod5 and the same
     project's basecalled FASTQ exist under the same assay_type. Defaults to
-    "" (don't filter on format)."""
+    "" (don't filter on format).
+
+    A PHENOPACKET IS A PER-SAMPLE INPUT TOO. `assay_type="phenopacket"` selects a
+    registered patient phenopacket (`accession` = its phenopacket id, `sample` = its
+    subject): the block records its JSON under `phenopacket`, anchored like reads, so a
+    step that takes the phenopacket itself traces at seal. Only asked for by that
+    assay_type — a reads request never lands on one."""
     # ONE read of the manifests: the datasets to match against, and the genome each
     # core dir declares (the reference half, below).
     _resources = _ms._list_resources({"resource_type": "both"}, _ms.config)
     all_data = _resources.get("test_data", [])
-    sequencing = [d for d in all_data if d.get("type") not in ("phenopacket", "pipeline_output")]
+    sequencing = [_as_candidate(d) for d in all_data
+                  if d.get("type") != "pipeline_output"
+                  and (d.get("type") != "phenopacket" or assay_type == "phenopacket")]
 
     # SOME CRITERIA SAY *WHAT KIND OF DATA*; OTHERS SAY *WHICH INSTANCE*. Only the
     # second kind are preferences.
@@ -568,8 +576,9 @@ def select_test_data(
 
     if not sequencing:
         return refused("data.no_test_data_on_disk",
-                       error="no sequencing test data on disk — fetch a dataset with "
-                             "add_core_test_data (reads) or add_core_pod5_data (pod5)")
+                       error="no test data on disk — fetch a dataset with add_core_test_data "
+                             "(reads), add_core_pod5_data (pod5) or add_phenopacket (a patient's "
+                             "phenopacket)")
     eligible = [d for d in sequencing if not _unmet(d)]
     if not eligible:
         # EARN THE REFUSAL: say which requirement nothing met, and what IS here, so the
@@ -607,6 +616,7 @@ def select_test_data(
         "num_reads":       best.get("num_reads"),
         "r1":              best.get("r1"),
         "r2":              best.get("r2"),
+        "phenopacket":     best.get("phenopacket"),
         # Pod5 / nanopore extensions — None on conventional FASTQ entries; an
         # empty string on file_format would be the same. Filtered below.
         "file_format":     best.get("file_format") if best.get("file_format") != "fastq" else None,
@@ -668,6 +678,17 @@ def select_test_data(
         if ok:
             result["test_data"] = block
     return result
+
+
+def _as_candidate(d: dict) -> dict:
+    """A manifest entry in the vocabulary the match reads: a phenopacket entry names its
+    id as the accession, its subject as the sample, its JSON under `phenopacket`, and the
+    assay `phenopacket`; every other entry is read as it is."""
+    if d.get("type") != "phenopacket":
+        return d
+    return {**d, "assay_type": "phenopacket", "accession": d.get("phenopacket_id"),
+            "sample": d.get("subject_id"), "phenopacket": d.get("file"),
+            "file_format": "phenopacket"}
 
 
 def _with_added_sample(existing: dict, sample: dict) -> dict:
@@ -757,8 +778,9 @@ _PRIMITIVE_NOTES = {
 
 _BRIEF_HINTS = {
     "I3": "declare types via run_pipeline_step's output_types",
-    "I4": "type-aware validate_output (samtools/bcftools/json.loads/…), so touch-and-hope "
-          "cheats fail; an empty usage.outputs is not_attempted, never verified",
+    "I4": "write each step's command with {UPPER_SNAKE} slots and bindings={SLOT: value} on "
+          "run_pipeline_step / run_step_in_container; the seal derives the how-to from the "
+          "recorded steps, so nothing is typed again and nothing can differ from what ran",
     "I5": "download_reference_database records the sha256; a locus:cluster DB is verified "
           "over ssh against its <path>.source.sha256 sidecar",
     "I7": "populated by run_pipeline_step / run_step_in_container / run_step_on_cluster",
@@ -772,9 +794,8 @@ _BRIEF_HINTS = {
 def _layer2_brief_invariants() -> list:
     """The Layer-2 roster for the brief: every ACTIVE Layer-2 invariant, in id order.
 
-    Includes I4, whose `enforced_by` is the usage self-test rather than the structural
-    walk — being enforced one seam over is exactly why it kept appearing in and vanishing
-    from hand-written rosters, so it is selected by LAYER, not by enforcer."""
+    Selected by LAYER, not by enforcer — a roster built from who enforces what is how I4
+    kept appearing in and vanishing from hand-written lists."""
     from agent.skills import invariants as _reg
     return _reg.active(layer=_reg.LAYER_WORKFLOW)
 
@@ -836,11 +857,11 @@ def install_pipeline_brief(name: str, version: str = "", hints: dict = {}) -> di
     protocol = [
         "1. start_pipeline(pipeline_name) — get pipeline_id; thread it through everything",
         "2. install_*_* primitives — compose the env for this tool; primitives handle category details",
-        "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types). If you write a driver script, generate synthetic test data, or stage a transformed file (BAM/VCF/FASTA) outside MCP, call stage_authored_artifact for each — otherwise the I8 walk treats the file as an orphan input.",
-        "4. patch_pipeline with usage (command_template + inputs + outputs.files globs + trials[] for multi-shape I4 coverage; empty trials => single inferred trial). NOTE: patch_pipeline only accepts agent-authored keys (usage, notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies are runtime-captured and CANNOT be hand-patched — they flow through their dedicated primitives.",
+        "3. select_test_data + run_pipeline_step (auto-validates outputs; pass output_types to declare file types). Write each step's command with {UPPER_SNAKE} slots for its variable parts and bind them in bindings={SLOT: value}, every output through {OUTPUT_DIR}/<name>, one watch_dir per sample: the seal derives the how-to from these. If you write a driver script, generate synthetic test data, or stage a transformed file (BAM/VCF/FASTA) outside MCP, call stage_authored_artifact for each — otherwise the I8 walk treats the file as an orphan input.",
+        "4. patch_pipeline for what no primitive captures (notes, runtime_environment, runtime_configs, reference_databases, description, final_summary). The how-to is never patched: usage is derived at seal. Pipeline_steps / install_steps / packages / verifications / authored_artifacts / service_dependencies are runtime-captured and CANNOT be hand-patched — they flow through their dedicated primitives.",
         "5. freeze(env, tools, pipeline_id=…) — Layer 1: build (or adopt by digest) the content-addressed, HPC-shippable env image; non-conda installs are installed + validated INSIDE the ship image (validated==shipped). Returns a freeze_request_key. Docker daemon must be available.",
         "6. run_step_in_container(freeze_request_key, …) — re-run the workflow's steps INSIDE the frozen image so the recorded run is the one that ships (sets validated_in_shipped_image, captures in-container resource_usage).",
-        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (see agent/skills/invariants.py), self-test usage.command_template (I4), pin the env BY DIGEST, and write the WorkflowSpec + the {name}.RUN.html dashboard rendered from the validated run.",
+        "7. seal_workflow(pipeline_id, freeze_request_key) — Layer 2: validate the run-side invariants (see agent/skills/invariants.py), derive the how-to from the recorded steps (I4), pin the env BY DIGEST, and write the WorkflowSpec + the {name}.RUN.html dashboard rendered from the validated run.",
     ]
     return {
         "pipeline_name": name,

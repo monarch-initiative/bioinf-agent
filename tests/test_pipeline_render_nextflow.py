@@ -29,6 +29,14 @@ from agent.skills.pipeline_render_nextflow import (RUN_HPC, RUN_HPC_NEXTFLOW, RU
                                                    bound_commands, render_nextflow, run_lines)
 from _nextflow import needs_nextflow, run_nextflow as _nextflow
 
+
+@pytest.fixture(autouse=True)
+def _proof_is_faked(monkeypatch):
+    """The render ends with a proof run (docker + nextflow); these tests pin the render
+    and the record, so the proof is stood in for."""
+    from pipeline_fixtures import fake_proof
+    fake_proof(monkeypatch)
+
 #: A compute env block the way projects_access.yaml declares one: SLURM policy,
 #: notification email, the Lmod names the launcher loads. Names nothing real.
 ENV = {

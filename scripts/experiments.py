@@ -55,7 +55,7 @@ keeps its directory and row, `--attempts 1` turns it off): repeats confirm a fai
 not re-prove a pass. The shared `resources/` corpus is
 snapshotted (paths, sizes, mtimes) around each run; a run that changed anything under it is
 failed with the reason `resources_mutated`. A definition's `expect` block names what the
-records on disk must say (evidence depth, accessions, a cohort stage: what the tool did,
+records on disk must say (whether the evidence ran the tool, accessions, a cohort stage: what the tool did,
 never which route built it or what it was called) and its `gated_tools` the tools whose
 call exercises the scenario's gate; both are checked by scripts/experiment_metrics.py.
 """
@@ -81,7 +81,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import yaml  # noqa: E402
 
 from agent.skills import compute_access, workspace  # noqa: E402
-from experiment_metrics import (EVIDENCE_DEPTHS, EXPECT_KEYS, SUCCESS_RULES, TIER_DEFAULT_RULE,  # noqa: E402
+from experiment_metrics import (EVIDENCE_KINDS, EXPECT_KEYS, SUCCESS_RULES, TIER_DEFAULT_RULE,  # noqa: E402
                                 aggregate, classify_attempts, load_rows, parse_run, write_row)
 from experiment_report import render_index, write_report  # noqa: E402
 
@@ -134,8 +134,8 @@ _INT_KEYS = ("accessions_min",)
 
 def validate_expect(expect: Any, path: Path) -> dict:
     """The `expect` block, checked for shape: known keys only, a list of strings for
-    `accessions`, a positive integer for `accessions_min`, a depth on the ladder,
-    `cohort_stage` a boolean."""
+    `accessions`, a positive integer for `accessions_min`, `evidence` one of
+    EVIDENCE_KINDS, `cohort_stage` a boolean."""
     if expect is None:
         return {}
     if not isinstance(expect, dict):
@@ -150,8 +150,8 @@ def validate_expect(expect: Any, path: Path) -> dict:
     for key in _INT_KEYS:
         if key in expect and (not isinstance(expect[key], int) or isinstance(expect[key], bool) or expect[key] < 1):
             raise ExperimentError(f"{path}: expect.{key} must be a positive integer")
-    if "evidence_depth_min" in expect and expect["evidence_depth_min"] not in EVIDENCE_DEPTHS:
-        raise ExperimentError(f"{path}: expect.evidence_depth_min must be one of {EVIDENCE_DEPTHS}")
+    if "evidence" in expect and expect["evidence"] not in EVIDENCE_KINDS:
+        raise ExperimentError(f"{path}: expect.evidence must be one of {EVIDENCE_KINDS}")
     if "cohort_stage" in expect and not isinstance(expect["cohort_stage"], bool):
         raise ExperimentError(f"{path}: expect.cohort_stage must be true or false")
     return dict(expect)

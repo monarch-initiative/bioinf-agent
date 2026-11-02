@@ -111,6 +111,20 @@ def request_key(tools: list[tuple[str, str]], platform: str, accel: str = "none"
     return "|".join(parts)
 
 
+def install_record_digest(draft: Optional[dict]) -> str:
+    """sha256 over the draft's completed install commands, in order — what was done to
+    the env beyond the request itself. THE one reading: `freeze` stamps it on the record
+    it registers and hands it to `EnvCache.lookup_anchored`, so a dependency pinned on
+    the host env after a build misses the cache and the next freeze builds again rather
+    than serving the image built before the fix. `""` for no draft or no install step."""
+    steps = draft.get("install_steps") if isinstance(draft, dict) else None
+    cmds = [str(s.get("command")) for s in (steps or [])
+            if isinstance(s, dict) and s.get("command") and s.get("returncode") in (0, None)]
+    if not cmds:
+        return ""
+    return hashlib.sha256("\n".join(cmds).encode()).hexdigest()
+
+
 def compute_content_digest(parts: dict) -> str:
     """sha256 over a canonicalized identity dict → 'sha256:…'. Stable across
     key order and process runs (json sort_keys)."""
@@ -640,12 +654,18 @@ class EnvCache:
         things from a clause that had nothing to check."""
         return self.contract_report(record).violations
 
-    def lookup_anchored(self, key: str, image_present) -> Optional[dict]:
+    def lookup_anchored(self, key: str, image_present,
+                        install_record_digest: Optional[str] = None) -> Optional[dict]:
         """A cache hit RE-ANCHORED against reality: the record is returned only if
         it still satisfies the SAME contract a fresh freeze must satisfy — BUILT
         (its image is still present per `image_present(ref) -> bool`) AND
         VALIDATED_IN_IMAGE AND POLICY_CLEAN. Anything else is a MISS (None), so the
         caller rebuilds rather than serving a claim it can no longer support.
+
+        `install_record_digest` (see `install_record_digest()`) is the draft's install
+        record as it stands now; a record built from a different one is a MISS too. The
+        request key names only the tools asked for, so without this a dependency pinned
+        on the host env after a build was answered with the image built before it.
 
         The cache spans events (unlike EnvBuild.run(), which verifies on live calls
         in one pass), so a hit is a claim until re-checked. Re-checking only image
@@ -665,6 +685,9 @@ class EnvCache:
         from agent.models.core_data import frozen_image_ref
         ref = frozen_image_ref(rec.get("image") or "", rec.get("image_digest") or "")
         if not (ref and image_present(ref)):
+            return None
+        if install_record_digest is not None and \
+                (rec.get("install_record_digest") or "") != install_record_digest:
             return None
         return None if self.contract_violations(rec) else rec
 

@@ -18,14 +18,14 @@ env-build tiers moved to agent/skills/env_honesty.py.
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import Any, Optional
+from pathlib import Path, PurePosixPath
+from typing import Any, Mapping, Optional
 
 import yaml
 
 from agent.models import core_data as _core_data
-from agent.models.core_data import (OUTPUT_SLOT_RULE, fill_slots, is_output_slot, output_matches,
-                                    output_pattern, step_is_validated, usage_commands, usage_slots)
+from agent.models.core_data import (OUTPUT_SLOT_RULE, is_output_slot, step_is_validated, usage_commands,
+                                    usage_slots)
 from agent.skills import invariants as _invariants
 from agent.skills.outcomes import refused
 # The READER for a step's validation dict. Imported (not re-implemented) so the invariant
@@ -33,13 +33,6 @@ from agent.skills.outcomes import refused
 # + outcomes, so this stays cycle-free.
 from agent.skills.pipeline_state import validation_covers as _validation_covers
 from agent.skills import workspace
-from agent.validators.output_validator import infer_validator_type
-
-#: How long one command of a self-test trial may run before the runner kills it. Thirty
-#: minutes: a release-scale step on an emulated laptop runs for ten, and a self-test is a
-#: proof, not a race; the price is that a command which hangs costs this long to notice.
-TRIAL_TIMEOUT_S = 1800
-
 
 # ---------------------------------------------------------------------------
 # I8 external-source vocabulary — SINGLE-SOURCED.
@@ -76,6 +69,26 @@ def _sidecar_parent(path: str) -> Optional[str]:
         if low.endswith(suf) and len(path) > len(suf):
             return path[: -len(suf)]
     return None
+
+
+def _under_declared_dir(path: str, dirs: list[str]) -> bool:
+    """Is `path` strictly beneath one of the declared external DIRECTORIES — component-wise,
+    so `/ref/db10` is not under `/ref/db1` and a directory is not under itself? The
+    resolved form of the path is tried too, as the directories were added in both forms."""
+    if not dirs:
+        return False
+    forms = [path]
+    try:
+        forms.append(str(Path(path).resolve()))
+    except Exception:
+        pass
+    for d in dirs:
+        dp = PurePosixPath(d)
+        for f in forms:
+            fp = PurePosixPath(f)
+            if fp != dp and fp.is_relative_to(dp):
+                return True
+    return False
 
 
 def _dir_contains_a_prior_output(path: str, universe: set) -> bool:
@@ -315,427 +328,352 @@ def select_pipeline_step(spec: Any, step_number: int) -> Any:
         f"recorded step numbers are {available or '(none)'}")
 
 
-def _scratch_evidence(scratch: Path, max_files: int = 20, tail: int = 400) -> tuple[list[dict], dict[str, str]]:
-    """What a trial wrote into its scratch dir: every file (path, bytes) and the tail of each
-    small text file. The failure record carries it so a cause the template redirected into its
-    own log is read without a second run."""
-    files: list[dict] = []
-    tails: dict[str, str] = {}
-    try:
-        paths = sorted(x for x in scratch.rglob("*") if x.is_file())[:max_files]
-    except OSError:
-        return files, tails
-    for x in paths:
-        try:
-            size = x.stat().st_size
-        except OSError:
+# ---------------------------------------------------------------------------
+# The how-to, DERIVED from the recorded steps (I4).
+#
+# The command the agent ran IS the how-to. Every run tool records, beside the literal
+# command, the `template` it was given (the command with `{UPPER_SNAKE}` slots), the
+# `bindings` each input slot took, the `formats` of the slots that are not paths, and the
+# `work_dir` the step ran in and wrote into. The seal reads those and writes the same
+# `usage` + `usage_verification` record an author used to type by hand — so every reader
+# (the render, the RUN dashboard, the inventory) is unchanged, and a how-to that differs
+# from what ran cannot be written at all.
+# ---------------------------------------------------------------------------
+
+def _step_bindings(step: Mapping) -> dict[str, str]:
+    """A step's INPUT bindings: what it bound, minus the output slots (those are the
+    step's own work_dir, not a value a sample supplies)."""
+    return {str(k): str(v) for k, v in (step.get("bindings") or {}).items()
+            if not is_output_slot(str(k))}
+
+
+def _per_sample_data_paths(spec: Mapping) -> set[str]:
+    """The paths in `test_data` that belong to ONE sample (reads, a phenopacket): a slot
+    bound to one of them is per-sample whatever else the record says."""
+    out: set[str] = set()
+    for key, path in _core_data.test_data_paths(spec.get("test_data")).items():
+        leaf = key.rsplit(".", 1)[-1]
+        if leaf in ("r1", "r2", "phenopacket") or leaf.startswith(("r1_", "r2_")):
+            out.add(path)
+            try:
+                out.add(str(_core_data.resolve_data_path(path)))
+            except Exception:
+                pass
+    return out
+
+
+def _per_sample_slots(steps: list[dict], spec: Mapping) -> set[str]:
+    """The slots whose value names the sample: a sample-name slot, a slot bound to a
+    sample's own data (reads, a phenopacket), or a slot bound to more than one value across
+    the steps that share its template."""
+    per_sample: set[str] = set()
+    sample_paths = _per_sample_data_paths(spec)
+    values: dict[tuple[str, str], set[str]] = {}
+    for s in steps:
+        for k, v in _step_bindings(s).items():
+            if k in _core_data.SAMPLE_SLOT_NAMES or v in sample_paths:
+                per_sample.add(k)
+            values.setdefault((str(s.get("template") or ""), k), set()).add(v)
+    for (_t, k), vs in values.items():
+        if len(vs) > 1:
+            per_sample.add(k)
+    return per_sample
+
+
+def _step_is_per_sample(step: Mapping, per_sample_slots: set[str]) -> bool:
+    return any(k in per_sample_slots for k in _step_bindings(step))
+
+
+def _under(path: str, root: str) -> bool:
+    r = root.rstrip("/")
+    return bool(r) and (path == r or path.startswith(r + "/"))
+
+
+def _bound_from_step(value: str, step: Mapping) -> bool:
+    """Is `value` something `step` produced: a file it detected, a path under its work_dir
+    (a prefix naming an index family), or one of its remote outputs?"""
+    outs = [str(o) for o in (step.get("detected_outputs") or []) + (step.get("remote_outputs") or [])]
+    if value in outs or any(o.startswith(value) for o in outs):      # the exact file, or a prefix of a family
+        return True
+    wd = step.get("work_dir")
+    return bool(wd) and _under(value, str(wd)) and value != str(wd).rstrip("/")
+
+
+def binds_prior_sample_output(spec: Mapping, bindings: Mapping[str, Any]) -> list[str]:
+    """The run-call half of the chain rule, said BEFORE the step runs. A per-sample chain
+    reads an earlier step's file as `{OUTPUT_DIR}/<name>` in the same working directory;
+    a slot bound to a file a PER-SAMPLE step wrote would make that file a samplesheet
+    column the user has to supply, and the earlier stage's output an orphan. A file a
+    fixed step wrote (an index build, an annotation slice) is the other case and is fine:
+    that step is provenance, not a how-to command. One line per offending slot."""
+    steps = [s for s in (spec.get("pipeline_steps") or [])
+             if isinstance(s, dict) and s.get("returncode") == 0]
+    if not steps:
+        return []
+    per_sample = _per_sample_slots(steps, spec)
+    problems: list[str] = []
+    for slot, value in (bindings or {}).items():
+        v = str(value)
+        if not v.startswith("/"):
             continue
-        rel = str(x.relative_to(scratch))
-        files.append({"path": rel, "bytes": size})
-        if 0 < size <= 65536 and x.suffix.lower() in (".log", ".txt", ".err", ".out", ".tsv", ""):
-            try:
-                tails[rel] = x.read_text(errors="replace")[-tail:]
-            except OSError:
-                pass
-    return files, tails
+        for s in steps:
+            if _bound_from_step(v, s) and _step_is_per_sample(s, per_sample):
+                wd = str(s.get("work_dir") or "")
+                name = v[len(wd.rstrip("/")) + 1:] if wd and _under(v, wd) else Path(v).name
+                problems.append(
+                    f"{{{slot}}} is bound to {v}, which step {s.get('step')} wrote for this sample: a "
+                    f"per-sample chain runs its steps in ONE working directory and reads an earlier "
+                    f"step's file as `{{OUTPUT_DIR}}/{name}` (pass watch_dir={wd!r}) — a file bound "
+                    f"here would become a samplesheet column the user has to supply")
+                break
+    return problems
 
 
-def _unmounted_paths(command: str, roots: list[str]) -> list[str]:
-    """Absolute paths in a filled command that exist on this host but lie under none of the
-    mounted roots: invisible inside the image, however real they are here."""
-    import os
-    roots = [r.rstrip("/") for r in roots if r]
-    return [tok for tok in dict.fromkeys(_core_data.ABS_PATH_RE.findall(command))
-            if os.path.exists(tok) and not any(tok == r or tok.startswith(r + "/") for r in roots)]
+def _relative_outputs(step: Mapping) -> list[str]:
+    """A step's outputs by their path under its work_dir — the local files it detected,
+    or, for an off-host step, where its outputs live at the locus that made them."""
+    wd = str(step.get("work_dir") or "").rstrip("/")
+    outs = [str(o) for o in (step.get("remote_outputs") or step.get("detected_outputs") or [])]
+    rels: list[str] = []
+    for o in outs:
+        rel = o[len(wd) + 1:] if wd and o.startswith(wd + "/") else Path(o).name
+        if rel and rel not in rels:
+            rels.append(rel)
+    return rels
 
 
-def self_test_usage(spec: dict, env_manager: Any, validator: Optional[Any] = None,
-                    no_runner_reason: str = "") -> dict:
-    """Execute usage.command_template with real test inputs and verify outputs.
+def _templatize(name: str, bindings: Mapping[str, str], slots: set[str]) -> str:
+    """Put a sample's values back into an observed name as its slots: `SRR1039508.counts.txt`
+    with `SAMPLE=SRR1039508` is `{SAMPLE}.counts.txt`. Longest value first; a path-shaped
+    value is never substituted into a name."""
+    out = name
+    for slot in sorted(slots, key=lambda s: -len(bindings.get(s, ""))):
+        v = bindings.get(slot)
+        if v and "/" not in v and v in out:
+            out = out.replace(v, "{" + slot + "}")
+    return out
 
-    Keystone honesty check (I4): for each declared input shape, substitute the
-    {PLACEHOLDER} slots, run the resulting command in a fresh scratch dir, and
-    confirm files declared in usage.outputs are produced. usage_verified=True
-    requires every declared trial to pass.
 
-    Trial selection:
-      - If usage.trials is non-empty: run one trial per entry. Each trial's
-        `substitutions` dict directly fills the placeholders. {OUTPUT_DIR}
-        (and any *output* slot) is auto-overridden to a fresh per-trial
-        scratch dir. This is the multi-shape contract — multiple input
-        shapes prove the machinery isn't a one-trick.
-      - If usage.trials is empty: fall back to a single auto-inferred trial
-        sourced from pipeline_steps[*].inputs (backward-compatible).
+#: A compression extension rides on the format it wraps: `vcf.gz`, never `gz`.
+_COMPRESSION = ("gz", "bgz", "bz2", "xz", "zst")
 
-    Returns:
-      {ok: bool, trials: [<per-trial result>...], reason?: str}
-      Each per-trial result has: name, ok, command_run, substitutions,
-      produced_files, scratch_dir, [reason, missing_outputs, stderr_tail].
-    """
-    # THREE-STATE, not a bool. A bare `ok: False` cannot distinguish "the how-to was
-    # tested and it FAILED" from "the how-to was never tested at all", and rendering the
-    # two as one verdict turns absence of data into data. `status` says which:
-    #   verified      — every declared trial ran and produced validated outputs
-    #   failed        — a trial ran and did not (seal refuses; never reaches disk)
-    #   not_attempted — we had no way to run it; `reason` says why. NOT a judgement of the
-    #                   how-to, and must never be rendered as one.
-    def _not_attempted(reason: str) -> dict:
-        return {"ok": False, "status": "not_attempted", "reason": reason, "trials": []}
 
-    usage = spec.get("usage")
-    if not usage or not isinstance(usage, dict):
-        return _not_attempted("no usage block to self-test")
-    # ONE reading of command_template (str or list[str]) — see core_data.usage_commands.
-    commands = usage_commands(usage)
-    if not commands:
-        return _not_attempted("usage.command_template is empty")
-    template = "\n".join(commands)   # placeholder scanning spans every command
+def _input_format(slot: str, values: list[str], formats: Mapping[str, str]) -> Optional[str]:
+    """The format a derived input states: the declared one, else what the bound values
+    look like — a directory, a prefix naming a family of files (an index), or a file's
+    extension with its compression (`gencode.v47.basic.chr22.gtf` is `gtf`, `x.vcf.gz` is
+    `vcf.gz`) — else nothing."""
+    if slot in formats:
+        return formats[slot]
+    for v in values:
+        if not v.startswith("/"):
+            continue
+        p = Path(v)
+        if p.is_dir():
+            return "directory"
+        if _core_data.prefix_family(v):
+            return "prefix"
+        exts = [s.lstrip(".").lower() for s in p.suffixes if s.lstrip(".")]
+        if len(exts) > 1 and exts[-1] in _COMPRESSION:
+            return ".".join(exts[-2:])
+        if exts:
+            return exts[-1]
+    return None
 
-    # NOTHING DECLARED ⇒ NOTHING VERIFIED. A trial is judged on its outputs: every
-    # declared pattern must match a produced file and every match must pass type-aware
-    # validation. With `usage.outputs == []` both loops iterate zero times, so the trial
-    # returned ok=True having established only that the command exited 0 — and
-    # `usage_verified: True` went onto the sealed spec and the run dashboard over a
-    # how-to nobody checked the results of. `touch` would have passed.
-    #
-    # `not_attempted` is the honest state and the one that already exists for exactly
-    # this ("we had no way to run it; NOT a judgement of the how-to"). It does not refuse
-    # the seal — it records `usage_verified: False` with a reason, which is the truth.
-    if not usage.get("outputs"):
-        return _not_attempted(
-            "usage.outputs is empty, so a trial could only prove the command exits 0 — "
-            "not that it produces anything. Declare usage.outputs[*].files (a glob per "
-            "output, written through a recognized OUTPUT slot such as {OUTPUT_DIR}) to "
-            "make this how-to self-testable.")
 
-    # A runner is either injected (the frozen image — validated == shipped) or taken from
-    # the host conda env. The host env is the PRE-freeze iteration path; requiring it was
-    # what silently disabled I4 for every container-native env.
-    env_name = spec.get("conda_env")
-    if env_manager is None:
-        # Say only what is known here: the caller's reason when it gave one, else the
-        # candidates — this function cannot see the daemon or the trial inputs itself.
-        why = no_runner_reason or ("the pinned image did not resolve in the local daemon, "
-                                   "or a trial input exists only at another locus")
-        return _not_attempted(f"no runner available — {why}; and the spec names no "
-                              "conda_env for a host-env fallback, so nothing here executed "
-                              "the how-to")
-    if getattr(env_manager, "is_image_runner", False):
-        env_name = env_name or "<frozen image>"
-    elif not env_name:
-        return _not_attempted(
-            "no conda_env on spec and no frozen env image supplied — nothing to run the "
-            "how-to in. Freeze the env and re-seal to self-test against the shipped bytes.")
+def _step_locus(step: Mapping) -> str:
+    if step.get("validation_locus") == "cluster":
+        return "cluster"
+    return "image" if step.get("ran_in_container") else "host"
 
-    placeholders = set(usage_slots(usage))
-    if not placeholders:
-        lower = list(dict.fromkeys(re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", template)))
-        hint = ((" — the template has " + ", ".join(f"`{{{t}}}`" for t in lower)
-                 + "; slots are UPPER_SNAKE (`{" + lower[0].upper() + "}`), rename them in the "
-                   "template, the trials and the inputs") if lower else
-                " — write every input path as a `{SLOT}` and every output through `{OUTPUT_DIR}/<name>`")
-        return _not_attempted("command_template has no {PLACEHOLDER} slots" + hint)
 
-    declared_trials = usage.get("trials") or []
-    inputs_spec     = usage.get("inputs", [])  or []
-    outputs_spec    = usage.get("outputs", []) or []
+def derive_usage(spec: Mapping) -> dict:
+    """THE how-to of a run, read off its recorded steps. Returns `{usage,
+    usage_verification}` in exactly the record shape an authored block had, or
+    `{problems: [...]}` naming what stops the derivation.
 
-    if declared_trials:
-        trial_plans = [
-            {
-                "name":          (t.get("name") or f"trial_{i+1}"),
-                "substitutions": dict(t.get("substitutions") or {}),
-                "description":   t.get("description"),
-            }
-            for i, t in enumerate(declared_trials) if isinstance(t, dict)
-        ]
-    else:
-        # Backward-compatible single inferred trial.
-        inferred = _infer_substitutions(spec, placeholders, inputs_spec)
-        # An INCOMPLETE inference cannot be run — the command would still carry literal
-        # `{PEDIGREE}` text. Running it anyway reports "failed", which reads as a verdict
-        # on the how-to when the truth is we never managed to build a trial for it. Real
-        # case: talos_validate_moi declares no trials and inference fills 2 of its 5 slots,
-        # so it self-tested as FAILED and (once I4 gates the seal) became unsealable — the
-        # how-to was fine; our trial was not.
-        missing = sorted(p for p in placeholders
-                         if not is_output_slot(p) and p not in inferred)
-        if missing:
-            return _not_attempted(
-                f"could not infer a value for {', '.join('{'+m+'}' for m in missing)} from "
-                f"pipeline_steps[*].inputs, so no runnable trial could be built. Declare "
-                f"usage.trials with explicit substitutions to self-test this how-to.")
-        trial_plans = [{
-            "name":          "auto",
-            "substitutions": inferred,
-            "description":   "inferred from pipeline_steps[*].inputs (no usage.trials declared)",
-        }]
+    - `command_template`: the distinct templates of the rc=0 steps, in step order. A
+      template repeated with other bindings is ONE how-to command with several trials.
+      A step whose outputs a later step binds as a slot value, and which binds no
+      per-sample slot, is a PREPARATION step (an index build, an annotation slice): it is
+      provenance of that value and not a how-to command.
+    - `inputs`: the input slots, with their declared or inferred format.
+    - `outputs[*].files`: every step's outputs by their path under its work_dir, with the
+      sample's values put back as slots; a tree is named by its top directory.
+    - `trials`: one per sample — the steps grouped by agreeing bindings, every fixed value
+      (bound the same way by every step that binds it) filled in. A sample is COMPLETE
+      when every how-to command has a step whose bindings agree with it; the record carries
+      the complete samples as trials and names the incomplete ones under `partial`.
+    - `usage_verification`: status `verified`, source `steps`, and per trial the literal
+      commands the steps ran, the image each ran in, the files they produced and what each
+      was validated as — the transcript, carried through rather than re-derived."""
+    steps = sorted([s for s in (spec.get("pipeline_steps") or [])
+                    if isinstance(s, dict) and s.get("returncode") == 0],
+                   key=lambda s: int(s.get("step") or 0))
+    if not steps:
+        return {"problems": ["no recorded step exited 0; the how-to is derived from the steps that ran"]}
+    untemplated = [s for s in steps if s.get("template") is None]
+    if untemplated:
+        names = ", ".join(f"step {s.get('step')} ({s.get('tool')})" for s in untemplated)
+        return {"problems": [
+            f"{names}: recorded without its template (run_in_env, or a record that predates "
+            f"bindings) — re-run it with run_pipeline_step / run_step_in_container / "
+            f"run_step_on_cluster (bindings={{SLOT: value}} for its variable parts) so the "
+            f"how-to can be derived from it"]}
 
-    trial_results = [
-        _run_one_trial(plan, commands, placeholders, outputs_spec, env_manager, env_name, spec, validator)
-        for plan in trial_plans
-    ]
+    per_sample = _per_sample_slots(steps, spec)
+    # preparation steps: a later step binds what they produced, and they bind no sample
+    prep: set[int] = set()
+    for i, s in enumerate(steps):
+        if _step_is_per_sample(s, per_sample):
+            continue
+        later_values = [v for t in steps[i + 1:] for v in _step_bindings(t).values()]
+        if any(_bound_from_step(v, s) for v in later_values):
+            prep.add(int(s.get("step") or 0))
+    howto = [s for s in steps if int(s.get("step") or 0) not in prep]
+    if not howto:
+        return {"problems": ["every recorded step is a preparation step (a later step binds its "
+                             "output); nothing is left to be the how-to"]}
 
-    overall_ok = bool(trial_results) and all(t.get("ok") for t in trial_results)
-    return {
-        "ok":     overall_ok,
-        "status": "verified" if overall_ok else "failed",
-        "locus":  "image" if getattr(env_manager, "is_image_runner", False) else "host",
-        "trials": trial_results,
-        "trial_count": len(trial_results),
-        "passed":      sum(1 for t in trial_results if t.get("ok")),
-        "source":      "trials" if declared_trials else "inferred",
+    templates: list[str] = []
+    for s in howto:
+        if s["template"] not in templates:
+            templates.append(str(s["template"]))
+    by_template: dict[int, list[dict]] = {i: [] for i in range(len(templates))}
+    seen: set[tuple] = set()
+    for s in howto:
+        key = (s["template"], tuple(sorted(_step_bindings(s).items())))
+        if key in seen:
+            continue                            # the same command run twice is one proof
+        seen.add(key)
+        by_template[templates.index(s["template"])].append(s)
+    in_slots = [p for t in templates for p in _core_data.slots_in(t) if not is_output_slot(p)]
+    in_slots = list(dict.fromkeys(in_slots))
+    out_slots = list(dict.fromkeys(p for t in templates for p in _core_data.output_slots_of(t)))
+
+    # fixed values: one value across every step that binds the slot
+    values: dict[str, list[str]] = {}
+    formats: dict[str, str] = {}
+    for s in howto:
+        for k, v in _step_bindings(s).items():
+            if v not in values.setdefault(k, []):
+                values[k].append(v)
+        for k, v in (s.get("formats") or {}).items():
+            formats[str(k)] = str(v)
+    fixed = {k: vs[0] for k, vs in values.items() if len(vs) == 1}
+
+    # trials: steps grouped by agreeing bindings, in step order
+    trials: list[dict] = []
+    for ti, group in by_template.items():
+        for s in group:
+            b = _step_bindings(s)
+            home = next((t for t in trials if ti not in t["steps"]
+                         and all(t["bindings"].get(k, v) == v for k, v in b.items())), None)
+            if home is None:
+                home = {"bindings": {}, "steps": {}}
+                trials.append(home)
+            home["bindings"].update(b)
+            home["steps"][ti] = s
+    trials.sort(key=lambda t: min(int(s.get("step") or 0) for s in t["steps"].values()))
+    for t in trials:
+        t["bindings"] = {**fixed, **t["bindings"]}
+        for ti in range(len(templates)):
+            if ti in t["steps"]:
+                continue
+            proof = next((s for s in by_template[ti]
+                          if all(t["bindings"].get(k) == v for k, v in _step_bindings(s).items())), None)
+            if proof is not None:
+                t["steps"][ti] = proof          # a fixed command proves every sample
+
+    def _name(t: dict, i: int) -> str:
+        for slot in _core_data.SAMPLE_SLOT_NAMES:
+            if t["bindings"].get(slot):
+                return str(t["bindings"][slot])
+        for k in in_slots:
+            if k in per_sample and t["bindings"].get(k, "").startswith("/"):
+                return Path(t["bindings"][k]).name.split(".")[0]
+        return f"trial_{i + 1}"
+
+    complete, partial = [], []
+    for i, t in enumerate(trials):
+        t["name"] = _name(t, i)
+        missing = [ti for ti in range(len(templates)) if ti not in t["steps"]]
+        (partial if missing else complete).append((t, missing))
+    if not complete:
+        shapes = "; ".join(f"{t['name']}: no step ran how-to command(s) "
+                           f"{', '.join(str(ti + 1) for ti in m)}" for t, m in partial)
+        return {"problems": [f"no sample ran every how-to command ({len(templates)} distinct commands "
+                             f"over {len(trials)} sample(s)): {shapes} — run the missing command(s) for "
+                             f"one sample with the same bindings, in its working directory"]}
+
+    # outputs: every observed file, templatized; a tree by its top directory
+    patterns: list[str] = []
+    for t, _m in complete:
+        for ti in range(len(templates)):
+            s = t["steps"][ti]
+            for rel in _relative_outputs(s):
+                head, sep, _tail = rel.partition("/")
+                pat = _templatize(head, t["bindings"], per_sample) + ("/*" if sep else "")
+                if pat not in patterns:
+                    patterns.append(pat)
+    out_name = out_slots[0] if out_slots else "OUTPUT_DIR"
+    usage = {
+        "description": str(spec.get("description") or "the recorded run, as its steps ran it"),
+        "command_template": templates,
+        "inputs": [{"name": k, "format": _input_format(k, values.get(k, []), formats)}
+                   for k in in_slots],
+        "outputs": [{"name": out_name, "files": patterns}],
+        "trials": [{"name": t["name"],
+                    "substitutions": {k: t["bindings"][k] for k in in_slots if k in t["bindings"]},
+                    "description": f"steps {', '.join(str(s.get('step')) for s in t['steps'].values())}"}
+                   for t, _m in complete],
     }
-
-
-def _infer_substitutions(spec: dict, placeholders: set, inputs_spec: list) -> dict:
-    """Fallback single-trial inference from pipeline_steps[*].inputs.
-
-    Same policy as before the multi-shape extension: extension-match by
-    declared format, then positional fallback. {OUTPUT_*} slots are left
-    unfilled — _run_one_trial substitutes the per-trial scratch dir.
-    """
-    candidate_paths: list[str] = []
-    for s in spec.get("pipeline_steps", []) or []:
-        for inp in (s.get("inputs") or []):
-            p = inp.get("path") if isinstance(inp, dict) else inp
-            if isinstance(p, str) and p and Path(p).exists():
-                candidate_paths.append(p)
-            if isinstance(inp, dict):
-                for ref in inp.get("references", []) or []:
-                    if isinstance(ref, str) and Path(ref).exists():
-                        candidate_paths.append(ref)
-        for o in (s.get("detected_outputs") or []):
-            if isinstance(o, str) and Path(o).exists():
-                candidate_paths.append(o)
-    seen = set(); cps = []
-    for p in candidate_paths:
-        if p not in seen:
-            cps.append(p); seen.add(p)
-    candidate_paths = cps
-
-    substitutions: dict = {}
-    for slot in placeholders:
-        if is_output_slot(slot):
-            continue   # _run_one_trial fills these with scratch
-        slot_spec = next((i for i in inputs_spec if i.get("name") == slot), None)
-        fmt = (slot_spec.get("format") or "").lower() if slot_spec else ""
-
-        chosen = None
-        if fmt:
-            for cp in candidate_paths:
-                low = cp.lower()
-                if fmt in low or low.endswith(f".{fmt}") or low.endswith(f".{fmt}.gz"):
-                    chosen = cp
-                    break
-        if not chosen and candidate_paths:
-            required_slots = [s for s in inputs_spec if s.get("required") is not False]
-            try:
-                idx = next(i for i, s in enumerate(required_slots) if s.get("name") == slot)
-                if idx < len(candidate_paths):
-                    chosen = candidate_paths[idx]
-            except StopIteration:
-                pass
-        if chosen:
-            substitutions[slot] = chosen
-    return substitutions
-
-
-def _run_one_trial(
-    plan: dict, commands: list[str], placeholders: set, outputs_spec: list,
-    env_manager: Any, env_name: str, spec: dict, validator: Optional[Any],
-) -> dict:
-    """Execute one trial: substitute, run EVERY command in order in one fresh
-    scratch dir, verify outputs.
-
-    `commands` is the normalized usage.command_template (see core_data.usage_commands):
-    a multi-command how-to runs in sequence, sharing the scratch dir, so command 2 can
-    consume command 1's output — which is what makes a Phase A→B→C pipeline self-testable
-    at all. The FIRST non-zero rc fails the trial and stops: continuing past a failure
-    would let a later command produce the declared outputs and paper over a broken step.
-
-    The trial passes only when EVERY pattern in usage.outputs[*].files matched
-    a produced file AND every matched file passes type-aware validate_output.
-    Filename-match alone (the original I4) was satisfiable by `touch foo.bam`;
-    requiring the validator to confirm the bytes are a real BAM, VCF, JSON,
-    etc. kills the cheap-fake path.
-    """
-    import shutil, tempfile
-
-    trial_name = plan["name"]
-    subs       = dict(plan.get("substitutions") or {})
-    scratch    = Path(tempfile.mkdtemp(prefix=f"selftest_{spec.get('pipeline_name','x')}_{trial_name}_"))
-
-    # Always override output slots with this trial's scratch dir.
-    # `output_slots` travels WITH the substitution map because the two halves of that
-    # map have different lifetimes and a reader must be able to tell them apart: an
-    # input slot holds a durable path to real test data, an output slot holds a temp
-    # directory that is deleted before anyone reads the report. Without this the run
-    # dashboard would have to re-derive the distinction by re-implementing
-    # `is_output_slot` at the render site — a second reading of the convention that
-    # decides where the self-test looks for outputs, which is exactly the shape of
-    # drift this codebase keeps paying for.
-    output_slots = sorted(s for s in placeholders if is_output_slot(s))
-    for slot in output_slots:
-        subs[slot] = str(scratch)
-
-    # An empty value is a value ("no restriction"); only a slot the trial leaves unbound is missing.
-    missing = [s for s in placeholders if subs.get(s) is None]
-    if missing:
-        shutil.rmtree(scratch, ignore_errors=True)
-        return {
-            "name": trial_name, "ok": False,
-            "reason": f"could not resolve placeholders: {missing}",
-            "substitutions": subs, "output_slots": output_slots,
-        }
-
-    ran: list[str] = []
-    images: list[str] = []            # where each command ran: the runner's image, else the host env
-    image_runner = bool(getattr(env_manager, "is_image_runner", False))
-    for i, raw in enumerate(commands, start=1):
-        command = fill_slots(raw, subs)
-        ran.append(command)
-        # An image runner takes the command's index: a chain whose commands ran as steps
-        # in different frozen images is self-tested command by command in those images.
-        result = env_manager.run_in_env(env_name, command, timeout=TRIAL_TIMEOUT_S, watch_dir=str(scratch),
-                                        **({"command_index": i} if image_runner else {}))
-        images.append(str(result.get("image") or env_name))
-        rc = result.get("returncode")
-        if rc != 0:
-            # Stop at the first failure — a later command must never be allowed to
-            # produce the declared outputs on top of a broken earlier one.
-            step = (f"command {i} of {len(commands)}" if len(commands) > 1
-                    else "command_template")
-            failed = {
-                "name": trial_name, "ok": False,
-                "reason": f"{step} execution failed (rc={rc})",
-                "command_run": command, "commands_run": ran, "images_run": images,
-                "failed_index": i, "scratch_dir": str(scratch),
-                "stderr_tail": (result.get("stderr") or "")[-500:],
-                "substitutions": subs, "output_slots": output_slots,
-            }
-            stderr = result.get("stderr") or ""
-            if rc == -1 and "killed: timeout" in stderr:
-                failed["killed_on_timeout"] = True
-                failed["reason"] = (f"{step} was killed at the self-test's {TRIAL_TIMEOUT_S} s limit; "
-                                    "it did not finish")
-            # What the trial left behind: a template that redirects a tool's stderr into its
-            # own log leaves the cause there, not in the runner's stderr.
-            failed["scratch_files"], failed["scratch_tails"] = _scratch_evidence(scratch)
-            mounts = getattr(env_manager, "mounts", None)
-            if mounts is not None:                  # image locus: the runner knows what it bound
-                unseen = _unmounted_paths(command, [m[0] for m in mounts] + [str(scratch)])
-                if unseen:
-                    failed["paths_not_in_image"] = unseen
-                    failed["hint"] = ("the image sees only the paths bound through slots and the trial "
-                                      "directory; these paths in the command are not among them: "
-                                      f"{', '.join(unseen[:3])} — write each as a slot, declare it under "
-                                      "inputs[*].name and bind it in the trial's substitutions")
-            if re.search(r"is a directory", result.get("stderr") or "", re.I) and output_slots:
-                failed["hint"] = ((failed.get("hint") + " ") if failed.get("hint") else "") + (
-                    f"the tool was handed a directory where it wants a file: every output slot "
-                    f"({', '.join('{' + s + '}' for s in output_slots)}) is filled with the "
-                    f"self-test's scratch directory. Write the file through it — "
-                    f"`{{OUTPUT_DIR}}/<name>` — and declare the name under usage.outputs[*].files.")
-            return failed
-
-    # Every command succeeded. From here on the trial is judged on its OUTPUTS, and
-    # what "ran" means is the whole sequence — reporting only the last command would
-    # misname the thing that was tested the moment a how-to has more than one step.
-    command_run = "\n".join(ran)
-
-    produced = []
-    for p in scratch.rglob("*"):
-        if p.is_file():
-            produced.append(str(p.relative_to(scratch)))
-
-    # Step 1: every declared pattern must match at least one produced file. A pattern
-    # is written in the same grammar as the template (`{SAMPLE}.sorted.bam` names the
-    # file the command `-o {OUTPUT_DIR}/{SAMPLE}.sorted.bam` wrote), so it is filled with
-    # this trial's bindings first; a pattern that spells the output directory itself is
-    # read relative to the scratch dir the scan walks.
-    missing_outputs = []
-    matched_files: dict[str, list[tuple[str, str]]] = {}   # pattern → [(produced_rel, declared_type)]
-    for o in outputs_spec:
-        patterns = o.get("files") or []
-        declared_type = (o.get("type") or "").lower()
-        for pat in patterns:
-            want = output_pattern(pat, subs)
-            matches = [f for f in produced if output_matches(f, want)]
-            if not matches:
-                missing_outputs.append({"slot": o.get("name"), "pattern": pat,
-                                        **({"pattern_filled": want} if want != pat else {})})
-            else:
-                matched_files.setdefault(pat, []).extend((m, declared_type) for m in matches)
-
-    if missing_outputs:
-        # Legibility: the raw "produced_files: []" gives an
-        # unattended agent no way to see WHY nothing landed. The usual cause is an
-        # output written through a placeholder the self-test didn't recognize as an
-        # output slot (so it kept the agent's own absolute path instead of the
-        # scratch dir). Disclose the convention + which slots WERE recognized so the
-        # fix is obvious — without weakening the check.
-        recognized = sorted(s for s in placeholders if is_output_slot(s))
-        out = {
-            "name": trial_name, "ok": False,
-            "reason": "command ran but expected outputs missing",
-            "missing_outputs": missing_outputs,
-            "produced_files": produced[:20],
-            "recognized_output_slots": recognized,
-            "command_run": command_run, "commands_run": ran, "images_run": images, "scratch_dir": str(scratch),
-            "substitutions": subs, "output_slots": output_slots,
-        }
-        if not produced:
-            out["hint"] = (
-                "Nothing landed in the self-test scratch dir. The self-test scans "
-                f"ONLY a fresh scratch dir and fills that path into OUTPUT slots — {OUTPUT_SLOT_RULE} "
-                f"(recognized here: {recognized or 'NONE'}). An output written via "
-                "e.g. `-o {OUT_TSV}` uses an unrecognized slot, so the file lands "
-                "outside the scratch dir and is invisible. Fix: write outputs under "
-                "a recognized slot, e.g. `-o {OUTPUT_DIR}/stats.tsv`, and declare its "
-                "glob in usage.outputs[*].files."
-            )
-        return out
-
-    # Step 2: type-aware validation on each matched file (when a validator is
-    # supplied; the server always supplies one).
-    validation_results: list[dict] = []
-    if validator is not None:
-        for pat, matches in matched_files.items():
-            for produced_rel, declared_type in matches:
-                abs_path = str(scratch / produced_rel)
-                # Expected type: declared, else the validator's own filename reading.
-                etype = declared_type or infer_validator_type(Path(produced_rel).name)
-                v = validator.validate(abs_path, etype, env_name=env_name)
-                validation_results.append({
-                    "pattern":       pat,
-                    "file":          produced_rel,
-                    "expected_type": etype,
-                    "passed":        bool(v.get("passed")),
-                    "method":        v.get("validation_method") or v.get("method"),
-                    "error":         v.get("error"),
-                })
-
-        failed = [v for v in validation_results if not v["passed"]]
-        if failed:
-            return {
-                "name": trial_name, "ok": False,
-                "reason": "command ran and produced files but type-validation failed",
-                "failed_validations": failed[:10],
-                "validation_results": validation_results[:20],
-                "produced_files": produced[:20],
-                "command_run": command_run, "commands_run": ran, "images_run": images, "scratch_dir": str(scratch),
-                "substitutions": subs, "output_slots": output_slots,
-            }
-
-    return {
-        "name": trial_name, "ok": True,
-        "command_run": command_run, "commands_run": ran, "images_run": images, "substitutions": subs,
-        "output_slots": output_slots,
-        "produced_files": produced[:20], "scratch_dir": str(scratch),
-        "validation_results": validation_results[:20],
-        "description": plan.get("description"),
+    loci = {_step_locus(s) for s in howto}
+    proven_trials = []
+    for t, _m in complete:
+        ordered = [t["steps"][ti] for ti in range(len(templates))]
+        work_dirs = list(dict.fromkeys(str(s.get("work_dir") or "") for s in ordered))
+        subs = {k: t["bindings"][k] for k in in_slots if k in t["bindings"]}
+        subs.update({o: work_dirs[0] for o in out_slots})
+        produced, validations = [], []
+        for s in ordered:
+            wd = str(s.get("work_dir") or "").rstrip("/")
+            for rel in _relative_outputs(s):
+                if rel not in produced:
+                    produced.append(rel)
+            for path, v in (s.get("validation") or {}).items():
+                if not isinstance(v, dict):
+                    continue
+                rel = path[len(wd) + 1:] if wd and path.startswith(wd + "/") else Path(path).name
+                validations.append({"pattern": _templatize(rel.partition("/")[0], t["bindings"], per_sample),
+                                    "file": rel, "expected_type": str(v.get("expected_type") or ""),
+                                    "passed": bool(v.get("passed")),
+                                    "method": str(v.get("validation_method") or v.get("method") or "")})
+        proven_trials.append({
+            "name": t["name"], "ok": True,
+            "steps": [int(s.get("step") or 0) for s in ordered],
+            "commands_run": [str(s.get("command") or "") for s in ordered],
+            "images_run": [str(s.get("container_image_digest") or s.get("container_image")
+                               or f"host env {spec.get('conda_env') or ''}".strip()) for s in ordered],
+            "substitutions": subs, "output_slots": out_slots,
+            "produced_files": produced, "validation_results": validations,
+        })
+    step_numbers = sorted(int(s.get("step") or 0) for s in howto)
+    verification = {
+        "status": _core_data.USAGE_VERIFIED, "source": _core_data.USAGE_SOURCE_STEPS,
+        "reason": (f"derived from recorded steps {', '.join(str(n) for n in step_numbers)}: every "
+                   f"how-to command is the template a validated step ran, with the sample's values "
+                   f"where its slots are, and the outputs are those steps' validated outputs"),
+        "locus": next(iter(loci)) if len(loci) == 1 else "mixed",
+        "trial_count": len(complete), "passed": len(complete),
+        "trials": proven_trials,
     }
+    if partial:
+        verification["partial"] = [{"name": t["name"],
+                                    "missing_commands": [ti + 1 for ti in m]} for t, m in partial]
+    if prep:
+        verification["preparation_steps"] = sorted(prep)
+    return {"usage": usage, "usage_verification": verification}
 
 
 def check_invariants(spec: dict) -> list[dict]:
@@ -910,6 +848,42 @@ def check_invariants(spec: dict) -> list[dict]:
                     "where":     "usage.command_template",
                     "undeclared_placeholders": undeclared,
                 })
+
+    # ------------------------------------------------------------------
+    # I4: a how-to the seal DERIVED from the steps says nothing they did not run. Every
+    # command is the template of a step that exited 0, and every trial's values agree
+    # with such a step for every command. A how-to AUTHORED before the derivation
+    # (source `trials` / `inferred`, or unrecorded) is not asked this: it was proven by
+    # the self-test of its day, and that record stands as it was written.
+    # ------------------------------------------------------------------
+    if usage and _core_data.usage_source(spec) == _core_data.USAGE_SOURCE_STEPS:
+        ok_steps = [s for s in (spec.get("pipeline_steps") or [])
+                    if isinstance(s, dict) and s.get("returncode") == 0]
+        templates = usage_commands(usage)
+        for i, t in enumerate(templates):
+            if not any(s.get("template") == t for s in ok_steps):
+                violations.append({
+                    "invariant": "I4.howto_from_steps",
+                    "message":   f"how-to command {i + 1} is not the template of any step that exited 0 "
+                                 f"— the how-to is derived from the recorded steps and may not say "
+                                 f"anything they did not run",
+                    "where":     f"usage.command_template[{i}]",
+                })
+        for trial in (usage.get("trials") or []):
+            if not isinstance(trial, dict):
+                continue
+            subs = {str(k): str(v) for k, v in (trial.get("substitutions") or {}).items()}
+            for i, t in enumerate(templates):
+                if not any(s.get("template") == t
+                           and all(subs.get(k) == v for k, v in _step_bindings(s).items())
+                           for s in ok_steps):
+                    violations.append({
+                        "invariant": "I4.trial_unproven",
+                        "message":   f"trial {trial.get('name')!r} binds values no recorded step ran "
+                                     f"how-to command {i + 1} with — a trial is a sample the steps ran, "
+                                     f"never a guess",
+                        "where":     f"usage.trials[{trial.get('name')}]",
+                    })
 
     # ------------------------------------------------------------------
     # I7 — the VALUES half only. Presence (I7.resource_usage_recorded) is
@@ -1601,9 +1575,22 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
     for _path in _core_data.test_data_paths(spec.get("test_data")).values():
         _add_external(_path)
 
+    # A reference DATABASE that is a directory (an aligner index, a VEP cache, the
+    # Exomiser data bundle) is consumed file by file: a step input beneath its
+    # local_path traces to it. Scoped to declared reference directories — a directory
+    # here, or at another locus, where nothing can be stat'd — never to prior outputs,
+    # whose prefix hole _dir_contains_a_prior_output keeps closed.
+    external_dirs: list[str] = []
     for rdb in spec.get("reference_databases", []) or []:
         if isinstance(rdb, dict):
             _add_external(rdb.get("local_path"))
+            lp = rdb.get("local_path")
+            if isinstance(lp, str) and lp and (rdb.get("locus") == "cluster" or Path(lp).is_dir()):
+                external_dirs.append(lp)
+                try:
+                    external_dirs.append(str(Path(lp).resolve()))
+                except Exception:
+                    pass
 
     for rc in spec.get("runtime_configs", []) or []:
         if isinstance(rc, dict):
@@ -1651,6 +1638,8 @@ def _check_composition_coherence(spec: dict) -> list[dict]:
             if _is_orphan_exempt(p):
                 continue
             if p in universe:
+                continue
+            if _under_declared_dir(p, external_dirs):
                 continue
             # SIDECAR TOLERANCE — a step may consume the companion of a file a prior step
             # produced (`{p}.bai` beside `{p}`, `{p}.gz` after an in-step bgzip). The

@@ -74,7 +74,18 @@ def _ru(wall: float, rss: float, cpu: float = 100.0) -> dict:
             "locus": "native", "i7_authoritative": True}
 
 
-def _step(tool: str, command: str, inputs: list[str], outputs: list[str], *, wall: float, rss: float) -> dict:
+def _bindings(subs: dict) -> dict:
+    """A step's input bindings: the trial's values minus the output slot (the step's own
+    working directory)."""
+    from agent.models.core_data import is_output_slot
+    return {k: v for k, v in subs.items() if not is_output_slot(k)}
+
+
+def _step(tool: str, command: str, inputs: list[str], outputs: list[str], *, wall: float, rss: float,
+          template: Optional[str] = None, subs: Optional[dict] = None, work_dir: Optional[str] = None) -> dict:
+    """A validated step. With `template` and `subs` it carries the how-to it ran — the
+    command with its slots, the values they took, the directory it ran in — as the run
+    tools record it; without them it is a step recorded by its literal command alone."""
     from agent.models.core_data import PipelineStep
     return PipelineStep.produce(
         tool=tool, command=command, returncode=0,
@@ -82,7 +93,9 @@ def _step(tool: str, command: str, inputs: list[str], outputs: list[str], *, wal
         detected_outputs=outputs,
         validation={p: {"passed": True} for p in outputs},
         resource_usage=_ru(wall, rss),
-        ran_in_container=True, container_image=IMAGE, container_image_digest=DIGEST)
+        ran_in_container=True, container_image=IMAGE, container_image_digest=DIGEST,
+        template=template, bindings=(_bindings(subs) or None) if subs is not None else None,
+        work_dir=work_dir)
 
 
 def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "reverse",
@@ -103,13 +116,15 @@ def sealed_rnaseq_spec(samples: Optional[list[str]] = None, *, stranded: str = "
         subs = _subs(s, stranded, run, threads)
         cmds = [_resolved(t, subs) for t in templates]
         steps.append(_step("hisat2", cmds[0], [f"{INDEX}.1.ht2", _reads(s)], [f"{run}/aligned.bam"],
-                           wall=61.0 + len(steps), rss=1500.0 + 10 * len(steps)))
+                           wall=61.0 + len(steps), rss=1500.0 + 10 * len(steps),
+                           template=templates[0], subs=subs, work_dir=run))
         if len(templates) > 1:
             steps.append(_step("samtools", cmds[1], [f"{run}/aligned.bam"], [f"{run}/aligned.bam.bai"],
-                               wall=2.0, rss=40.0))
+                               wall=2.0, rss=40.0, template=templates[1], subs=subs, work_dir=run))
         if len(templates) > 2:
             steps.append(_step("htseq-count", cmds[2], [f"{run}/aligned.bam", GTF],
-                               [f"{run}/{s}.counts.tsv"], wall=30.0, rss=300.0))
+                               [f"{run}/{s}.counts.tsv"], wall=30.0, rss=300.0,
+                               template=templates[2], subs=subs, work_dir=run))
         scratch = f"/scratch/i4/{s}"
         tsubs = _subs(s, stranded, scratch, threads)
         trials.append({"name": s, "ok": True,
@@ -199,10 +214,12 @@ def sealed_deseq2_spec(samples: Optional[list[str]] = None, *, design: str = "co
     subs = {"MERGE_SCRIPT": MERGE_SCRIPT, "COUNTS_DIR": COUNTS_DIR, "DESEQ2_SCRIPT": DESEQ2_SCRIPT,
             "SAMPLESHEET": sheet, "DESIGN": design, "OUTPUT_DIR": run}
     cmds = [_resolved(t, subs) for t in templates]
-    steps = [_step("Rscript", cmds[0], [MERGE_SCRIPT, *counts], [f"{run}/counts_matrix.tsv"], wall=3.0, rss=120.0)]
+    steps = [_step("Rscript", cmds[0], [MERGE_SCRIPT, *counts], [f"{run}/counts_matrix.tsv"], wall=3.0, rss=120.0,
+                   template=templates[0], subs=subs, work_dir=run)]
     if len(templates) > 1:
         steps.append(_step("Rscript", cmds[1], [DESEQ2_SCRIPT, f"{run}/counts_matrix.tsv", sheet],
-                           [f"{run}/{o}" for o in DE_OUTPUTS], wall=25.0, rss=640.0))
+                           [f"{run}/{o}" for o in DE_OUTPUTS], wall=25.0, rss=640.0,
+                           template=templates[1], subs=subs, work_dir=run))
     for st in steps:
         st["container_image"], st["container_image_digest"] = IMAGE_DE, DIGEST_DE
     for n, st in enumerate(steps, 1):
@@ -295,7 +312,8 @@ def sealed_tree_spec(samples: Optional[list[str]] = None):
         for i, (cmd, rel) in enumerate(zip(cmds, TREE_WRITES)):
             outs = [f"{run}/{r}" for r in rel]
             ins = [KG_DIR] if i == 0 else [str(Path(written_so_far[-1]).parent)]
-            steps.append(_step(cmd.split()[0], cmd, ins, outs, wall=10.0 + i, rss=500.0))
+            steps.append(_step(cmd.split()[0], cmd, ins, outs, wall=10.0 + i, rss=500.0,
+                               template=TEMPLATES_TREE[i], subs=subs, work_dir=run))
             written_so_far += outs
         scratch = f"/scratch/i4/{s}"
         tsubs = _tree_subs(scratch)
@@ -350,7 +368,8 @@ def probe_spec(templates: list[str], trials: list[tuple[str, dict]], outputs: li
         s = dict(subs, OUTPUT_DIR=run)
         for ti, t in enumerate(templates):
             outs = step_outputs(ti, run, s) if step_outputs else []
-            steps.append(_step(t.split()[0], fill_slots(t, s), [], outs, wall=1.0, rss=10.0))
+            steps.append(_step(t.split()[0], fill_slots(t, s), [], outs, wall=1.0, rss=10.0,
+                               template=t, subs=s, work_dir=run))
         scratch = f"/scratch/i4/{name}"
         ts = dict(subs, OUTPUT_DIR=scratch)
         proven.append({"name": name, "ok": True, "commands_run": [fill_slots(t, ts) for t in templates],
@@ -370,3 +389,66 @@ def probe_spec(templates: list[str], trials: list[tuple[str, dict]], outputs: li
                   "trials": [{"name": n, "substitutions": dict(s, OUTPUT_DIR=f"/out/{n}")} for n, s in trials]},
         "pipeline_steps": steps,
         "envs": [{"request_key": REQUEST_KEY, "image": f"x@{DIGEST}", "image_digest": DIGEST}]})
+
+
+# ── the proof, faked for the tests that render without docker or nextflow ────
+
+def sealed_spec_on_disk(tmp_path, samples: Optional[list[str]] = None, *, reference: bool = True):
+    """`sealed_rnaseq_spec` with its data under `tmp_path` and ON DISK: the reads, the GTF,
+    and the HISAT2 index as the family `chr22.1.ht2 … chr22.8.ht2` with nothing at the
+    prefix itself — built outside the record (no preparation step) and, with `reference`,
+    registered as a reference database by its directory. For the readers that look at the
+    disk: the run tools' inputs, the render's classification, the proof's preconditions."""
+    import json
+    from agent.models.core_data import WorkflowSpec
+    spec = sealed_rnaseq_spec(samples, with_index_step=False)
+    root = Path(tmp_path) / "data"
+    d = json.loads(json.dumps(spec.model_dump(mode="json")).replace("/data/", f"{root}/"))
+    idx = root / "idx"
+    idx.mkdir(parents=True)
+    for i in range(1, 9):
+        (idx / f"chr22.{i}.ht2").write_text("x")
+    (root / "annotation").mkdir()
+    (root / "annotation" / "chr22.gtf").write_text("chr22\tx\tgene\t1\t2\t.\t+\t.\tgene_id \"g\";\n")
+    (root / "reads").mkdir()
+    for s in (samples if samples is not None else SAMPLES):
+        (root / "reads" / f"{s}_10K_R1.fastq.gz").write_bytes(b"\x1f\x8b")
+    (root / "genome").mkdir()
+    (root / "genome" / "chr22.fa").write_text(">chr22\nACGT\n")
+    if reference:
+        d["reference_databases"] = [{"name": "hisat2_chr22", "version": "47", "local_path": str(idx), "available": True}]
+    return WorkflowSpec.model_validate(d)
+
+
+def fake_proof(monkeypatch, verdict: str = "passed", tasks_per_row: int = 1):
+    """Stand in for the render's proof run: the preconditions pass and `run_proof` reports
+    `verdict` with one COMPLETED task per per-sample stage and sample, writing the run's
+    record directory where the real proof leaves it (in the pipeline directory on a pass,
+    in the scratch proof directory on a failure). Returns the list of calls made."""
+    from agent.skills import pipeline_proof as PP
+    from agent.skills.pipeline_record import PipelineProof, ProofTask
+    calls: list[dict] = []
+    from agent import mcp_server as _ms
+    monkeypatch.setattr(_ms, "_check_docker_available", lambda: None)
+    monkeypatch.setattr(PP, "check_preconditions", lambda record: None)
+
+    def _run(record, pipeline_dir, *, files, timeout_s=PP.PROOF_TIMEOUT_S_DEFAULT):
+        calls.append({"record": record, "pipeline_dir": Path(pipeline_dir), "files": list(files), "timeout_s": timeout_s})
+        stamp = "20261028_120000"
+        from agent.skills import workspace
+        proof_dir = Path(workspace.scratch_dir("pipeline_proofs", record.name, stamp))
+        home = Path(pipeline_dir) if verdict == "passed" else proof_dir
+        (home / "runs" / stamp).mkdir(parents=True, exist_ok=True)
+        (home / "runs" / stamp / "trace.txt").write_text("task_id\tname\tstatus\texit\n")
+        rows = record.samplesheet.rows
+        tasks = [ProofTask(name=f"{s.name} ({r.get('sample', '')})" if s.scope == "per_sample" else s.name,
+                           status="COMPLETED" if verdict == "passed" else "FAILED",
+                           exit="0" if verdict == "passed" else "1", realtime="1s", peak_rss="10 MB",
+                           container=s.image or "")
+                 for s in record.stages for r in (rows if s.scope == "per_sample" else [{}])]
+        return PipelineProof(verdict=verdict, reason="faked", stamp=stamp, run_dir=str(proof_dir),
+                             run_record=f"runs/{stamp}", launch="nextflow run main.nf -profile local",
+                             samples=[r.get("sample", "") for r in rows], tasks_expected=len(tasks), tasks=tasks,
+                             nextflow_exit=0 if verdict == "passed" else 1, duration_s=1.0)
+    monkeypatch.setattr(PP, "run_proof", _run)
+    return calls

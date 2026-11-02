@@ -20,22 +20,22 @@ from agent.skills import resolver as R
 
 
 # ---------------------------------------------------------------------------
-# evidence depth: a file inspection is presence
+# evidence kind: a file inspection only FINDS the tool
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("evidence, tool, depth", [
+@pytest.mark.parametrize("evidence, tool, kind", [
     ('bash -c "grep -qi apollo /launch.sh 2>&1 && test -f /launch.sh && grep -qi \'apollo\\|tomcat\' /launch.sh"',
-     "apollo", "presence"),
-    ("grep -q apollo /etc/apollo.conf", "apollo", "presence"),
-    ("ls /opt/tools/seqkit/bin && test -x /opt/tools/seqkit/bin/seqkit", "seqkit", "presence"),
-    ("apollo --version", "apollo", "version"),
-    ("apollo -i a.vcf -o out.vcf", "apollo", "functional"),
-    ("python -c 'import talos'", "talos", "import"),
-    ("cat data.txt | seqkit stats", "seqkit", "functional"),
-    ("/HiC-Pro_3.0.0/bin/HiC-Pro -h", "HiC-Pro", "help"),
+     "apollo", EH.EVIDENCE_FOUND),
+    ("grep -q apollo /etc/apollo.conf", "apollo", EH.EVIDENCE_FOUND),
+    ("ls /opt/tools/seqkit/bin && test -x /opt/tools/seqkit/bin/seqkit", "seqkit", EH.EVIDENCE_FOUND),
+    ("apollo --version", "apollo", EH.EVIDENCE_RAN),
+    ("apollo -i a.vcf -o out.vcf", "apollo", EH.EVIDENCE_RAN),
+    ("python -c 'import talos'", "talos", EH.EVIDENCE_FOUND),
+    ("cat data.txt | seqkit stats", "seqkit", EH.EVIDENCE_RAN),
+    ("/HiC-Pro_3.0.0/bin/HiC-Pro -h", "HiC-Pro", EH.EVIDENCE_RAN),
 ])
-def test_evidence_that_only_inspects_files_is_presence(evidence, tool, depth):
-    assert EH.evidence_depth(evidence, tool) == depth
+def test_evidence_that_only_inspects_files_is_found(evidence, tool, kind):
+    assert EH.evidence_kind(evidence, tool) == kind
 
 
 def test_unwrap_shell_reads_the_inner_command():

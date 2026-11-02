@@ -12,7 +12,7 @@ name: h_gab
 tier: C1
 success: frozen
 expect:
-  evidence_depth_min: version
+  evidence: ran
 prompt: |
   Install the Genome Assembly Booster from https://github.com/baumannlab/Genome_Assembly_Booster
   at its v1 tag, following the repository's own install instructions, and freeze it as a

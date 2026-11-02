@@ -62,6 +62,8 @@ AssayType = Literal[
     "fiberseq",
     # Array / GWAS
     "gwas_array", "gwas_wgs", "qtl_array", "expression_array", "snp_array",
+    # A patient's phenotypes (GA4GH phenopacket JSON) — per-sample input data, not reads
+    "phenopacket",
 ]
 Platform  = Literal["illumina", "ont", "pacbio_hifi", "pacbio_isoseq", "pacbio_fiberseq"]
 FileType  = Literal[
@@ -1396,7 +1398,7 @@ def anchor_for_path(path: Any) -> Optional[ContentAnchor]:
 #: covered without editing this tuple; the explicit names are the ones whose spelling
 #: gives no hint (`r1`, `bam`, `file`).
 TEST_DATA_PATH_KEYS = (
-    "r1", "r2", "vcf", "tbi", "bam", "bai", "cram", "crai", "ped", "bed", "gtf",
+    "r1", "r2", "phenopacket", "vcf", "tbi", "bam", "bai", "cram", "crai", "ped", "bed", "gtf",
     "reference_fasta", "fasta", "fai", "file", "provenance", "core_data_dir",
 )
 _TEST_DATA_PATH_SUFFIXES = ("_path", "_dir", "_file", "_fasta", "_vcf", "_bam", "_bed")
@@ -1475,6 +1477,7 @@ class TestSample(BaseModel):
     num_reads:       Optional[int] = None
     r1:              Optional[str] = None
     r2:              Optional[str] = None
+    phenopacket:     Optional[str] = None   # the patient's phenopacket JSON (assay_type phenopacket)
     file_format:     Optional[str] = None
     chemistry:       Optional[str] = None
     suggested_model: Optional[str] = None
@@ -1507,6 +1510,7 @@ class TestDataRef(BaseModel):
     num_reads:          Optional[int] = None
     r1:                 Optional[str] = None
     r2:                 Optional[str] = None
+    phenopacket:        Optional[str] = None
     file_format:        Optional[str] = None
     chemistry:          Optional[str] = None
     suggested_model:    Optional[str] = None
@@ -1673,6 +1677,25 @@ def is_path_like(s: Any) -> bool:
     return True
 
 
+def prefix_family(path: Any) -> list[str]:
+    """The files a bound value names as a PREFIX — an aligner index, `/ref/idx/chr22` for
+    `chr22.1.ht2` … `chr22.8.ht2` — when nothing exists at the value itself: every sibling
+    FILE named `<stem>.<more>`, sorted; [] for a file, a directory, a bare token, a slot or
+    a stem with no family. ONE reading: the run tools admit the bound value as an input by
+    it (the family's directory, which the step reads and a container must see), the render
+    classifies the placeholder as a prefix by it, and the proof checks its presence by it."""
+    if not is_path_like(path) or not str(path).startswith("/"):
+        return []
+    p = Path(str(path))
+    if not p.name or p.exists() or not p.parent.is_dir():
+        return []
+    stem = p.name + "."
+    try:
+        return sorted(str(c) for c in p.parent.iterdir() if c.name.startswith(stem) and c.is_file())
+    except OSError:
+        return []
+
+
 def violates_absolute_rule(p: Any) -> bool:
     """True when a path-like string is RELATIVE — the one reading of the
     absoluteness rule. PipelineStep._paths_are_absolute enforces it at
@@ -1780,6 +1803,17 @@ class PipelineStep(BaseModel):
                 f"pipeline_step paths must be absolute (relative paths depend on "
                 f"the recorder's CWD and don't reproduce): {offenders}")
         return self
+
+    # THE HOW-TO, AS THE STEP RAN IT. `template` is the command with its `{UPPER_SNAKE}`
+    # slots, `bindings` the value each input slot took, `formats` the slots that are not
+    # paths (threads / value / samplesheet), `work_dir` the directory the step ran in and
+    # wrote into (an output slot fills with it). The seal derives `usage` from these
+    # (spec_writer.derive_usage); a step recorded without them (run_in_env, or a record
+    # that predates bindings) carries None and cannot seal.
+    template:          Optional[str] = None
+    bindings:          Optional[dict[str, str]] = None
+    formats:           Optional[dict[str, str]] = None
+    work_dir:          Optional[str] = None
 
     # L11 universal-lineage anchor: sha256 of each detected_output at
     # production time. Hash is computed by env_manager.hash_outputs after
@@ -1890,18 +1924,12 @@ class UsageOutput(BaseModel):
 
 
 class UsageTrial(BaseModel):
-    """One explicit input shape the usage.command_template must handle.
+    """One sample the how-to ran on: the values its slots took.
 
-    Declaring multiple trials lets the finalize-time self-test prove the
-    assembled machinery isn't a one-trick — it works across the input
-    variations a downstream user will throw at it (paired-gz vs uncompressed,
-    short vs long reads, etc.). Each trial's `substitutions` map fills the
-    {PLACEHOLDER} slots in `command_template`; the runtime executes each
-    trial in a fresh scratch dir and confirms declared outputs are produced.
-
-    Invariant I4 only sets usage_verified=True if every declared trial passes.
-    If `usage.trials` is empty, the runtime falls back to a single inferred
-    trial.
+    The seal derives one trial per sample from the recorded steps (grouped by agreeing
+    bindings, every fixed value filled in), named after the sample-name slot. Its
+    `substitutions` are the bindings the steps ran with; the rendered pipeline's
+    samplesheet has one row per trial.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -1911,33 +1939,16 @@ class UsageTrial(BaseModel):
 
 
 class UsageTemplate(BaseModel):
-    """How to invoke the pipeline on new data.
+    """How to invoke the pipeline on new data — DERIVED by the seal from the recorded
+    steps (spec_writer.derive_usage), never authored.
 
-    Distinct from pipeline_steps: pipeline_steps records what we ran to
-    build/test the pipeline; usage records the canonical command(s) a downstream
-    user (or Nextflow generator) should run on *their* data.
-
-    The agent authors this via patch_pipeline. The command_template
-    uses {PLACEHOLDER} substitutions whose names line up with `inputs` and
-    `outputs` entries.
-
-    command_template is a str OR a list[str] — one entry per command, run IN
-    ORDER, sharing one working directory (so step 2 consumes step 1's output).
-    A str-only field makes a real multi-phase pipeline INEXPRESSIBLE:
-    `pipeline_steps` is a list and I8 lineage already holds across a chain, but
-    the how-to contract — the thing a user actually reads and runs, and the thing
-    the guides render — could only ever say one command. No amount of later
-    guide design can fix data that cannot say what you mean.
-
-    A bare str is still valid and means exactly what it always did; read either
-    shape through `usage_commands()`, never by branching on the type at the call
-    site. Two spellings of one concept is precisely how this codebase's defects
-    are born — see usage_commands.
-
-    trials: optional list of explicit input-shape test cases. When non-empty
-    the finalize self-test runs every trial and only marks usage_verified=True
-    if all pass. When empty the runtime infers a single trial from
-    pipeline_steps' inputs.
+    `command_template` holds the steps' templates in step order (a str or a list[str];
+    one entry per command, run IN ORDER in one working directory, so command 2 consumes
+    command 1's output — read either shape through `usage_commands()`, never by branching
+    on the type at the call site). `inputs` are the slots with their declared or inferred
+    format, `outputs[*].files` the steps' observed outputs with the sample's values put
+    back as slots, `trials` one per sample. The record shape predates the derivation, so
+    every reader of an authored block reads a derived one unchanged.
     """
     model_config = ConfigDict(extra="allow")
 
@@ -1945,7 +1956,7 @@ class UsageTemplate(BaseModel):
     command_template: Union[str, list[str]]
     inputs:           list[UsageInput] = []
     outputs:          list[UsageOutput] = []
-    trials:           list[UsageTrial] = []   # I4 — multi-shape self-test cases
+    trials:           list[UsageTrial] = []   # I4 — one per sample the steps ran
     example:          Optional[str] = None    # concrete invocation example
 
 
@@ -2011,12 +2022,12 @@ def default_step_tool(command: str) -> str:
 
 def usage_commands(usage: Any) -> list[str]:
     """The ordered, non-empty commands in a usage block — THE one reading of
-    `command_template`, for every consumer (I4 self-test, I6 placeholder scan, the
-    RUN dashboard, the user guide).
+    `command_template`, for every consumer (the I4 and I6 walks, the record derivation,
+    the RUN dashboard).
 
     `command_template` accepts a str or a list[str]. That is two shapes, and two
     shapes invite two readings: the moment a renderer does `usage["command_template"]
-    .strip()` and the self-test does something subtly different, they disagree about
+    .strip()` and the walk does something subtly different, they disagree about
     what the workflow is — which is this project's entire disease (one truth, N
     definitions, the stale one in the load path). So the shape is normalized in
     exactly one function and nothing else may branch on the type.
@@ -2036,14 +2047,13 @@ def usage_commands(usage: Any) -> list[str]:
 # ---------------------------------------------------------------------------
 # The slot grammar of a how-to — THE one spelling.
 #
-# A how-to names its variable parts as `{UPPER_SNAKE}` slots; the self-test fills them
-# per trial, the I6 walk checks they are declared, the record derivation turns them into
-# samplesheet columns and params, the Nextflow renderer rewrites them, and the patch
-# gate refuses a block that none of those could use. Every one of those readers imports
-# the regex, the output-slot rule and the fill from HERE. When the grammar was spelled
-# at each site, the write gate had no copy at all and accepted `{output_fastq}`, which
-# the seal then reported as "no slots" — one truth, N definitions, the stale one in the
-# load path. `tests/test_usage_slot_grammar.py` fails the build on a second spelling.
+# A how-to names its variable parts as `{UPPER_SNAKE}` slots; the run tools fill them from
+# the call's bindings and record the template, the seal derives the how-to from the
+# templates, the I6 walk checks the slots are declared, the record derivation turns them
+# into samplesheet columns and params, the Nextflow renderer rewrites them, and the run
+# call refuses a command none of those could use. Every one of those readers imports the
+# regex, the output-slot rule and the fill from HERE. `tests/test_usage_slot_grammar.py`
+# fails the build on a second spelling.
 # ---------------------------------------------------------------------------
 
 #: A slot: `{NAME}` with NAME in UPPER_SNAKE (`{R1}`, `{OUTPUT_DIR}`, `{THREADS}`).
@@ -2079,9 +2089,21 @@ def machine_paths_in(template: str) -> list[str]:
 
 #: Stated once so every refusal and hint describes the same rule.
 OUTPUT_SLOT_RULE = ("a slot named {OUTPUT_DIR} or {OUTDIR}, or whose name contains OUTPUT, "
-                    "is the output DIRECTORY: the self-test fills it with a fresh scratch "
-                    "directory and looks there for what the command wrote, so every output "
-                    "file is written through it as {OUTPUT_DIR}/<name>")
+                    "is the output DIRECTORY: the run fills it with the step's working "
+                    "directory (watch_dir) and detects what the command wrote there, so every "
+                    "output file is written through it as {OUTPUT_DIR}/<name>")
+
+#: The slots that name the sample: the row key of a rendered pipeline's samplesheet and
+#: the name of a derived trial.
+SAMPLE_SLOT_NAMES = frozenset({"SAMPLE", "SAMPLE_ID", "SAMPLE_NAME", "ID"})
+#: The formats a slot that is not a path declares (`formats={SLOT: …}` at the run call,
+#: `usage.inputs[*].format` in the record). A `threads` slot renders as the stage's cpu
+#: request; a `value` is text the tool reads (a URL, a path inside the image) and is never
+#: staged as a file; a `samplesheet` is the pipeline's own samples.csv.
+THREADS_FORMAT = "threads"
+VALUE_FORMAT = "value"
+SAMPLESHEET_FORMAT = "samplesheet"
+SLOT_FORMATS = (THREADS_FORMAT, VALUE_FORMAT, SAMPLESHEET_FORMAT)
 
 
 def slots_in(text: str) -> list[str]:
@@ -2122,7 +2144,7 @@ def fill_slots(text: str, substitutions: Mapping[str, Any]) -> str:
 
 
 def output_pattern(pattern: str, substitutions: Mapping[str, Any]) -> str:
-    """One `usage.outputs[*].files` pattern as the self-test reads it: relative to the
+    """One `usage.outputs[*].files` pattern as the render reads it: relative to the
     output directory (a leading `{OUTPUT_DIR}/`, however that slot is spelled, is
     dropped) and every other slot filled from `substitutions` — the glob a file the
     how-to wrote, by its path under that directory or by its name, is matched against."""
@@ -2139,31 +2161,26 @@ def output_matches(rel_path: str, pattern: str) -> bool:
     return fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(PurePosixPath(rel_path).name, pattern)
 
 
-def usage_slot_problems(usage: Any) -> list[str]:
-    """Why the seal could not self-test this how-to, said at the write; one line per
-    problem, empty when the block is runnable.
+def step_template_problems(template: str, bindings: Mapping[str, Any],
+                           formats: Mapping[str, str]) -> list[str]:
+    """Why a step's command cannot be the how-to it will be recorded as, said at the run
+    call, one line per problem, empty when it fits. ONE refusal names everything.
 
-    The rules are the self-test's own, stated before it runs: slots are `{UPPER_SNAKE}`;
-    `${SLOT}` and `{{SLOT}}` are the two ways a shell-minded author wraps a slot so the
-    fill breaks it; a brace token in another case that the block itself treats as a slot
-    is named with its rename; a template needs an output slot (OUTPUT_SLOT_RULE) and at
-    least one slot at all; every other slot is declared under inputs[*].name, at least one
-    trial is declared, and every trial binds each of them and nothing the template lacks;
-    a path on this machine written into the template is a slot that was not declared, and a
-    write into the image or a package install inside the template is a patch, not a how-to."""
-    commands = usage_commands(usage)
-    template = "\n".join(commands)
-    if not template.strip():
-        return []                       # the shape check already names an empty template
-    get = (usage.get if isinstance(usage, Mapping)
-           else lambda k, d=None: getattr(usage, k, d))
+    The rules are the derivation's and the render's own, stated before the step runs:
+    slots are `{UPPER_SNAKE}`; `${SLOT}` and `{{SLOT}}` are the two ways a shell-minded
+    author wraps a slot so the fill breaks it; a brace token in another case that the call
+    binds is named with its rename; an output slot is a directory (OUTPUT_SLOT_RULE), so a
+    file-shaped one (`{OUTPUT_TSV}`) is refused with the directory idiom; every other slot
+    is bound in `bindings` and every binding names a slot (`""` is a value: an option left
+    empty); `formats` names bound slots and one of SLOT_FORMATS; a path on this machine
+    written into the command is a slot that was not declared; a write into the image or a
+    package install inside the command is a patch, not a how-to. A command with no slot
+    and no binding is a legal fixed step."""
+    template = template or ""
+    bindings = dict(bindings or {})
+    formats = dict(formats or {})
     slots = set(slots_in(template))
-    trials = [t for t in (get("trials") or []) if isinstance(t, Mapping)]
-    bound: set[str] = set()
-    for t in trials:
-        bound |= {str(k) for k in (t.get("substitutions") or {})}
-    input_names = [str(i.get("name") or "").strip() for i in (get("inputs") or [])
-                   if isinstance(i, Mapping)]
+    bound = {str(k) for k in bindings}
     problems: list[str] = []
 
     shell_wrapped = list(dict.fromkeys(_SHELL_VAR_SLOT_RE.findall(template)))
@@ -2177,23 +2194,19 @@ def usage_slot_problems(usage: Any) -> list[str]:
         fixes = ", ".join(f"`{{{{{s}}}}}` → `{{{s.upper()}}}`" for s in doubled)
         problems.append(f"double braces are not an escape: `{{{{{doubled[0]}}}}}` fills to "
                         f"`{{<value>}}` — write the slot once: {fixes}")
-
-    # Brace tokens the block treats as slots but the self-test cannot see.
+    # Brace tokens the call treats as slots but the grammar cannot see.
     meant = [tok for tok in dict.fromkeys(_BRACE_IDENT_RE.findall(template))
-             if tok not in slots and (tok in bound or tok in input_names or not slots)]
+             if tok not in slots and (tok in bound or tok in formats or (not slots and bound))]
     if meant:
-        # A lowercase output FILE slot is not renamed to its uppercase twin — that twin
-        # would be filled with a directory. It becomes a file under the directory slot.
         renames = ", ".join(f"`{{{t}}}` → `{{OUTPUT_DIR}}/<name>`"
                             if is_output_slot(t) and not is_output_dir_slot(t)
                             else f"`{{{t}}}` → `{{{t.upper()}}}`" for t in meant)
-        problems.append(f"command_template slots must be UPPER_SNAKE `{{SLOT}}` — the self-test, the "
-                        f"trials and the render recognise nothing else: rename {renames} in the "
-                        f"template, in trials[*].substitutions and in inputs[*].name")
-    elif not slots and not (shell_wrapped or doubled):
-        problems.append("command_template has no `{SLOT}`: a how-to with no slots cannot be re-run on "
-                        "new data — write every input path as a slot (`{R1}`, `{VCF}`) and every output "
-                        "path through `{OUTPUT_DIR}/<name>`, and bind each slot in trials[*].substitutions")
+        problems.append(f"slots must be UPPER_SNAKE `{{SLOT}}` — the record, the seal and the render "
+                        f"recognise nothing else: rename {renames} in the command and in bindings")
+    stray_bindings = sorted(b for b in bound if b not in slots and b not in meant)
+    if stray_bindings:
+        problems.append(f"bindings name {', '.join('{' + b + '}' for b in stray_bindings)}, which the "
+                        f"command does not contain — write the slot into the command or drop the binding")
     if not slots:
         return problems
 
@@ -2202,58 +2215,52 @@ def usage_slot_problems(usage: Any) -> list[str]:
     file_shaped = sorted(s for s in outputs if not is_output_dir_slot(s))
     if file_shaped:
         fixes = ", ".join(f"`{{{s}}}` → `{{OUTPUT_DIR}}/<name>`" for s in file_shaped)
-        problems.append(f"output slots are directories: the self-test fills {', '.join('{' + s + '}' for s in file_shaped)} "
-                        f"with a fresh directory and the tool is handed a directory where it wants a "
-                        f"file — write each output file through the one directory slot ({fixes}) and "
-                        f"declare its name under outputs[*].files")
-    if not outputs:
-        problems.append("no output slot: write every output path through `{OUTPUT_DIR}/<name>` so the "
-                        f"self-test can find what the command wrote ({OUTPUT_SLOT_RULE}); "
-                        f"slots seen: {', '.join(sorted(slots))}")
-    undeclared = [s for s in needed if s not in input_names]
-    if undeclared:
-        problems.append(f"{', '.join('{' + s + '}' for s in undeclared)} not declared under "
-                        f"inputs[*].name — every slot but the output directory is an input "
-                        f"(name, format, description); declared: {', '.join(input_names) or '(none)'}")
+        problems.append(f"output slots are directories: the run fills {', '.join('{' + s + '}' for s in file_shaped)} "
+                        f"with the step's working directory and the tool is handed a directory where it "
+                        f"wants a file — write each output file through the one directory slot ({fixes})")
+    bound_out = sorted(s for s in outputs if s in bound)
+    if bound_out:
+        problems.append(f"{', '.join('{' + s + '}' for s in bound_out)} is an output slot: it is filled with "
+                        f"the step's working directory (watch_dir), never bound — drop it from bindings")
+    unbound = [s for s in needed if s not in bound]
+    if unbound:
+        problems.append(f"{', '.join('{' + s + '}' for s in unbound)} not bound — every slot but the output "
+                        f"directory takes its value from bindings={{SLOT: value}} ("" is a value)")
+    bad_format = sorted(k for k in formats if k not in needed)
+    if bad_format:
+        problems.append(f"formats name {', '.join('{' + k + '}' for k in bad_format)}, which is not a bound "
+                        f"input slot of the command")
+    bad_values = sorted(f"{k}={v!r}" for k, v in formats.items() if v not in SLOT_FORMATS)
+    if bad_values:
+        problems.append(f"formats take one of {', '.join(SLOT_FORMATS)}: {', '.join(bad_values)}")
     machine = machine_paths_in(template)
     if machine:
         named = ", ".join(f"`{m}`" for m in machine[:3])
-        problems.append(f"command_template names a path on this machine: {named} — the self-test runs "
-                        "the how-to at the image locus, where only the paths bound through slots are "
-                        "mounted, and a how-to that carries a machine path cannot be re-run anywhere "
-                        "else: write it as a slot (`{INDEX}`, `{GTF}`), declare it under inputs[*].name "
-                        "and bind the path in every trial's substitutions")
+        problems.append(f"the command names a path on this machine: {named} — a how-to that carries a "
+                        "machine path cannot be re-run anywhere else: write it as a slot (`{INDEX}`, "
+                        "`{GTF}`) and bind the path in bindings")
     from agent.skills.env_honesty import image_mutation
     patch = image_mutation(template)
     if patch:
-        problems.append(f"command_template modifies the image before running the tool (`{patch}`): a "
-                        "how-to runs in the shipped image as it is, and a patch applied at run time "
-                        "proves the patched container and degrades the tool anywhere else. Build the fix "
-                        "into the image (build_env_from_authors_recipe with a patch, or a Dockerfile "
-                        "layer) and freeze that, or say the host cannot run the tool as shipped")
-    stray = [n for n in input_names if n and n not in slots]
-    if stray:
-        problems.append(f"inputs[*].name {', '.join(repr(n) for n in stray)} match no slot in the "
-                        f"template — fix the name or write the slot")
-    if not trials and needed:
-        # The self-test can only run the how-to on values; guessing them from the
-        # recorded steps filled a script's slots positionally and burned a seal on a
-        # command that never could have worked. The author ran the commands and knows
-        # the values: they are the trial.
-        problems.append("no trials: declare usage.trials with at least one trial whose substitutions "
-                        f"bind {', '.join('{' + s + '}' for s in needed)} to the values the run used "
-                        "(one trial per input shape the how-to must handle)")
-    for t in trials:
-        subs = {str(k) for k in (t.get("substitutions") or {})}
-        name = t.get("name") or "?"
-        missing = [s for s in needed if s not in subs]
-        extra = sorted(subs - slots)
-        if missing:
-            problems.append(f"trial {name!r} binds no value for {', '.join('{' + m + '}' for m in missing)}")
-        if extra:
-            problems.append(f"trial {name!r} binds {', '.join('{' + e + '}' for e in extra)}, which the "
-                            f"template does not contain")
+        problems.append(f"the command modifies the image before running the tool (`{patch}`): a how-to "
+                        "runs in the shipped image as it is, and a patch applied at run time proves the "
+                        "patched container and degrades the tool anywhere else. Build the fix into the "
+                        "image (build_env_from_authors_recipe with a patch, or a Dockerfile layer) and "
+                        "freeze that, or say the host cannot run the tool as shipped")
     return problems
+
+
+def output_slots_of(template: str) -> list[str]:
+    """The output slots of a command, first-occurrence order — the ones the run fills with
+    the step's working directory."""
+    return [s for s in slots_in(template) if is_output_slot(s)]
+
+
+def fill_template(template: str, bindings: Mapping[str, Any], work_dir: str) -> str:
+    """The literal command a step runs: every input slot from `bindings`, every output slot
+    the step's working directory. THE one fill the run tools and the cluster step share."""
+    return fill_slots(template, {**{k: str(v) for k, v in (bindings or {}).items()},
+                                 **{s: work_dir for s in output_slots_of(template)}})
 
 
 def step_is_validated(step: Any) -> bool:
@@ -2336,8 +2343,9 @@ def step_validation_failed(step: Any) -> bool:
     return False
 
 
-#: What the I4 self-test actually concluded. `""` only for a spec so malformed it has
-#: neither field.
+#: What the seal concluded about the how-to. `""` only for a spec so malformed it has
+#: neither field. A derived block is always `verified` (source `steps`); the other states
+#: are those of blocks authored and self-tested before the derivation.
 USAGE_VERIFIED = "verified"
 USAGE_FAILED = "failed"
 USAGE_NOT_ATTEMPTED = "not_attempted"
@@ -2348,8 +2356,7 @@ USAGE_NOT_ATTEMPTED = "not_attempted"
 #: real failure, so the bool could only ever be a default. Rendering that as "not
 #: attempted" is the meter's own sin one layer down: absence rounded up into a verdict,
 #: printed in the artifact the user reads to decide whether to trust the how-to — and it
-#: makes a MULTI-ENV chain whose how-to is structurally unprovable (the honest
-#: `degraded(seal.sealed_howto_unproven)` landing) indistinguishable from a workflow
+#: makes a how-to nothing could run at its locus indistinguishable from a workflow
 #: where nobody bothered.
 USAGE_UNRECORDED = "unrecorded"
 
@@ -2365,6 +2372,24 @@ USAGE_LABELS = {
     USAGE_UNRECORDED:    "unrecorded — this spec predates the I4 outcome being stated",
     "":                  "unrecorded",
 }
+
+
+#: `usage_verification.source` of a how-to the seal DERIVED from the recorded steps. A spec
+#: sealed before the derivation carries an authored block (source `trials` / `inferred`,
+#: or none): the I4 walk clause asks only derived blocks to match their steps.
+USAGE_SOURCE_STEPS = "steps"
+
+
+def usage_source(spec: Any) -> str:
+    """THE one reading of where a sealed how-to came from: `steps` for one the seal derived
+    from the recorded run, else whatever the producer recorded (`""` when nothing did)."""
+    if spec is None:
+        return ""
+    get = (spec.get if isinstance(spec, dict)
+           else lambda k, d=None: getattr(spec, k, d))
+    uv = get("usage_verification") or {}
+    src = uv.get("source") if isinstance(uv, dict) else getattr(uv, "source", None)
+    return str(src or "")
 
 
 def usage_label(spec: Any) -> str:
@@ -2409,24 +2434,21 @@ def usage_status(spec: Any) -> str:
 
 
 def usage_proven_trials(spec: Any) -> list[dict]:
-    """THE one reading of *what the I4 self-test actually ran* — the per-trial record
+    """THE one reading of *what the how-to's proof actually ran* — the per-trial record
     of the literal commands executed, the substitutions they were executed with, and
-    which of those substitutions were the ephemeral scratch dir.
+    which of those substitutions were the output directory.
 
     `usage_status` above answers "was the how-to proven". This answers "proven with
     WHAT" — and it is a separate fact, because the panel a human reads to decide
     whether to run a pipeline on real data shows `hisat2 -x {OUTPUT_DIR}/idx -1 {R1}`
-    and nothing about which genome, which GTF, which reads. The self-test resolved
-    every one of those slots to a concrete path and ran the result; a seal that keeps
-    only the count of trials that passed drops exactly the answer that panel needs.
+    and nothing about which genome, which GTF, which reads. The steps ran every one of
+    those slots as a concrete path; a seal that keeps only the count of trials drops
+    exactly the answer that panel needs.
 
     This is an OBSERVATION carried through, never a re-derivation. A renderer could in
     principle re-substitute `usage.trials[*].substitutions` into `command_template`
-    itself — and that would be a second spelling of a command `_run_one_trial` already
-    produced exactly, differing on the two things that are easy to get wrong (how a
-    multi-command template is joined, and that output slots are overridden with a
-    scratch dir rather than taking their declared value). The producer captures; the
-    reader must not scrape.
+    itself — and that would be a second spelling of a command the step already ran
+    exactly. The producer captures; the reader must not scrape.
 
     Returns `[]` for a spec sealed before the record existed, which is the UNRECORDED
     state — indistinguishable here from "no trials ran", so a caller that needs to tell
@@ -2485,13 +2507,12 @@ def resource_usage_authority(step: Any) -> str:
 
 
 def usage_output_validations(spec: Any) -> list[dict]:
-    """THE one reading of *what the I4 self-test validated each produced file AS*.
+    """THE one reading of *what each produced file was validated AS*.
 
-    `_run_one_trial` resolves an expected type for every matched output —
-    `declared_type or infer_validator_type(...)` — runs the type-aware
-    validator against it, and records `{pattern, file, expected_type, passed,
-    method}`. So the record knows the type of every file the how-to produced,
-    including the ones the author never declared a type for.
+    The run tools validate every detected output against a declared or inferred type,
+    and the derivation carries each record into the trial as `{pattern, file,
+    expected_type, passed, method}`. So the record knows the type of every file the
+    how-to produced.
 
     The how-to panel's `Type` column read `usage.outputs[*].type`, the AUTHORED
     field, which is empty on every spec in the corpus — so a declared column
@@ -2516,7 +2537,7 @@ def usage_output_validations(spec: Any) -> list[dict]:
 
 def usage_output_type(spec: Any, output: Any) -> str:
     """The type to SHOW for one `usage.outputs[*]` entry: what the author
-    declared if they declared one, else what the self-test actually validated
+    declared if they declared one, else what the steps actually validated
     those files as, else `""` — which a renderer must show as unrecorded rather
     than as an empty cell."""
     get = (output.get if isinstance(output, Mapping)
@@ -2572,7 +2593,7 @@ def key_packages(spec: Mapping) -> dict[str, str]:
 def executed_commands(spec: Mapping) -> list[dict]:
     """The commands a record may show as having run: each `{command, outputs, source}`,
     drawn only from pipeline_steps that ran (returncode 0) AND passed validation, plus
-    the usage commands iff the self-test verified them — so every command surfaced is
+    the usage commands iff the seal proved them — so every command surfaced is
     provably executed and checked. Gated on `usage_status`, not the raw bool: a spec on
     disk can carry `usage_verified: true` beside `status: not_attempted`."""
     out: list[dict] = []
@@ -2589,8 +2610,8 @@ def executed_commands(spec: Mapping) -> list[dict]:
     if usage_status(spec) == USAGE_VERIFIED:
         cmds = usage_commands(spec.get("usage") or {})
         for i, c in enumerate(cmds, 1):
-            src = ("usage.command_template (self-tested)" if len(cmds) == 1
-                   else f"usage.command_template step {i}/{len(cmds)} (self-tested)")
+            src = ("usage.command_template (proven by the steps)" if len(cmds) == 1
+                   else f"usage.command_template step {i}/{len(cmds)} (proven by the steps)")
             out.append({"command": c, "outputs": [], "source": src})
     return out
 

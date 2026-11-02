@@ -125,17 +125,15 @@ def test_grid_synthesized_prefers_verbatim_extraction_from_the_tools_own_files()
             f"authored command makes an external ref that must be grounded: {c['command']}"
 
 
-def test_grid_synthesized_evidence_is_functional_and_shape_clean():
-    """FUNCTIONAL evidence (validated==ran): `bwa index` RUNS on inline data and the .bwt is
-    asserted — NOT a presence default. It passes the anti-echo-cheat shape rule (leads with
-    `cd`, references bwa as a real token) and classifies 'functional' (stronger than an
-    import-only default, honestly disclosed as such)."""
+def test_grid_synthesized_evidence_runs_the_tool_and_is_shape_clean():
+    """Evidence that RUNS the tool (validated==ran): `bwa index` runs on inline data and the
+    .bwt is asserted — NOT a presence default. It passes the anti-echo-cheat shape rule
+    (leads with `cd`, references bwa as a real token) and reads as a run."""
     ss = _synth_spec()
     ev = ss["evidence"]
     assert env_honesty.evidence_shape_violation(ev, "bwa") is None
     assert env_honesty._references_tool(ev, "bwa") is True
-    assert env_honesty.evidence_depth(ev, "bwa") == "functional"
-    assert env_honesty.is_shallow_evidence(ev, "bwa") is False
+    assert env_honesty.evidence_kind(ev, "bwa") == env_honesty.EVIDENCE_RAN
     assert "bwa index" in ev and "test -s" in ev
     # a bare-echo of the tool name must still be rejected (the guard is live)
     assert env_honesty.evidence_shape_violation("echo bwa", "bwa") is not None

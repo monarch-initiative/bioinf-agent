@@ -143,10 +143,11 @@ def test_extractor_round_trips_the_seal_terminals():
         "seal.unknown_pipeline_id":    "refused",
         "seal.no_frozen_env":          "refused",
         "seal.workflow_invariants":    "refused",
-        "seal.usage_self_test_failed": "refused",
+        "seal.howto_underivable":      "refused",
         "seal.self_verify_failed":     "refused",
         "seal.spec_write_failed":      "broke",
         "seal.sealed":                 "proven",
+        "seal.sealed_host_only":       "degraded",
     }
     for code, outcome in expected.items():
         assert codes.get(code) == outcome, \

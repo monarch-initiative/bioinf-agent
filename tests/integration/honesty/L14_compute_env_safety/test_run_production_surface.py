@@ -39,6 +39,14 @@ from agent.skills.pipeline_render import MANIFEST_PATH, RECORD_PATH, parse_manif
 from pipeline_fixtures import sealed_rnaseq_spec
 
 
+@pytest.fixture(autouse=True)
+def _proof_is_faked(monkeypatch):
+    """The render ends with a proof run (docker + nextflow); these tests pin the render
+    and the record, so the proof is stood in for."""
+    from pipeline_fixtures import fake_proof
+    fake_proof(monkeypatch)
+
+
 # ===========================================================================
 # Fixtures: a rendered pipeline in the pipelines zone, a samplesheet, access files
 # ===========================================================================

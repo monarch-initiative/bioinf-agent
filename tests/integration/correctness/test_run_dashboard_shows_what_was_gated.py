@@ -6,7 +6,7 @@ is precisely what these pages exist to spare them. Three fields were in exactly 
 state, all live in code, and the reason nothing caught them is that the suite tested
 the renderer against fixtures that also omitted them:
 
-  * the I4 self-test's ACTUAL INVOCATION. `self_test_usage` resolves every
+  * the how-to's ACTUAL INVOCATION. The derivation carries every
     {PLACEHOLDER} to a concrete path and executes the result; seal kept the count of
     trials that passed and threw the transcript away. So the how-to panel could show
     `hisat2 -x {OUTPUT_DIR}/idx -1 {R1}` and the sealed artifact had no answer anywhere
@@ -30,47 +30,36 @@ import pytest
 
 from agent.models import core_data
 from agent.skills.run_dashboard_html import render_run_dashboard_html
-from agent.skills.spec_writer import self_test_usage
-from agent.mcp_tools.workflow_tools import _proven_trial_records
+from agent.skills.spec_writer import derive_usage
 
 
 # ---------------------------------------------------------------------------
-# A real runner + a real self-test, so the transcript under test is one the
+# A real step + the real derivation, so the transcript under test is one the
 # production path actually produced rather than one this file typed out.
 # ---------------------------------------------------------------------------
 
-class _ShellRunner:
-    """Minimal stand-in for EnvManager: runs the command for real, in a shell."""
-    is_image_runner = False
-
-    def run_in_env(self, env_name, command, timeout=None, watch_dir=None):
-        p = subprocess.run(command, shell=True, capture_output=True, text=True)
-        return {"returncode": p.returncode, "stdout": p.stdout, "stderr": p.stderr}
-
-
-class _AlwaysPasses:
-    def validate(self, path, expected_type, env_name=None):
-        return {"passed": Path(path).exists(), "validation_method": "exists"}
-
-
 def _spec_with_real_selftest(tmp_path) -> tuple[dict, Path]:
-    """Run the genuine I4 self-test, then build the spec seal would have written."""
+    """Run a step for real, record it the way the run tools do (template, bindings,
+    work_dir, validation), derive the how-to as the seal does, and build the spec."""
+    from agent.models.core_data import PipelineStep, fill_template
     src = tmp_path / "reference_chr22.txt"
     src.write_text("ACGT\n")
-    draft = {
-        "pipeline_name": "copy_demo",
-        "conda_env": "bioinf_demo",
-        "usage": {
-            "description": "copy the reference into the output directory",
-            "command_template": "cp {SRC} {OUTPUT_DIR}/copy.txt",
-            "inputs": [{"name": "SRC", "format": "txt"}],
-            "outputs": [{"name": "copy", "files": ["copy.txt"], "type": "txt"}],
-            "trials": [{"name": "one_file", "substitutions": {"SRC": str(src)},
-                        "description": "a single small reference"}],
-        },
-    }
-    detail = self_test_usage(draft, _ShellRunner(), validator=_AlwaysPasses())
-    assert detail["status"] == "verified", detail
+    work = tmp_path / "step1"
+    work.mkdir()
+    template, bindings = "cp {SRC} {OUTPUT_DIR}/copy.txt", {"SRC": str(src)}
+    command = fill_template(template, bindings, str(work))
+    p = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=work)
+    out = work / "copy.txt"
+    step = PipelineStep.produce(
+        tool="cp", command=command, returncode=p.returncode, inputs=[str(src)],
+        detected_outputs=[str(out)],
+        validation={str(out): {"passed": out.exists(), "expected_type": "txt", "validation_method": "exists"}},
+        resource_usage={"wall_seconds": 0.01, "peak_rss_mb": 1.0, "max_cpu_percent": 1.0},
+        template=template, bindings=bindings, work_dir=str(work)) | {"step": 1}
+    draft = {"pipeline_name": "copy_demo", "conda_env": "bioinf_demo",
+             "description": "copy the reference into the output directory", "pipeline_steps": [step]}
+    derived = derive_usage(draft)
+    assert "problems" not in derived, derived
     spec = {
         "workflow_name": "copy_demo",
         "description": "demo",
@@ -78,14 +67,10 @@ def _spec_with_real_selftest(tmp_path) -> tuple[dict, Path]:
         "env_request_key": "demo|linux-64|none",
         "env_content_digest": "sha256:" + "ab" * 32,
         "env_image": "example/demo@sha256:" + "cd" * 32,
-        "usage": draft["usage"],
+        "usage": derived["usage"],
         "usage_verified": True,
-        "usage_verification": {
-            "status": detail["status"], "reason": "", "locus": detail["locus"],
-            "trial_count": detail["trial_count"], "passed": detail["passed"],
-            "trials": _proven_trial_records(detail),
-        },
-        "pipeline_steps": [],
+        "usage_verification": derived["usage_verification"],
+        "pipeline_steps": [step],
     }
     return spec, src
 
@@ -102,24 +87,24 @@ def test_the_page_shows_the_command_that_actually_ran_not_only_the_template(tmp_
     trials = core_data.usage_proven_trials(spec)
     assert len(trials) == 1
     ran = trials[0]["commands_run"][0]
-    assert str(src) in ran, "the self-test must have substituted the real path"
+    assert str(src) in ran, "the step ran the real path"
     assert ran in html, "the executed command must reach the page"
     assert str(src) in html, "which file it was proven against must be readable"
 
 
 @pytest.mark.integration
-def test_the_ephemeral_output_directory_is_named_as_ephemeral(tmp_path):
+def test_the_output_directory_is_named_as_the_steps_own(tmp_path):
     """The substitution map has two halves with different lifetimes.
 
-    An input slot holds a durable path to real data. An output slot holds the scratch
-    dir the self-test created and deleted. Printing them in one table without comment
-    would hand the reader a path that no longer exists.
+    An input slot holds a durable path to real data. An output slot holds the directory
+    the step ran in and wrote into. Printing them in one table without comment would
+    invite the reader to reuse a working directory as if it were an input.
     """
     spec, _ = _spec_with_real_selftest(tmp_path)
     trials = core_data.usage_proven_trials(spec)
     assert trials[0]["output_slots"] == ["OUTPUT_DIR"], trials[0]
     html = render_run_dashboard_html(spec)
-    assert "already deleted; supply your own" in html
+    assert "the directory the steps ran in and wrote into" in html
     assert "{OUTPUT_DIR}" in html and "{SRC}" in html
 
 
@@ -437,19 +422,15 @@ def _outputs_table(html: str) -> str:
 
 
 @pytest.mark.integration
-def test_the_output_type_column_shows_what_the_self_test_validated(tmp_path):
-    """F6. The self-test resolves an expected type for every matched output —
-    the author's if declared, else inferred from the basename — validates against
-    it, and until 2026-08-07 the seal dropped the result. The column read the
-    AUTHORED `usage.outputs[*].type`, empty on every spec in the corpus."""
+def test_the_output_type_column_shows_what_the_step_validated(tmp_path):
+    """F6. The step's validation records what each output was validated AS, and the
+    derivation carries it into the how-to's transcript; the column reads it from there,
+    never from an authored `usage.outputs[*].type` (which no derived block has)."""
     spec, _ = _spec_with_real_selftest(tmp_path)
     vals = core_data.usage_output_validations(spec)
-    assert vals, "the seal dropped validation_results again"
+    assert vals, "the derivation dropped validation_results"
     observed = {v["expected_type"] for v in vals if v.get("expected_type")}
     assert observed == {"txt"}, observed
-
-    # The author's declaration is what the self-test recorded; now remove it, so the
-    # only surviving source for the column is the runtime's own observation.
     for o in spec["usage"]["outputs"]:
         o.pop("type", None)
 

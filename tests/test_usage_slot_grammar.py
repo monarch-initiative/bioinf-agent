@@ -1,12 +1,12 @@
-"""The how-to's slot grammar has ONE home (core_data) and is enforced where the block is
-WRITTEN, naming the fix.
+"""The how-to's slot grammar has ONE home (core_data) and is enforced where the step is
+RUN, naming every fix in one answer.
 
-The self-test, the I6 walk, the record derivation, the Nextflow renderer and the patch
-gate all used to spell `{UPPER_SNAKE}` for themselves — and the patch gate had no
-spelling at all, so a block written with `{output_fastq}`, `${SAMPLE}` or `{{THREADS}}`
-was accepted and the seal then reported "no slots", `$<value>` or `{<value>}` one round
-trip later. The grammar now lives beside `usage_commands`, every reader imports it, and
-`patch_pipeline` refuses what the seal could not run with the exact rewrite.
+The seal, the I6 walk, the record derivation and the Nextflow renderer all read the
+`{UPPER_SNAKE}` grammar from core_data. A step's command is checked against it at the run
+call — before anything executes — because the step's template IS the how-to the seal
+derives: a slot in the wrong case, a `${SLOT}` the shell would eat, a file-shaped output
+slot, an unbound slot or a machine path would otherwise reach the record and come back as
+a refusal one seal later.
 """
 from __future__ import annotations
 
@@ -16,18 +16,12 @@ from pathlib import Path
 import pytest
 
 from agent.models import core_data as CD
-from agent.skills import pipeline_state as PS
-from agent.skills import spec_writer as SW
 
 AGENT = Path(__file__).resolve().parent.parent / "agent"
 
 
-def _usage(template, inputs=("INPUT_FASTQ",), trials=None,
-           outputs=(("trimmed", ["*_trimmed.fastq.gz"]),)):
-    return {"description": "trim", "command_template": template,
-            "inputs": [{"name": n, "format": "fastq.gz"} for n in inputs],
-            "outputs": [{"name": n, "files": f} for n, f in outputs],
-            "trials": trials if trials is not None else []}
+def _problems(template, bindings=None, formats=None):
+    return CD.step_template_problems(template, bindings or {}, formats or {})
 
 
 # ── one spelling ───────────────────────────────────────────────────────────────────────
@@ -60,149 +54,129 @@ def test_slots_in_keeps_first_occurrence_order_without_duplicates():
     assert CD.usage_slots({"command_template": ["x {R1}", "y {R1} {OUTPUT_DIR}"]}) == ["R1", "OUTPUT_DIR"]
 
 
-def test_fill_slots_is_textual():
+def test_fill_slots_is_textual_and_fill_template_puts_the_work_dir_in_the_output_slot():
     assert CD.fill_slots("-o {OUTPUT_DIR}/{SAMPLE}.bam", {"OUTPUT_DIR": "/s", "SAMPLE": "x"}) == "-o /s/x.bam"
+    assert CD.fill_template("t {IN} -o {OUTDIR}/{SAMPLE}.bam", {"IN": "/a", "SAMPLE": "s"}, "/w") == "t /a -o /w/s.bam"
+    assert CD.output_slots_of("t {IN} -o {OUTDIR}/x > {OUTPUT_DIR}/y") == ["OUTDIR", "OUTPUT_DIR"]
 
 
-# ── the rules, at the write ────────────────────────────────────────────────────────────
-def test_a_lowercase_slot_the_block_treats_as_a_slot_is_named_with_its_rename():
-    u = _usage("cutadapt -a AGATCG -o {output_fastq} {input_fastq}", inputs=("input_fastq",),
-               trials=[{"name": "t", "substitutions": {"input_fastq": "/d/r1.fq.gz",
-                                                       "output_fastq": "/d/o.fq.gz"}}])
-    problems = PS.usage_block_problems(u)
+# ── the rules, at the run call ─────────────────────────────────────────────────────────
+def test_a_lowercase_slot_the_call_binds_is_named_with_its_rename():
+    problems = _problems("cutadapt -a AGATCG -o {output_fastq} {input_fastq}",
+                         {"input_fastq": "/d/r1.fq.gz"})
     assert len(problems) == 1
     assert "UPPER_SNAKE" in problems[0]
     assert "`{output_fastq}` → `{OUTPUT_DIR}/<name>`" in problems[0], "an output file slot is not renamed to a slot a directory would fill"
     assert "`{input_fastq}` → `{INPUT_FASTQ}`" in problems[0]
-    assert "trials[*].substitutions" in problems[0] and "inputs[*].name" in problems[0]
 
 
-def test_a_template_with_no_slot_at_all_says_how_to_write_one():
-    problems = PS.usage_block_problems(_usage("Rscript deseq2_de.R", inputs=()))
-    assert len(problems) == 1 and "no `{SLOT}`" in problems[0] and "{OUTPUT_DIR}/<name>" in problems[0]
+def test_a_command_with_no_slot_and_no_binding_is_a_legal_fixed_step():
+    assert _problems("Rscript deseq2_de.R") == []
+    assert _problems("samtools index aligned.bam") == []
 
 
 def test_shell_variable_syntax_around_a_slot_is_refused_with_the_bare_form():
     """`${SAMPLE}` fills to `$SRR1039508`: the shell reads an unset variable. Seen on a
     real run, where it cost one seal round trip."""
-    u = _usage('hisat2 -U {FASTQ} | samtools sort -o "{OUTPUT_DIR}/${SAMPLE}.bam"',
-               inputs=("FASTQ", "SAMPLE"),
-               trials=[{"name": "t", "substitutions": {"FASTQ": "/a", "SAMPLE": "s"}}])
-    problems = PS.usage_block_problems(u)
+    problems = _problems('hisat2 -U {FASTQ} | samtools sort -o "{OUTPUT_DIR}/${SAMPLE}.bam"',
+                         {"FASTQ": "/a", "SAMPLE": "s"})
     assert any("`${SAMPLE}` → `{SAMPLE}`" in p and "unset variable" in p for p in problems), problems
 
 
 def test_double_braces_are_refused_as_not_an_escape():
     """`THREADS={{THREADS}}` fills to `THREADS={4}`. Also seen on a real run."""
-    u = _usage("THREADS={{THREADS}}\nhisat2 -p $THREADS {FASTQ} > {OUTPUT_DIR}/x.sam",
-               inputs=("FASTQ", "THREADS"),
-               trials=[{"name": "t", "substitutions": {"FASTQ": "/a", "THREADS": "4"}}])
-    problems = PS.usage_block_problems(u)
+    problems = _problems("THREADS={{THREADS}}\nhisat2 -p $THREADS {FASTQ} > {OUTPUT_DIR}/x.sam",
+                         {"FASTQ": "/a", "THREADS": "4"})
     assert any("`{{THREADS}}` → `{THREADS}`" in p and "not an escape" in p for p in problems), problems
 
 
 def test_an_awk_brace_is_not_mistaken_for_a_slot_when_real_slots_exist():
-    u = _usage("samtools view {BAM} | awk '{print $3}' > {OUTPUT_DIR}/contigs.txt", inputs=("BAM",),
-               trials=[{"name": "t", "substitutions": {"BAM": "/d/a.bam"}}])
-    assert PS.usage_block_problems(u) == []
+    assert _problems("samtools view {BAM} | awk '{print $3}' > {OUTPUT_DIR}/contigs.txt", {"BAM": "/d/a.bam"}) == []
 
 
-def test_a_well_formed_block_passes_including_outdir_and_slots_in_output_patterns():
-    u = _usage("cutadapt -a AGATCG -o {OUTDIR}/{SAMPLE}_trimmed.fastq.gz {INPUT_FASTQ}",
-               inputs=("INPUT_FASTQ", "SAMPLE"),
-               outputs=(("trimmed", ["{SAMPLE}_trimmed.fastq.gz"]),),
-               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/d/r1.fq.gz", "SAMPLE": "s1"}}])
-    assert PS.usage_block_problems(u) == []
+def test_a_well_formed_call_passes_including_outdir_and_an_empty_value():
+    assert _problems("cutadapt -a AGATCG -o {OUTDIR}/{SAMPLE}_trimmed.fastq.gz {INPUT_FASTQ} {EXTRA}",
+                     {"INPUT_FASTQ": "/d/r1.fq.gz", "SAMPLE": "s1", "EXTRA": ""}) == []
 
 
-def test_an_undeclared_input_slot_and_a_stray_input_name_are_each_named():
-    """I6's rule, at the write instead of one seal later."""
-    u = _usage("tool -i {INPUT_FASTQ} -s {SAMPLE} -o {OUTPUT_DIR}/x", inputs=("INPUT_FASTQ", "SAMPEL"),
-               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a", "SAMPLE": "s"}}])
-    problems = PS.usage_block_problems(u)
-    assert any("{SAMPLE} not declared under inputs[*].name" in p for p in problems), problems
-    assert any("'SAMPEL'" in p and "match no slot" in p for p in problems), problems
+def test_an_unbound_slot_a_stray_binding_and_a_bound_output_slot_are_each_named_in_one_answer():
+    problems = _problems("tool -i {INPUT_FASTQ} -s {SAMPLE} -o {OUTPUT_DIR}/x",
+                         {"INPUT_FASTQ": "/a", "SAMPEL": "s", "OUTPUT_DIR": "/elsewhere"})
+    assert any("{SAMPLE} not bound" in p for p in problems), problems
+    assert any("bindings name {SAMPEL}" in p for p in problems), problems
+    assert any("{OUTPUT_DIR} is an output slot" in p and "never bound" in p for p in problems), problems
 
 
-def test_missing_output_slot_and_trial_binding_errors_are_each_named():
-    u = _usage("tool -i {INPUT_FASTQ} -o /tmp/fixed.txt", inputs=("INPUT_FASTQ",),
-               trials=[{"name": "t1", "substitutions": {}},
-                       {"name": "t2", "substitutions": {"INPUT_FASTQ": "/d/x", "GHOST": "y"}}])
-    problems = PS.usage_block_problems(u)
-    assert any("no output slot" in p and "INPUT_FASTQ" in p for p in problems)
-    assert any("trial 't1' binds no value for {INPUT_FASTQ}" in p for p in problems)
-    assert any("trial 't2' binds {GHOST}, which the template does not contain" in p for p in problems)
-    assert not any("UPPER_SNAKE" in p for p in problems)
+def test_formats_must_name_a_bound_slot_and_a_known_format():
+    problems = _problems("hisat2 -p {THREADS} -U {R1} -S {OUTPUT_DIR}/x.sam", {"THREADS": "4", "R1": "/a"},
+                         {"THREADS": "cpus", "GHOST": "value"})
+    assert any("formats take one of threads, value, samplesheet" in p and "THREADS='cpus'" in p for p in problems)
+    assert any("formats name {GHOST}" in p for p in problems)
+    assert _problems("hisat2 -p {THREADS} -U {R1} -S {OUTPUT_DIR}/x.sam", {"THREADS": "4", "R1": "/a"},
+                     {"THREADS": "threads"}) == []
 
 
-def test_the_patch_refuses_the_block_the_seal_cannot_run(tmp_path):
-    ps = PS.PipelineState({})
-    ps.start("p1", "desc")
-    out = ps.patch("p1", {"usage": _usage("tool -o {out} {inp}", inputs=("inp",),
-                                          trials=[{"name": "t", "substitutions": {"inp": "/a", "out": "/b"}}])})
-    assert out.get("code") == "pipeline_state.usage_invalid", out
-    assert "`{out}` → `{OUT}`" in out["error"] and "`{inp}` → `{INP}`" in out["error"]
-    assert "usage" not in (ps.get_draft("p1") or {}), "a refused patch must not land"
-    good = _usage("tool -o {OUTPUT_DIR}/x.txt {INP}", inputs=("INP",),
-                  trials=[{"name": "t", "substitutions": {"INP": "/a"}}])
-    assert "code" not in ps.patch("p1", {"usage": good})
+def test_a_file_shaped_output_slot_is_refused_with_the_directory_idiom():
+    """`-o {OUTPUT_FASTQ}` reads as an output slot, so the run fills it with the working
+    directory and cutadapt answers "Is a directory". Three runs paid a seal for it."""
+    problems = _problems("cutadapt -a AGATCG -o {OUTPUT_FASTQ} {INPUT_FASTQ}", {"INPUT_FASTQ": "/d/r1.fq.gz"})
+    assert len(problems) == 1 and problems[0].startswith("output slots are directories")
+    assert "`{OUTPUT_FASTQ}` → `{OUTPUT_DIR}/<name>`" in problems[0]
+    for ok_slot in ("OUTPUT_DIR", "OUTDIR", "OUTPUT_FOLDER", "OUTPUT_DIRECTORY"):
+        assert CD.is_output_dir_slot(ok_slot)
+        assert _problems(f"cutadapt -o {{{ok_slot}}}/t.fq.gz {{INPUT_FASTQ}}", {"INPUT_FASTQ": "/d/r1.fq.gz"}) == []
+    assert not CD.is_output_dir_slot("OUTPUT_PREFIX") and not CD.is_output_dir_slot("FASTQ")
 
 
-def test_the_seal_reason_names_the_rename_when_a_draft_arrives_with_lowercase_slots():
-    spec = {"usage": _usage("seqtk seq -A {r1} > {output_fasta}", inputs=("r1",)), "conda_env": "e"}
-
-    class _Runner:
-        is_image_runner = False
-    r = SW.self_test_usage(spec, _Runner())
-    assert r["status"] == "not_attempted"
-    assert "no {PLACEHOLDER} slots" in r["reason"]
-    assert "`{r1}`" in r["reason"] and "`{output_fasta}`" in r["reason"] and "`{R1}`" in r["reason"]
-
-
-# ── the seal reads the same grammar ────────────────────────────────────────────────────
-class _FakeEM:
-    """Runs the command by writing the named file into the scratch dir, rc=0."""
-    def __init__(self, write_rel):
-        self.write_rel = write_rel
-
-    def run_in_env(self, env_name, command, timeout=None, watch_dir=None, **kw):
-        (Path(watch_dir) / self.write_rel).write_text("x")
-        return {"returncode": 0, "stdout": "", "stderr": ""}
+# ── a machine path in the command is a slot that was not declared ──────────────────────
+def test_a_machine_path_in_the_command_is_refused_at_the_run_and_named():
+    from agent.skills import workspace
+    idx = str(workspace.workspace_root() / "common_data" / "hisat2_chr22_index" / "chr22")
+    ref = str(workspace.resources_root() / "core_test_data_hg38" / "genome" / "chr22.fa")
+    problems = _problems(f"hisat2 -x {idx} -U {{INPUT_FASTQ}} | samtools sort -o {{OUTPUT_DIR}}/x.bam && "
+                         f"samtools faidx {ref}", {"INPUT_FASTQ": "/a"})
+    hit = [p for p in problems if "names a path on this machine" in p]
+    assert len(hit) == 1, problems
+    assert f"`{idx}`" in hit[0] and f"`{ref}`" in hit[0] and "write it as a slot" in hit[0]
+    assert CD.machine_paths_in(f"hisat2 -x {idx} -U {{INPUT_FASTQ}} && samtools faidx {ref}") == [idx, ref]
 
 
-def test_output_patterns_are_filled_with_the_trials_bindings():
-    """`{SAMPLE}.sorted.bam` declared, `SRR1039508.sorted.bam` produced: a match. The
-    renderer already read slots in these patterns; the self-test did not, and a run
-    that wrote every file it promised failed as 'expected outputs missing'."""
-    plan = {"name": "s", "substitutions": {"FASTQ": "/d/in.fq", "SAMPLE": "SRR1039508"}}
-    cmds = ["hisat2 -U {FASTQ} -o {OUTDIR}/{SAMPLE}.sorted.bam"]
-    outputs = [{"name": "sorted_bam", "files": ["{SAMPLE}.sorted.bam"]}]
-    res = SW._run_one_trial(plan, cmds, {"FASTQ", "SAMPLE", "OUTDIR"}, outputs,
-                            _FakeEM("SRR1039508.sorted.bam"), "x", {"pipeline_name": "p"}, None)
-    assert res["ok"] is True, res
-    assert res["output_slots"] == ["OUTDIR"]
+def test_paths_inside_the_image_and_slot_paths_are_not_machine_paths():
+    """`/opt/tool/db` lives in the image; `{OUTPUT_DIR}/x.bam` is a slot's own path."""
+    cmd = "tool --db /opt/tool/db -i {INPUT_FASTQ} -o {OUTPUT_DIR}/x.bam 2>{OUTPUT_DIR}/x.log"
+    assert not any("names a path on this machine" in p for p in _problems(cmd, {"INPUT_FASTQ": "/a"}))
+    assert CD.machine_paths_in(cmd) == []
+    assert CD.ABS_PATH_RE.findall("x {OUTPUT_DIR}/s.bam -o /tmp/a.b -x=/data/idx") == ["/tmp/a.b", "/data/idx"]
 
 
-def test_a_pattern_spelling_the_output_directory_is_read_relative_to_scratch():
-    plan = {"name": "s", "substitutions": {"IN": "/d/in"}}
-    res = SW._run_one_trial(plan, ["t {IN} > {OUTPUT_DIR}/o.tsv"], {"IN", "OUTPUT_DIR"},
-                            [{"name": "o", "files": ["{OUTPUT_DIR}/o.tsv"]}],
-                            _FakeEM("o.tsv"), "x", {"pipeline_name": "p"}, None)
-    assert res["ok"] is True, res
+# ── a how-to that patches the image is not a how-to ────────────────────────────────────
+def test_a_command_that_modifies_the_image_is_refused_at_the_run_with_the_fragment():
+    shim = ("cat > /usr/lib/python3.10/sitecustomize.py << 'PYEOF'\nimport sys\nPYEOF\n"
+            "/opt/deepvariant/bin/run_deepvariant --reads {INPUT_FASTQ} --output_vcf {OUTPUT_DIR}/out.vcf.gz")
+    hit = [p for p in _problems(shim, {"INPUT_FASTQ": "/a"}) if "modifies the image before running the tool" in p]
+    assert len(hit) == 1
+    assert "`> /usr/lib/python3.10/sitecustomize.py`" in hit[0] and "Build the fix into the image" in hit[0]
+    assert any("`pip install`" in p for p in _problems("pip install pyarrow && tool {INPUT_FASTQ} -o {OUTPUT_DIR}/x.txt",
+                                                       {"INPUT_FASTQ": "/a"}))
+    assert not any("modifies the image" in p for p in _problems("tool {INPUT_FASTQ} > {OUTPUT_DIR}/x.txt 2>&1",
+                                                                {"INPUT_FASTQ": "/a"}))
 
 
-def test_a_missed_pattern_reports_both_spellings():
-    plan = {"name": "s", "substitutions": {"IN": "/d/in", "SAMPLE": "s1"}}
-    res = SW._run_one_trial(plan, ["t {IN} > {OUTPUT_DIR}/o.tsv"], {"IN", "SAMPLE", "OUTPUT_DIR"},
-                            [{"name": "o", "files": ["{SAMPLE}.bam"]}],
-                            _FakeEM("o.tsv"), "x", {"pipeline_name": "p"}, None)
-    assert res["ok"] is False
-    assert res["missing_outputs"] == [{"slot": "o", "pattern": "{SAMPLE}.bam", "pattern_filled": "s1.bam"}]
+# ── the run tools refuse before anything runs, in one answer ───────────────────────────
+def test_run_pipeline_step_refuses_a_bad_template_before_running_and_records_nothing(monkeypatch):
+    import agent.mcp_server as ms
+    from agent.mcp_tools import run_tools as R
+    ran, recorded = [], []
+    monkeypatch.setattr(ms._env_mgr, "run_in_env", lambda *a, **k: ran.append(a) or {"returncode": 0}, raising=False)
+    monkeypatch.setattr(ms._pipeline_state, "add_step", lambda *a, **k: recorded.append(a) or 1, raising=False)
+    monkeypatch.setattr(ms._pipeline_state, "get_draft", lambda pid: {"pipeline_steps": []}, raising=False)
+    out = R.run_pipeline_step(env_name="x", command="tool -o {output_tsv} {in}", pipeline_id="p",
+                              bindings={"in": "/a"})
+    assert out["outcome"] == "refused" and out["code"] == "run_pipeline_step.howto_invalid"
+    assert "`{in}` → `{IN}`" in out["error"] and ran == [] and recorded == []
 
 
-def test_i6_accepts_any_output_slot_the_self_test_accepts_and_still_refuses_a_typo():
-    """The walk and the self-test used to disagree: I6 knew only OUTPUT_DIR/OUT_DIR while
-    the self-test filled every name containing 'output'. One rule now."""
+def test_the_i6_walk_accepts_any_output_slot_and_still_refuses_a_typo():
     from agent.skills.spec_writer import check_invariants
 
     def _v(template):
@@ -210,96 +184,9 @@ def test_i6_accepts_any_output_slot_the_self_test_accepts_and_still_refuses_a_ty
                 "usage": {"description": "x", "command_template": template,
                           "inputs": [{"name": "INPUT_BAM", "format": "bam"}],
                           "outputs": [{"name": "o", "files": ["*"]}]}}
-        return [x for x in check_invariants(spec)
-                if x["invariant"] == "I6.template_placeholders_declared"]
+        return [x for x in check_invariants(spec) if x["invariant"] == "I6.template_placeholders_declared"]
     assert _v("samtools view {INPUT_BAM} -o {OUTDIR}/out.bam") == []
     assert _v("samtools view {INPUT_BAM} -o {OUTPUT_BAM}") == []
     bad = _v("samtools view {INPUT_BAM} -o {OUPUT_DIR}/out.bam")
     assert bad and bad[0]["undeclared_placeholders"] == ["OUPUT_DIR"]
     assert "output directory" in bad[0]["message"]
-
-
-def test_a_block_without_trials_is_refused_naming_the_slots_a_trial_must_bind():
-    """Guessing the values from the recorded steps filled a script's slots positionally
-    and burned a seal on a command that never could have worked. The author ran the
-    commands and knows the values: they are the trial."""
-    u = _usage("Rscript {SCRIPT} {COUNTS_DIR} {OUTPUT_DIR}/de.csv", inputs=("SCRIPT", "COUNTS_DIR"), trials=[])
-    problems = PS.usage_block_problems(u)
-    assert len(problems) == 1 and problems[0].startswith("no trials:")
-    assert "{COUNTS_DIR}, {SCRIPT}" in problems[0] and "values the run used" in problems[0]
-    u["trials"] = [{"name": "airway", "substitutions": {"SCRIPT": "/s.R", "COUNTS_DIR": "/c"}}]
-    assert PS.usage_block_problems(u) == []
-    only_output = _usage("make-report > {OUTPUT_DIR}/r.txt", inputs=(), trials=[])
-    assert PS.usage_block_problems(only_output) == [], "nothing to bind, nothing to declare"
-
-
-def test_a_file_shaped_output_slot_is_refused_with_the_directory_idiom():
-    """`-o {OUTPUT_FASTQ}` reads as an output slot, so the self-test filled it with the
-    scratch directory and cutadapt answered "Is a directory". Three runs paid a seal for it."""
-    u = _usage("cutadapt -a AGATCG -o {OUTPUT_FASTQ} {INPUT_FASTQ}", inputs=("INPUT_FASTQ",),
-               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/d/r1.fq.gz"}}])
-    problems = PS.usage_block_problems(u)
-    assert len(problems) == 1 and problems[0].startswith("output slots are directories")
-    assert "`{OUTPUT_FASTQ}` → `{OUTPUT_DIR}/<name>`" in problems[0] and "outputs[*].files" in problems[0]
-    for ok_slot in ("OUTPUT_DIR", "OUTDIR", "OUTPUT_FOLDER", "OUTPUT_DIRECTORY"):
-        assert CD.is_output_dir_slot(ok_slot) and PS.usage_block_problems(
-            _usage(f"cutadapt -o {{{ok_slot}}}/t.fq.gz {{INPUT_FASTQ}}",
-                   trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/d/r1.fq.gz"}}])) == []
-    assert not CD.is_output_dir_slot("OUTPUT_PREFIX") and not CD.is_output_dir_slot("FASTQ")
-
-
-def test_an_is_a_directory_failure_names_the_output_slot_trap():
-    class _Dir:
-        def run_in_env(self, env_name, command, timeout=None, watch_dir=None, **kw):
-            return {"returncode": 1, "stdout": "", "stderr": "[Errno 21] Is a directory: '/tmp/x'"}
-    res = SW._run_one_trial({"name": "t", "substitutions": {"IN": "/d/in"}}, ["seqkit stats -o {OUTPUT_DIR} {IN}"],
-                            {"IN", "OUTPUT_DIR"}, [{"name": "o", "files": ["*.tsv"]}], _Dir(), "x",
-                            {"pipeline_name": "p"}, None)
-    assert res["ok"] is False and "{OUTPUT_DIR}/<name>" in res["hint"] and "{OUTPUT_DIR}" in res["hint"]
-
-
-# ── a machine path in the template is a slot that was not declared ─────────────────────
-def test_a_machine_path_in_the_template_is_refused_at_the_write_and_named():
-    """The self-test mounts only the paths bound through slots, so a how-to carrying an
-    absolute path from this machine's zones can never resolve at the image locus — and it
-    is not re-runnable anywhere else either. Caught at the write, with the slot remedy."""
-    from agent.skills import workspace
-    idx = str(workspace.workspace_root() / "common_data" / "hisat2_chr22_index" / "chr22")
-    ref = str(workspace.resources_root() / "core_test_data_hg38" / "genome" / "chr22.fa")
-    u = _usage(f"hisat2 -x {idx} -U {{INPUT_FASTQ}} | samtools sort -o {{OUTPUT_DIR}}/x.bam && "
-               f"samtools faidx {ref}",
-               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
-    problems = PS.usage_block_problems(u)
-    hit = [p for p in problems if "names a path on this machine" in p]
-    assert len(hit) == 1, problems
-    assert f"`{idx}`" in hit[0] and f"`{ref}`" in hit[0]
-    assert "write it as a slot" in hit[0] and "trial's substitutions" in hit[0]
-    assert CD.machine_paths_in(u["command_template"]) == [idx, ref]
-
-
-def test_paths_inside_the_image_and_slot_paths_are_not_machine_paths():
-    """`/opt/tool/db` lives in the image; `{OUTPUT_DIR}/x.bam` is a slot's own path."""
-    u = _usage("tool --db /opt/tool/db -i {INPUT_FASTQ} -o {OUTPUT_DIR}/x.bam 2>{OUTPUT_DIR}/x.log",
-               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
-    assert not any("names a path on this machine" in p for p in PS.usage_block_problems(u))
-    assert CD.machine_paths_in(u["command_template"]) == []
-    assert CD.ABS_PATH_RE.findall("x {OUTPUT_DIR}/s.bam -o /tmp/a.b -x=/data/idx") == ["/tmp/a.b", "/data/idx"]
-
-
-# ── a how-to that patches the image is not a how-to ────────────────────────────────────
-def test_a_template_that_modifies_the_image_is_refused_at_the_write_with_the_fragment():
-    """The shipped image must run the tool as it is. A template that writes a shim into the
-    image's system path or installs a package before invoking the tool proves the patched
-    container and degrades the tool anywhere else; refused at the write, remedy named."""
-    shim = ("cat > /usr/lib/python3.10/sitecustomize.py << 'PYEOF'\nimport sys\nPYEOF\n"
-            "/opt/deepvariant/bin/run_deepvariant --reads {INPUT_FASTQ} --output_vcf {OUTPUT_DIR}/out.vcf.gz")
-    u = _usage(shim, trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
-    hit = [p for p in PS.usage_block_problems(u) if "modifies the image before running the tool" in p]
-    assert len(hit) == 1, PS.usage_block_problems(u)
-    assert "`> /usr/lib/python3.10/sitecustomize.py`" in hit[0] and "Build the fix into the image" in hit[0]
-    u = _usage("pip install pyarrow && tool {INPUT_FASTQ} -o {OUTPUT_DIR}/x.txt",
-               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
-    assert any("`pip install`" in p for p in PS.usage_block_problems(u))
-    u = _usage("tool {INPUT_FASTQ} > {OUTPUT_DIR}/x.txt 2>&1",
-               trials=[{"name": "t", "substitutions": {"INPUT_FASTQ": "/a"}}])
-    assert not any("modifies the image" in p for p in PS.usage_block_problems(u))

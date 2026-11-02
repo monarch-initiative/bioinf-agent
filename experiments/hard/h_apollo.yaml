@@ -11,7 +11,7 @@ name: h_apollo
 tier: C1
 success: frozen
 expect:
-  evidence_depth_min: version
+  evidence: ran
 prompt: |
   Install Apollo, the genome annotation editor our curators log into to edit gene models,
   and freeze it as a shippable image. Say which image or recipe you froze from, which

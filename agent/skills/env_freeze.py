@@ -689,10 +689,11 @@ def build_env_image(
     as `now() - _APT_SNAPSHOT_LAG` so the resulting recipe captures a timestamp going
     forward. The recipe-replay path passes the recipe's stored timestamp through verbatim.
 
-    `evidence`: `{tool: command}` authored by the caller. For a conda or pip tool it
-    REPLACES the synthesized presence probe as that tool's in-image verification, and
-    EnvBuild holds it to the same two guards as every verification: the shape rule
-    before the build and the control-image experiment after it. The same dict serves
+    `evidence`: `{tool: command}` authored by the caller. It REPLACES the check the build
+    would otherwise run for that tool — a conda or pip tool's synthesized presence probe,
+    a jar's or a source build's recorded verify command — as the tool's in-image
+    verification, and EnvBuild holds it to the same two guards as every verification: the
+    shape rule before the build and the control-image experiment after it. The same dict serves
     the adopt path (`freeze_tools._validate_tools_in_image`), so one evidence contract
     covers both ways an image is obtained."""
     if not apt_snapshot:
@@ -838,7 +839,11 @@ def build_env_image(
             pip_verify.append((nm, authored.get(nm) or func or _pip_presence_check(nm)))
         eb.add_pip(pip_specs, verify=pip_verify)
     for s in tool_specs:
-        eb.add_tool(s)
+        # one check per tool: the caller's evidence replaces the check the install
+        # recorded (a jar's verify_command, a source build's smoke), as it replaces a
+        # conda or pip tool's presence probe above
+        a = authored.get(str(s.get("tool") or ""))
+        eb.add_tool({**s, "evidence": a} if a else s)
 
     result = eb.run()
     result["request_key"] = eb.request_key()

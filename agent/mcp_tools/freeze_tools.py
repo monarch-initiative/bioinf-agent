@@ -171,11 +171,44 @@ _NOT_FOUND_RE = re.compile(r"(?:bash|sh): line \d+: (\S+): command not found")
 _PACKAGE_MANAGERS = frozenset({"conda", "mamba", "micromamba", "pip", "pip3", "pipx"})
 
 
+def _recorded_check_source(draft: object, tool: str, check: str) -> tuple[int, str]:
+    """Where a tool's in-image check came from: (install step number, the key that holds
+    it) when an install step recorded it as its verify command or evidence, else (0, "")
+    — the check then came with `evidence=` or is the synthesized probe."""
+    steps = (draft or {}).get("install_steps") if isinstance(draft, dict) else None
+    for i, st in enumerate(steps or [], 1):
+        if not isinstance(st, dict):
+            continue
+        for pkg in st.get("installed_packages") or []:
+            im = (pkg.get("install_method") or {}) if isinstance(pkg, dict) else {}
+            for key in ("verify_command", "evidence", "functional_evidence"):
+                if check and im.get(key) == check and (not tool or pkg.get("name") in (tool, None)):
+                    return int(st.get("step") or i), key
+    return 0, ""
+
+
 def _build_failure(br: dict, draft: object, conda_deps: list, rkey: str, adopt: dict, extra: dict) -> dict:
-    """A failed container-native build as the caller must read it. An image that BUILT and
-    failed only its in-image evidence is an evidence failure, named as one with every
-    contract violation in `error`; a failure inside the build keeps its stage and carries,
-    for the two failures an agent keeps walking into, the change that ends them."""
+    """A failed container-native build as the caller must read it. A check the shape rule
+    refuses before the build is a refusal that names where the check was recorded; an image
+    that BUILT and failed only its in-image evidence is an evidence failure, named as one
+    with every contract violation in `error`; a failure inside the build keeps its stage and
+    carries, for the two failures an agent keeps walking into, the change that ends them."""
+    if br.get("code") == "env_build.evidence_shape":
+        tool, check = str(br.get("tool") or ""), str(br.get("evidence") or "")
+        step_n, key = _recorded_check_source(draft, tool, check)
+        if step_n:
+            source = f"install step {step_n}'s {key}"
+            remedy = (f"this is the check install step {step_n} recorded for {tool} ({key}); pass "
+                      f"evidence={{{tool!r}: '<command>'}} to freeze — caller-authored evidence replaces the "
+                      f"recorded check — or re-run that install call with step={step_n} and a {key} of an honest "
+                      f"shape (two are given in `error`)")
+        else:
+            source = "evidence="
+            remedy = f"change the evidence= command for {tool} to an honest shape (two are given in `error`)"
+        return refused("freeze.evidence_shape", success=False, stage=br.get("stage") or "evidence_preflight",
+                       request_key=rkey, tool=tool, check=check, recorded_by=source,
+                       error=str(br.get("error") or ""), remedy=remedy,
+                       adopt_attempt=adopt, build=_build_for_return(br), **extra)
     violations = [v for v in (br.get("honesty_violations") or []) if isinstance(v, dict)]
     if br.get("image_digest") and violations:
         return broke("freeze.evidence_failed", success=False, stage="evidence", request_key=rkey,
@@ -413,7 +446,12 @@ def freeze(
     # at the CALL: without this disclosure nothing tells the caller their request did
     # not pin, and an old artifact comes back looking like a fresh solve.
     unpinned = sorted(n for n, v in parsed_filled if not v)
-    cached = _ms._env_cache.lookup_anchored(rkey, _ms._container_build.image_present)
+    # The draft's install record is part of what the cached image must have been built
+    # from: a fix installed on the host env after a build is a different env, under the
+    # same request key.
+    install_digest = _ms._freeze.install_record_digest(draft)
+    cached = _ms._env_cache.lookup_anchored(rkey, _ms._container_build.image_present,
+                                            install_record_digest=install_digest)
     if cached and unpinned:
         served = {}
         try:
@@ -820,6 +858,8 @@ def freeze(
     # Checking the registered bytes is also what makes the check total: `register` asserts
     # SHAPE, `lookup_verified` asserts the CONTRACT at serve time, and the write path
     # asserts it too — so a record on disk is never one the serving path refuses.
+    # The install record this image was built from, for the next lookup to compare.
+    record["install_record_digest"] = install_digest
     contract = _ms._env_honesty.evaluate_build(record)
     if contract.violations:
         if mode == "adopt":
@@ -891,7 +931,7 @@ def freeze(
     # question a pass/fail gate cannot: how much did it actually LOOK at? A clean contract
     # with an UNOBSERVED clause is `degraded`, not `proven` — same artifact, same
     # registration, honest tag. See env_honesty.coverage_outcome for why the rule is
-    # structural (unobserved clauses) and not evidence depth.
+    # structural (unobserved clauses) and not what the evidence did (ran or found).
     # merge (not kwargs) — `record` is a build result that may already carry a
     # `success` key; a dict-literal merge makes the explicit values last-wins
     # instead of a kwarg collision. `contract` is the SAME evaluation that gated the

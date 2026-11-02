@@ -22,7 +22,6 @@ cannot leave a half-written draft.
 
 from __future__ import annotations
 
-import copy
 import os
 import tempfile
 from pathlib import Path
@@ -34,33 +33,6 @@ from agent.skills import store_lock as _store_lock
 from agent.skills import typed_nouns
 from agent.skills.outcomes import refused
 from agent.skills import workspace
-
-
-#: The shape `patch_pipeline(usage=…)` and the seal both require.
-USAGE_SHAPE = {
-    "description": "str (required)",
-    "command_template": "str | list[str] (required)",
-    "inputs": [{"name": "str (required)", "format": "str?", "description": "str?"}],
-    "outputs": [{"name": "str (required)", "files": ["pattern"], "description": "str?"}],
-    "trials": [{"name": "str", "substitutions": {"PLACEHOLDER": "value"}, "description": "str?"}],
-}
-
-
-def usage_block_problems(usage) -> list[str]:
-    """Validate a draft's `usage` block against the WorkflowSpec model AND against the
-    slot grammar the seal's self-test runs (core_data.usage_slot_problems); one line per
-    problem, empty when it fits. The shape alone let through a how-to whose slots the
-    self-test could not see, so the seal answered "no slots" to a block the writer
-    thought was fine; the grammar now refuses at the write, naming the exact change."""
-    from pydantic import ValidationError
-    from agent.models.core_data import UsageTemplate, usage_slot_problems
-    if not isinstance(usage, dict):
-        return ["usage must be a mapping"]
-    try:
-        UsageTemplate.model_validate(usage)
-    except ValidationError as e:
-        return [f"{'.'.join(str(x) for x in err['loc']) or 'usage'}: {err['msg']}" for err in e.errors()]
-    return usage_slot_problems(usage)
 
 
 def validation_key(path: str) -> str:
@@ -604,13 +576,11 @@ class PipelineState:
     #
     # The agent's role via patch is limited to fields no primitive captures:
     # author-supplied prose (description, notes, final_summary), the runtime-
-    # environment hint, runtime / reference configs, service dependencies,
-    # and the canonical usage block (whose self-test is re-run live anyway).
+    # environment hint, runtime / reference configs and the policy claims.
     PATCHABLE_KEYS: frozenset[str] = frozenset({
         "description", "notes", "final_summary",
         "conda_env", "created_at", "python_version", "reference_free",
         "runtime_environment", "runtime_configs", "reference_databases",
-        "usage",
         # Acceleration + licensing claims. Agent-authored, but their internal
         # consistency is guarded by I12 / I13 (an inconsistent claim — e.g.
         # runtime_verified with no probe, or license_gated + redistributable —
@@ -629,6 +599,7 @@ class PipelineState:
         "usage_verified", "lock_sha256",
         "authored_artifacts",      # owned by stage_authored_artifact (sha256-anchored)
         "service_dependencies",    # owned by start_service / verify_service_dependency (I10 probe-anchored)
+        "usage",                   # DERIVED by seal_workflow from the recorded steps' templates and bindings
         # Lifecycle POINTERS — written only by freeze / seal (set_frozen_pointer /
         # append_sealed_pointer). Hand-supplying one would forge a lifecycle claim;
         # current_state re-earns it anyway, but block the patch as defense-in-depth.
@@ -655,7 +626,8 @@ class PipelineState:
                     f"patch refused — these keys are runtime-captured or "
                     f"finalize-derived and cannot be hand-supplied: {rejected}. "
                     f"Use the dedicated primitive (run_pipeline_step, "
-                    f"verify_installation, install_conda_packages, freeze) "
+                    f"verify_installation, install_conda_packages, freeze; the how-to "
+                    f"is derived at seal_workflow from each step's command and bindings) "
                     f"so the spec stays anchored to observed reality."
                 ),
                 rejected_keys=rejected,
@@ -671,22 +643,6 @@ class PipelineState:
                 unknown_keys=unknown,
                 patchable_keys=sorted(self.PATCHABLE_KEYS),
             )
-
-        if "usage" in patches:
-            current = self.get_draft(pipeline_id)
-            if current is None:
-                return self.unknown_draft_refusal("pipeline_state.unknown_pipeline", pipeline_id)
-            merged = copy.deepcopy(current)
-            _deep_merge(merged, {"usage": patches["usage"]})
-            problems = usage_block_problems(merged.get("usage"))
-            if problems:
-                return refused(
-                    "pipeline_state.usage_invalid",
-                    error=("patch refused — the merged `usage` block is not a how-to the seal "
-                           "could self-test (it would refuse it): " + "; ".join(problems)),
-                    problems=problems,
-                    usage_shape=USAGE_SHAPE,
-                )
 
         try:
             ok, _ = self._mutate(pipeline_id, lambda draft: _deep_merge(draft, patches))

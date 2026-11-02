@@ -63,11 +63,11 @@ class TestPullableImageThreeStates:
 
 # ─────────────────────────── FD2 — a load followed by self-checking work ────────────
 
-class TestEvidenceDepthLoadThenWork:
-    """`Rscript -e 'library(DESeq2); …; DESeq(dds); stopifnot(…)'` was disclosed as
-    [import] on a real freeze while the command ran the tool's main entrypoint and
-    asserted on the result. Promotion requires calls AND an assertion — a misfire
-    without the assertion could only weaken disclosure, so it stays import."""
+class TestEvidenceKindLoadThenWork:
+    """`Rscript -e 'library(DESeq2); …; DESeq(dds); stopifnot(…)'` was disclosed as a
+    load-only probe on a real freeze while the command ran the tool's main entrypoint.
+    A load followed by a call is a run; a load alone, or a load followed by printing or
+    session utilities, only finds the tool."""
 
     FD2_COMMAND = ("Rscript -e 'suppressMessages(library(DESeq2)); set.seed(1); "
                    "m <- matrix(rnbinom(240, mu=50, size=10), nrow=40); "
@@ -75,26 +75,24 @@ class TestEvidenceDepthLoadThenWork:
                    "dds <- DESeq(dds, quiet=TRUE); r <- results(dds); "
                    "stopifnot(nrow(r)==40); cat(\"ok\")'")
 
-    def test_the_fd2_command_is_functional(self):
-        from agent.skills.env_honesty import evidence_depth
-        assert evidence_depth(self.FD2_COMMAND, "bioconductor-deseq2") == "functional"
+    def test_the_fd2_command_ran(self):
+        from agent.skills.env_honesty import EVIDENCE_RAN, evidence_kind
+        assert evidence_kind(self.FD2_COMMAND, "bioconductor-deseq2") == EVIDENCE_RAN
 
     @pytest.mark.parametrize("cmd", [
         "Rscript -e 'library(DESeq2)'",
         "python -c 'import numpy'",
         "python3 -m talos",
-        # a load followed by UNASSERTED calls may run nothing of the tool — stays import
+        # a load followed by a session utility runs nothing of the tool
         "Rscript -e 'library(DESeq2); sessionInfo()'",
     ])
-    def test_load_only_and_unasserted_stay_import(self, cmd):
-        from agent.skills.env_honesty import evidence_depth
-        assert evidence_depth(cmd, "bioconductor-deseq2") == "import"
+    def test_load_only_and_session_utilities_only_find_the_tool(self, cmd):
+        from agent.skills.env_honesty import EVIDENCE_FOUND, evidence_kind
+        assert evidence_kind(cmd, "bioconductor-deseq2") == EVIDENCE_FOUND
 
-    def test_assert_flag_on_a_bare_tool_cannot_reach_the_promotion(self):
-        # the promotion lives INSIDE the import branch; a command with no load shape
-        # never sees it, so `--assert-mode` cannot dress a probe as functional
-        from agent.skills.env_honesty import evidence_depth
-        assert evidence_depth("sometool --assert-mode", "sometool") != "functional"
+    def test_a_load_followed_by_a_call_ran(self):
+        from agent.skills.env_honesty import EVIDENCE_RAN, evidence_kind
+        assert evidence_kind("Rscript -e 'library(DESeq2); dds <- DESeq(dds)'", "bioconductor-deseq2") == EVIDENCE_RAN
 
 
 # ─────────────────────────── FD3 — both truths on the dashboard headline ────────────
@@ -130,7 +128,7 @@ class TestDashboardHeadlineBothTruths:
         assert "do not run this as-is" not in html, (
             "the drive-1 page led with 'do not run this as-is' over a workflow whose "
             "how-to the seal had just proven (FD3)")
-        assert "declared how-to self-tested" in html
+        assert "how-to proven by the validated steps" in html
         assert "failed iteration step(s)" in html, "the failed steps must stay visible"
 
     def test_without_a_proven_howto_failed_still_headlines_do_not_run(self):
@@ -314,80 +312,3 @@ class TestClusterDbAnchorCell:
         from agent.skills.run_dashboard_html import render_run_dashboard_html
         html = render_run_dashboard_html(self._spec("ab" * 32, "cluster"))
         assert ("ab" * 32)[:19] in html
-
-
-# ──────────────── the I4 host-fallback asks the same locus question ─────────────────
-
-class TestHostFallbackLocusPrecondition:
-    def _draft(self, path: str) -> dict:
-        return {"conda_env": "some_env",
-                "usage": {"command_template": "t {IN} > {OUTPUT_DIR}/o",
-                          "inputs": [], "outputs": [{"files": ["o"]}],
-                          "trials": [{"name": "t1", "substitutions": {"IN": path}}]}}
-
-    def test_cluster_only_trial_yields_no_mounts(self):
-        from agent.mcp_tools.workflow_tools import _local_trial_mounts
-        assert _local_trial_mounts(self._draft("/work/cluster/only.vcf")) is None
-
-    def test_local_trial_yields_mounts(self, tmp_path):
-        from agent.mcp_tools.workflow_tools import _local_trial_mounts
-        f = tmp_path / "in.vcf"
-        f.write_text("x")
-        mounts = _local_trial_mounts(self._draft(str(f)))
-        assert mounts == [(str(tmp_path), str(tmp_path))]
-
-    def test_empty_template_is_not_a_locus_problem(self):
-        from agent.mcp_tools.workflow_tools import _local_trial_mounts
-        assert _local_trial_mounts({"usage": {"command_template": ""}}) == []
-
-    def test_a_prefix_whose_family_is_on_disk_is_present(self, tmp_path):
-        """An aligner index prefix is neither a file nor a directory; its family is
-        what exists. The precondition once read it as a cluster-only input and
-        skipped I4 for every how-to with an index — mounted at the parent instead."""
-        from agent.mcp_tools.workflow_tools import _local_trial_mounts
-        for i in range(1, 9):
-            (tmp_path / f"chr22.{i}.ht2").write_text("x")
-        mounts = _local_trial_mounts(self._draft(str(tmp_path / "chr22")))
-        assert mounts == [(str(tmp_path), str(tmp_path))]
-
-    def test_a_prefix_with_no_family_is_still_absent(self, tmp_path):
-        from agent.mcp_tools.workflow_tools import _local_trial_mounts
-        (tmp_path / "unrelated.txt").write_text("x")
-        assert _local_trial_mounts(self._draft(str(tmp_path / "chr22"))) is None
-
-    def test_image_runner_and_fallback_share_the_precondition(self):
-        # one implementation: both decision sites must consult _local_trial_mounts
-        import inspect
-        from agent.mcp_tools import workflow_tools
-        assert "_local_trial_mounts(draft)" in inspect.getsource(
-            workflow_tools._image_usage_runner)
-        seal_src = inspect.getsource(workflow_tools)
-        assert "draft.get(\"conda_env\") and _local_trial_mounts(draft) is not None" in seal_src
-
-
-# ──────────────── the seal checks the usage block's shape before the self-test ──────────
-
-class TestSealValidatesUsageShapeFirst:
-    def test_a_malformed_usage_block_refuses_before_any_trial_runs(self, monkeypatch):
-        import agent.mcp_server as _ms
-        from agent.skills import spec_writer, typed_nouns
-        from agent.mcp_tools.workflow_tools import seal_workflow
-        draft = {"pipeline_name": "p", "pipeline_steps": [{"step": 1, "returncode": 0}],
-                 "usage": {"command_template": "t {IN} > {OUTPUT_DIR}/o",
-                           "outputs": [{"files": ["o"]}]}}
-        monkeypatch.setattr(_ms._pipeline_state, "get_draft", lambda pid: draft)
-        monkeypatch.setattr(_ms._env_cache, "lookup_verified",
-                            lambda rk: ({"request_key": rk, "image": "img", "content_digest": "d"}, []))
-        monkeypatch.setattr(_ms._env_cache, "all", lambda: {})
-        monkeypatch.setattr(spec_writer, "check_workflow_invariants", lambda d: [])
-        monkeypatch.setattr(typed_nouns, "check_draft", lambda *a, **k: None)
-
-        def _never(*a, **k):
-            raise AssertionError("the I4 self-test ran on a usage block the schema refuses")
-        monkeypatch.setattr(spec_writer, "self_test_usage", _never)
-
-        out = seal_workflow("p", "rk-1")
-        assert out.get("code") == "seal.usage_block_invalid"
-        assert out["stage"] == "usage_shape"
-        joined = " ".join(out["problems"])
-        assert "description" in joined and "outputs.0.name" in joined

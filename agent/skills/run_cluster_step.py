@@ -156,6 +156,25 @@ def _seal_slurm_context(slurm: Optional[Mapping]) -> Optional[dict]:
     return ctx or None
 
 
+def cluster_howto(command: str, inputs: Mapping[str, str], outputs: Mapping[str, str],
+                  workflow_dir: str) -> tuple[str, dict[str, str]]:
+    """The cluster step's command in the how-to grammar the local run tools record: each
+    `${name}` bound to an input becomes the slot `{NAME}` with the input's remote path as
+    its binding; each `${name}` bound to an output becomes `{OUTPUT_DIR}/<file>`, the
+    output slot standing for the workflow directory the step ran in. One grammar for
+    every step, so the seal derives one how-to from a chain whatever locus each step ran
+    at. Returns (template, bindings)."""
+    template = command
+    bindings: dict[str, str] = {}
+    for name, path in (inputs or {}).items():
+        slot = str(name).upper()
+        template = template.replace("${" + str(name) + "}", "{" + slot + "}")
+        bindings[slot] = str(path)
+    for name, filename in (outputs or {}).items():
+        template = template.replace("${" + str(name) + "}", "{OUTPUT_DIR}/" + str(filename))
+    return template, bindings
+
+
 def _record_failed_cluster_step(
         _pipeline_state, pipeline_id, *,
         tool_name, command, inputs, failure_code, error,
@@ -633,10 +652,16 @@ def run_step_on_cluster(
     output_sha256 = _env_mgr.hash_outputs(downloaded) or {}
 
     # ─── 7. Build the pipeline_step record + add to draft ─────────────
+    template, bindings = cluster_howto(command, inputs, outputs, workflow_dir)
     step_data = {
         "tool":                   tool_name or default_step_tool(command),
         "purpose":                f"cluster run of {tool_name or 'tool'}",
         "command":                command,
+        # the how-to the seal derives from: the command in the slot grammar, the inputs
+        # as its bindings, the workflow directory as the output slot's value
+        "template":               template,
+        "bindings":               bindings or None,
+        "work_dir":               workflow_dir,
         "returncode":             rc,
         "resource_usage":         resource_usage,
         "inputs":                 [{"path": p, "references": []}

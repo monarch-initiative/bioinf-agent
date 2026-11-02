@@ -13,7 +13,7 @@ and refuses, naming the remedy, when the seal cannot support the render.
 Vocabulary
 ----------
   template   one entry of `usage.command_template` (placeholders intact)
-  row        one I4 trial: a substitution map = one samplesheet row
+  row        one I4 trial (a sample the steps ran): a substitution map = one samplesheet row
   stage      one or more consecutive templates that run as ONE job (default: one
              template per stage — the user iterates on one step at a time)
   artifact   a file the how-to names inside an output slot, `{OUTPUT_DIR}/<name>`;
@@ -61,14 +61,11 @@ _TOKEN_CHARS = r"[^\s'\"|;&<>()]+"
 #: Formats whose inputs are per-sample by nature when only one trial exists.
 _READ_FORMATS = frozenset({"fastq", "fq", "fastq.gz", "fq.gz", "bam", "ubam", "cram",
                            "pod5", "fast5", "sam"})
-_SAMPLE_NAMES = frozenset({"SAMPLE", "SAMPLE_ID", "SAMPLE_NAME", "ID"})
+_SAMPLE_NAMES = core_data.SAMPLE_SLOT_NAMES
 #: A how-to input declared with this format is a THREAD SLOT (see the vocabulary).
-THREADS_FORMAT = "threads"
-#: A how-to input declared with this format is a SAMPLESHEET SLOT (see the vocabulary).
-#: A how-to input declared with this format is a VALUE however it is spelled: a URL or a
-#: path inside the image is passed as text, never staged as a file.
-VALUE_FORMAT = "value"
-SAMPLESHEET_FORMAT = "samplesheet"
+THREADS_FORMAT = core_data.THREADS_FORMAT
+VALUE_FORMAT = core_data.VALUE_FORMAT
+SAMPLESHEET_FORMAT = core_data.SAMPLESHEET_FORMAT
 #: Where an authored script lands in the rendered directory (Nextflow's own convention).
 SCRIPT_DIR = "bin"
 #: Interpreters whose first argument is the script that names the stage.
@@ -208,7 +205,7 @@ class Samplesheet(BaseModel):
     model_config = ConfigDict(extra="forbid")
     columns: list[SamplesheetColumn]           # `sample` first, always
     rows: list[dict[str, str]]                 # the seal's trials — the worked example
-    rows_from: Literal["proven", "declared"]   # proven: the I4 self-test ran them; declared: it did not (a multi-env how-to)
+    rows_from: Literal["proven", "declared"]   # proven: the seal's transcript carries them; declared: an authored block with no transcript
 
 
 class PipelineDefault(BaseModel):
@@ -273,6 +270,36 @@ class ResolvedValue(BaseModel):
     stage: str                                 # the stage that writes it; it runs on every launch
 
 
+class ProofTask(BaseModel):
+    """One task of the proof run, as Nextflow's trace recorded it."""
+    model_config = ConfigDict(extra="forbid")
+    name: str                                  # `STAGE (sample)`, as the trace names it
+    status: str                                # COMPLETED / FAILED / ABORTED
+    exit: str                                  # the task's exit code, as the trace spells it
+    realtime: str
+    peak_rss: str
+    container: str
+
+
+class PipelineProof(BaseModel):
+    """The render's own run: the rendered directory, as written, run once with Nextflow
+    over the sealed samples (`-profile local`), so what the user plugs in is what ran.
+    Written into the record and shown on the page; the run's records (trace.txt,
+    report.html, nextflow.log) sit under `run_record` inside the pipeline directory."""
+    model_config = ConfigDict(extra="forbid")
+    verdict: Literal["passed", "failed", "timed_out"]
+    reason: str
+    stamp: str
+    run_dir: str                               # where the proof ran (the scratch zone)
+    run_record: str                            # runs/<stamp>, inside the pipeline directory
+    launch: str                                # the command line the proof ran
+    samples: list[str]
+    tasks_expected: int
+    tasks: list[ProofTask]
+    nextflow_exit: Optional[int]
+    duration_s: float
+
+
 class PipelineRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str
@@ -296,6 +323,7 @@ class PipelineRecord(BaseModel):
     resolved: list[ResolvedValue]              # values looked up at run time (resolve=), at most one
     defaults: list[PipelineDefault]
     notes: list[str]
+    proof: Optional[PipelineProof] = None      # the render's own run over the sealed samples
 
     def stage(self, name: str) -> PipelineStage:
         for s in self.stages:
@@ -340,94 +368,43 @@ def _names_bare_slot(template: str, out_slots: set[str]) -> bool:
     return any(re.search(r"\{" + slot + r"\}(?!/)", template) for slot in out_slots)
 
 
-def match_steps_to_templates(templates: list[str], rows: list[dict], steps: list[dict],
-                             out_slots: set[str]) -> tuple[dict[int, list[tuple[int, dict]]], dict[int, list[str]]]:
-    """Which sealed step ran each how-to command for each row — THE one matching, read by
-    the record derivation and by the seal (to self-test a command in its own step's image).
-
-    Returns `(matched, wrote_into)`: `matched[template index]` is the `(row index, step)`
-    pairs whose recorded command is the template with that row's input values bound
-    (output slots are wildcards: the step and the self-test wrote to different
-    directories), each step claimed once; `wrote_into[step number]` is the output
-    directories the matched command named."""
-    matched: dict[int, list[tuple[int, dict]]] = {i: [] for i in range(len(templates))}
-    wrote_into: dict[int, list[str]] = {}
-    claimed: set[int] = set()
-    for ti, tmpl in enumerate(templates):
-        for ri, r in enumerate(rows):
-            pat = _template_regex(tmpl, r.get("substitutions") or {}, out_slots)
-            for s in steps:
-                n = int(s.get("step", 0))
-                if n in claimed:
-                    continue
-                hit = pat.fullmatch(_ws(s.get("command", "")))
-                if hit:
-                    matched[ti].append((ri, s))
-                    wrote_into[n] = [v for v in hit.groupdict().values() if v]
-                    claimed.add(n)
-                    break
-    return matched, wrote_into
+def names_artifact_bare(template: str, artifact: str) -> bool:
+    """Does the command name `artifact` as a bare word — `samtools sort {SAMPLE}.sam`, the
+    file an earlier command wrote in the same working directory — rather than through an
+    output slot or as part of a longer path or name? The shape a step run in its working
+    directory invites, and one artifact across stages all the same."""
+    return re.search(r"(?<![\w/.{}\-])" + re.escape(artifact) + r"(?![\w/.{}\-])", template) is not None
 
 
 def match_steps_to_templates(templates: list[str], rows: list[dict], steps: list[dict],
                              out_slots: set[str]) -> tuple[dict[int, list[tuple[int, dict]]], dict[int, list[str]]]:
     """Which sealed step ran each how-to command for each row — THE one matching, read by
-    the record derivation and by the seal (to self-test a command in its own step's image).
+    the record derivation. A step's recorded `template` IS the how-to command and its
+    `bindings` are the row's values, so the match is exact: the template equal, every
+    input binding agreeing with the row, each step claimed once (a step recorded without a
+    template, by its literal command, matches a slot-free command).
 
     Returns `(matched, wrote_into)`: `matched[template index]` is the `(row index, step)`
-    pairs whose recorded command is the template with that row's input values bound
-    (output slots are wildcards: the step and the self-test wrote to different
-    directories), each step claimed once; `wrote_into[step number]` is the output
-    directories the matched command named."""
+    pairs; `wrote_into[step number]` is the directory the step ran in and wrote into (its
+    output slots were filled with it)."""
     matched: dict[int, list[tuple[int, dict]]] = {i: [] for i in range(len(templates))}
     wrote_into: dict[int, list[str]] = {}
     claimed: set[int] = set()
     for ti, tmpl in enumerate(templates):
         for ri, r in enumerate(rows):
-            pat = _template_regex(tmpl, r.get("substitutions") or {}, out_slots)
+            subs = {str(k): str(v) for k, v in (r.get("substitutions") or {}).items()}
             for s in steps:
                 n = int(s.get("step", 0))
-                if n in claimed:
+                if n in claimed or str(s.get("template") or s.get("command") or "") != tmpl:
                     continue
-                hit = pat.fullmatch(_ws(s.get("command", "")))
-                if hit:
-                    matched[ti].append((ri, s))
-                    wrote_into[n] = [v for v in hit.groupdict().values() if v]
-                    claimed.add(n)
-                    break
+                bound = {str(k): str(v) for k, v in (s.get("bindings") or {}).items() if k not in out_slots}
+                if any(subs.get(k) != v for k, v in bound.items()):
+                    continue
+                matched[ti].append((ri, s))
+                wrote_into[n] = [str(s["work_dir"])] if s.get("work_dir") else []
+                claimed.add(n)
+                break
     return matched, wrote_into
-
-
-def _template_regex(template: str, subs: Mapping[str, str], out_slots: set[str]) -> re.Pattern:
-    """A pattern that matches the literal command the how-to produces for one row:
-    input placeholders bound to the row's values, output slots left as wildcards
-    (the seal's steps and the I4 self-test wrote to different output dirs). Each
-    output slot's value is captured once (`groupdict()` is the directories the
-    matched command wrote into); a later occurrence of the same slot must repeat it."""
-    parts: list[str] = []
-    pos = 0
-    groups: dict[str, str] = {}
-    text = ""            # literal text and input values, collapsed together (an empty value leaves one space)
-    for m in SLOT_RE.finditer(template):
-        text += template[pos:m.start()]
-        name = m.group(1)
-        if name in out_slots:
-            # the command is matched trimmed (`_ws`), so the template's leading edge is too
-            parts.append(re.escape(_collapse(text).lstrip() if not parts else _collapse(text)))
-            text = ""
-            if name in groups:
-                parts.append(f"(?P={groups[name]})")
-            else:
-                groups[name] = f"out{len(groups)}"
-                parts.append(rf"(?P<{groups[name]}>\S+)")
-        else:
-            if name not in subs:
-                raise KeyError(name)
-            text += _ws(subs[name])
-        pos = m.end()
-    tail = _collapse(text + template[pos:])
-    parts.append(re.escape((tail.lstrip() if not parts else tail).rstrip()))
-    return re.compile("".join(parts))
 
 
 def _step_dicts(spec: Any) -> list[dict]:
@@ -711,7 +688,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             "pipeline.no_howto", "the sealed how-to has no commands",
             "re-seal with a non-empty usage.command_template")
 
-    # ── rows: the I4 trials ─────────────────────────────────────────────────
+    # ── rows: the I4 trials, one per sample the steps ran ──────────────────
     spec_d = _spec_dict(spec)
     rows = [t for t in core_data.usage_proven_trials(spec_d) if isinstance(t, dict)]
     row_source = "proven"
@@ -801,8 +778,8 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         if v in test_paths:
             key = next(k for k, p in core_data.test_data_paths(spec_d.get("test_data") or {}).items() if p == v)
             slot = key.rsplit(".", 1)[-1]                 # `samples.2.r1` → `r1`
-            if slot in ("r1", "r2") or slot.startswith(("r1_", "r2_")):
-                return "per_sample", f"bound to test_data.{key} (reads)"
+            if slot in ("r1", "r2", "phenopacket") or slot.startswith(("r1_", "r2_")):
+                return "per_sample", f"bound to test_data.{key} (per-sample data)"
         return "shared", "one trial, not a reads input"
 
     # an index file the how-to binds as an input of its own is staged through that input
@@ -851,6 +828,11 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         # address, a path inside the image); otherwise a slash makes it a path to stage
         value_kind = ("value" if fmt_declared == VALUE_FORMAT
                       else "path" if any(core_data.is_path_like(v) for v in given) else "value")
+        if value_kind == "path" and kind == "shared" and (family := core_data.prefix_family(v0)):
+            # an index: the value names a family of files, staged whole, named in the task by its stem
+            value_kind = "prefix"
+            shown = ", ".join(Path(f).name for f in family[:3]) + (", …" if len(family) > 3 else "")
+            notes.append(f"{ph}: a prefix — {len(family)} file(s) named after it sit beside it ({shown})")
         if value_kind == "path" and len(given) < len(values):
             raise PipelineDerivationError(
                 "pipeline.optional_path",
@@ -860,7 +842,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
         source = "usage_input" if ph in declared_inputs else "literal"
         if value_kind == "value":
             source = "literal"
-        if kind == "shared" and value_kind == "path":
+        if kind == "shared" and value_kind in ("path", "prefix"):
             for rd in ref_dbs:
                 lp = str(rd.get("local_path") or "")
                 if lp and (v0 == lp or v0.startswith(lp.rstrip("/") + "/")):
@@ -888,7 +870,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             notes.append(f"{ph}: staged with its index file(s) "
                          f"{', '.join(f'{ix.add} in place of {ix.strip}' if ix.strip else ix.add for ix in indexes)}, "
                          f"found beside every file the sealed run read")
-        proven = (f"; the self-test ran it with {sorted(set(values))} only"
+        proven = (f"; the sealed run bound it to {sorted(set(values))} only"
                   if row_source == "proven" and value_kind == "value" and ph not in _SAMPLE_NAMES else "")
         notes.append(f"{ph}: {kind} ({why}){proven}")
     # a shared path that is an authored artifact of the workflow is either a SCRIPT —
@@ -949,7 +931,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     for s in unmatched:
         outs = [str(o) for o in (s.get("detected_outputs") or [])]
         for p in params:
-            if p.kind != "shared" or p.value_kind != "path" or not p.default:
+            if p.kind != "shared" or p.value_kind not in ("path", "prefix") or not p.default:
                 continue
             v = p.default
             exact = any(o == v or str(Path(o).parent) == v.rstrip("/") for o in outs)
@@ -1120,10 +1102,11 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
     else:
         notes.append("stage cut: one stage per how-to command (default)")
 
-    # scope: the seal's self-test ran EVERY how-to command once per trial, so every
-    # command of a workflow rendered per sample ran per sample — a command that binds no
-    # per-sample value included. A cohort stage is never inferred: it comes from a
-    # workflow attached with `cohort=`, whose seal ran once over the cohort's inputs.
+    # scope: every how-to command is proven for every trial (a fixed command by the one
+    # step that ran it), so every command of a workflow rendered per sample runs per
+    # sample — a command that binds no per-sample value included. A cohort stage is never
+    # inferred: it comes from a workflow attached with `cohort=`, whose seal ran once over
+    # the cohort's inputs.
     template_scope: list[ScopeT] = ["cohort" if _collected is not None else "per_sample"] * len(templates)
 
     stage_of_template: dict[int, int] = {}
@@ -1258,11 +1241,14 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
                               else resolved_set.get(ph) if p.kind == "resolved" else None)))
             wanted = list(template_tokens[i])
             if template_bare[i]:
-                # the command names the output directory itself: in the self-test it ran in
+                # the command names the output directory itself: in the sealed run it ran in
                 # the one directory every earlier command wrote into, so everything written
                 # before it is staged in — except what a stage that looks a value up wrote:
                 # that stage hands on the value (in the row's meta), never files
                 wanted += [tok for tok in history if tok not in wanted and not _from_resolver(tok, i)]
+            # an earlier command's artifact named bare, as a file in the shared working directory
+            wanted += [tok for tok in history if tok not in wanted and _producer_before(tok, i) is not None
+                       and names_artifact_bare(templates[i], tok) and not _from_resolver(tok, i)]
             for tok in wanted:
                 src = _producer_before(tok, i)
                 if src is None or stage_of_template[src] == st.index:
@@ -1303,7 +1289,7 @@ def derive_pipeline_record(spec: Any, *, name: str, spec_path: str = "",
             obs0 = per_row[0] if per_row else None
             art = tok
             is_dir = tok in directories
-            # declared when a pattern, read as the self-test reads it, names one of the files
+            # declared when a pattern, read relative to the output directory, names one of the files
             # the first row's step wrote as this artifact — or, unobserved, the artifact itself
             ri0, step0 = (matched.get(last_i) or [(0, None)])[0]
             files = (_observed_files(step0, wrote_into.get(int(step0.get("step", 0)), []), obs0)

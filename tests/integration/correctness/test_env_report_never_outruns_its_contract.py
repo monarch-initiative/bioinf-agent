@@ -212,16 +212,14 @@ def test_the_renderer_reads_the_verdict_rather_than_recomputing_it():
 # `N/N validated in image` is the line a reader takes away, and the S4a specimen
 # printed it over an env whose tool cannot import its own plotting module: the
 # evidence was `--help`, which argparse answers before any dependency is touched.
-# The per-tool table already badged depth (`⚠ version`); the header did not. The
+# The per-tool table already badged the check (`⚠ found`); the header did not. The
 # page qualified its small print and not its headline.
 #
 # Note what is NOT done here. The contract's verdict is untouched, and
 # VALIDATED_IN_IMAGE still reads `established` for that env — correctly, because
-# the contract established exactly what it checks. `evidence_depth` is a
-# structural reading of command TEXT that env_honesty's own comment records
-# under-reporting a command which runs `DESeq()` and asserts on the result;
-# hanging a guarantee verdict on it would trade a quiet over-claim for a loud
-# wrong one. Disclosure, not a gate — the same ruling depth has always had here.
+# the contract established exactly what it checks. `evidence_kind` is a structural
+# reading of command TEXT; hanging a guarantee verdict on it would trade a quiet
+# over-claim for a loud wrong one. Disclosure, not a gate.
 # ---------------------------------------------------------------------------
 
 _PRESENCE_ONLY = {**_GOOD,
@@ -237,38 +235,38 @@ def test_a_presence_only_env_does_not_get_an_unqualified_validated_headline():
     html = render_env_report_html(_PRESENCE_ONLY)
     assert "ran and passed its check inside the shipped image" in html, \
         "the count itself is still true and stays"
-    assert "only confirmed the tool is present and reports a version" in html
+    assert "only found the tool present; it did not run it" in html
 
 
 def test_an_env_whose_evidence_runs_the_tool_is_not_qualified():
     """The negative case, so the qualifier cannot be a constant."""
     html = render_env_report_html(_FUNCTIONAL)
     assert "ran and passed its check inside the shipped image" in html
-    assert "only confirmed the tool is present and reports a version" not in html
+    assert "only found the tool present" not in html
 
 
-def test_the_headline_and_the_per_tool_badge_read_depth_the_same_way():
+def test_the_headline_and_the_per_tool_badge_read_the_kind_the_same_way():
     """They were two spellings of one question, which is why one got qualified
     and the other did not."""
-    from agent.skills.env_report_html import _shallow_evidence_tools
-    assert _shallow_evidence_tools(_PRESENCE_ONLY) == ["x"]
-    assert _shallow_evidence_tools(_FUNCTIONAL) == []
+    from agent.skills.env_report_html import _found_only_tools
+    assert _found_only_tools(_PRESENCE_ONLY) == ["x"]
+    assert _found_only_tools(_FUNCTIONAL) == []
 
 
-def test_failed_evidence_is_not_also_reported_as_shallow():
-    """A check that did not pass is already refusing; calling it shallow on top
+def test_failed_evidence_is_not_also_reported_as_found_only():
+    """A check that did not pass is already refusing; counting it as found-only on top
     answers a question nobody asked and inflates the qualifier's count."""
-    from agent.skills.env_report_html import _shallow_evidence_tools
+    from agent.skills.env_report_html import _found_only_tools
     failed = {**_GOOD,
               "verifications": [{"label": "x", "tool": "x", "check": "command -v x",
                                  "passed": False}]}
-    assert _shallow_evidence_tools(failed) == []
+    assert _found_only_tools(failed) == []
 
 
-def test_the_contract_verdict_is_deliberately_not_downgraded_by_depth():
-    """Pinned as a DECISION, not an oversight. If someone later wires depth into
-    the guarantee verdict, this fails and they have to read the reasoning above
-    before overriding it."""
+def test_the_contract_verdict_is_deliberately_not_downgraded_by_the_kind():
+    """Pinned as a DECISION, not an oversight. If someone later wires the evidence
+    kind into the guarantee verdict, this fails and they have to read the reasoning
+    above before overriding it."""
     rows = guarantee_verdicts(evaluate_build(_PRESENCE_ONLY))
     assert _verdict(rows, "VALIDATED_IN_IMAGE") == ESTABLISHED
 

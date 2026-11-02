@@ -37,7 +37,7 @@ def test_a_write_into_the_image_or_an_install_is_refused_with_the_fragment(evide
 
 
 @pytest.mark.parametrize("evidence", [
-    "tool --version > /tmp/out.txt 2>&1; grep -q 1.0 /tmp/out.txt",
+    "tool --version > /tmp/out.txt 2>&1 && grep -q 1.0 /tmp/out.txt",
     "cd /tmp && tool CreateSequenceDictionary -R r.fa -O r.dict && test -s r.dict",
     "cp /usr/share/doc/tool/example.fa /tmp/x.fa && tool stats /tmp/x.fa",
     "tool -i /usr/share/data/ref.fa --version",

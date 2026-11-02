@@ -85,3 +85,20 @@ def test_running_in_a_missing_env_is_refused_with_the_create_call(monkeypatch, t
     r = ms._env_mgr.run_in_env("no_such_env", "echo hi")
     assert r["outcome"] == "refused" and r["code"] == "env_manager.run_env_missing"
     assert r["existing_envs"] == ["have_this"] and "create_conda_env(env_name='no_such_env')" in r["remedy"]
+
+
+def test_a_host_step_against_a_frozen_only_env_names_the_container_tool_and_records_nothing(monkeypatch, tmp_path):
+    """The name is a frozen image with no host env: the remedy is run_step_in_container
+    with its request key, and no failed step enters the draft for a command that never ran."""
+    from agent.mcp_tools import run_tools as R
+    monkeypatch.setattr(ms._env_mgr, "envs_dir", tmp_path / "envs")
+    (tmp_path / "envs").mkdir()
+    monkeypatch.setattr(ms._env_cache, "all",
+                        lambda: {"seqkit=2.8.2|linux/amd64|none": {"name": "seqkit", "image": "x"}})
+    recorded = []
+    monkeypatch.setattr(ms._pipeline_state, "add_step", lambda *a, **k: recorded.append(a) or 1)
+    r = R.run_pipeline_step(env_name="seqkit", command="seqkit stats x.fq", pipeline_id="p")
+    assert r["outcome"] == "refused" and r["code"] == "env_manager.run_env_missing"
+    assert "run_step_in_container(freeze_request_key='seqkit=2.8.2|linux/amd64|none'" in r["remedy"]
+    assert r["frozen_as"] == ["seqkit=2.8.2|linux/amd64|none"]
+    assert recorded == [], "a command that never ran is not a step"

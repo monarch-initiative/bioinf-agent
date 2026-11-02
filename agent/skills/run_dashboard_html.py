@@ -435,7 +435,7 @@ def _render_validated_evidence(spec: dict, primary_digest: Optional[str]) -> str
 # ---------------------------------------------------------------------------
 
 def _usage_status(spec: dict) -> str:
-    """The I4 self-test state — "verified" | "failed" | "not_attempted" | "".
+    """The how-to's I4 state — "verified" | "failed" | "not_attempted" | "".
 
     THREE STATES, not a bool. `usage_verified: False` conflates "tested and it failed"
     with "never tested" — and since seal REFUSES the former, False on disk always means
@@ -443,7 +443,7 @@ def _usage_status(spec: dict) -> str:
     truth + the reason; the bool is the fallback for specs sealed before it existed.
 
     One derivation, read by every panel — a panel that re-derives it as the raw bool
-    gives the page two answers to one question ("Usage self-tested: False" above the
+    gives the page two answers to one question ("How-to proven: False" above the
     fold, "not attempted — <reason>" below it).
 
     ...and the derivation lives in `core_data.usage_status`, not here: a reading
@@ -454,18 +454,11 @@ def _usage_status(spec: dict) -> str:
 
 
 def _seal_outcome_html(spec: dict) -> str:
-    """The seal's own outcome tag — `proven (seal.sealed)` vs
-    `degraded (seal.sealed_howto_unproven)` — derived from the sealed record.
-
-    The seal RETURNS this tag and then it evaporates with the session; the README
-    teaches a reader to look for the word `degraded`, so this page must answer in
-    that vocabulary rather than with an unqualified green headline. The derivation
-    is the seal's own rule read off the spec: `usage_verification.status ==
-    "verified"` is the exact branch `seal_workflow` takes between its two literal
-    terminals, and the status comes through the `core_data.usage_status` leaf. The
-    producer's stated `reason` — the sentence carrying the remedy ("add
-    patch_pipeline(usage=…) and re-seal") — is rendered beside the tag, never
-    dropped at the seal.
+    """The seal's verdict on the how-to, derived from the sealed record: proven for a
+    how-to derived from the steps (or self-tested, on a spec sealed before the
+    derivation), and the degraded / unrecorded states of older specs in the vocabulary
+    the README teaches. The status comes through the `core_data.usage_status` leaf; the
+    producer's stated `reason` is rendered beside the tag, never dropped at the seal.
 
     `unrecorded` (sealed before the producer stated an outcome) gets NO verdict:
     absence renders as absence, the same rule as a Layer-1 UNOBSERVED clause."""
@@ -477,6 +470,11 @@ def _seal_outcome_html(spec: dict) -> str:
         # would be a claim derived from nothing here, and false on a shape this
         # same page supports (failed iteration steps + a verified I4). Run
         # validation has its own row; this one speaks for the how-to.
+        if _core_data.usage_source(spec) == _core_data.USAGE_SOURCE_STEPS:
+            return ('<span class="pill ok">proven</span> every how-to command below is a command '
+                    'the recorded steps ran, with the sample\'s values where its slots are, and its '
+                    'outputs are those steps\' validated outputs. Whether the recorded steps '
+                    'themselves passed is the Run status row above.')
         return ('<span class="pill ok">proven</span> the how-to command below ran '
                 'against every declared input shape and every output passed its check. '
                 'Whether the recorded steps themselves passed is the Run status row above.')
@@ -486,7 +484,7 @@ def _seal_outcome_html(spec: dict) -> str:
         return ('<span class="pill bad">how-to FAILED</span> ' + reason)
     if status == "not_attempted":
         return ('<span class="pill na">degraded — how-to unproven</span> '
-                + (reason or 'the self-test of the command did not run; no reason was recorded'))
+                + (reason or 'the how-to was not proven; no reason was recorded'))
     return ('<span class="pill na">unrecorded</span> sealed before the seal had to state '
             'an outcome — absence, not a verdict')
 
@@ -498,7 +496,11 @@ def _render_howto(spec: dict) -> str:
     status = _usage_status(spec)
     verified = status == "verified"
     locus = uv.get("locus") or ""
-    if verified:
+    derived = _core_data.usage_source(spec) == _core_data.USAGE_SOURCE_STEPS
+    if verified and derived:
+        where = " in the shipped image" if locus == "image" else f" on the {locus}" if locus in ("cluster", "host") else ""
+        tag = f'<span class="pill ok">✓ derived from the recorded run{_e(where)}</span>'
+    elif verified:
         where = " in the shipped image" if locus == "image" else ""
         tag = f'<span class="pill ok">✓ self-tested{_e(where)}</span>'
     elif status == "not_attempted":
@@ -515,7 +517,9 @@ def _render_howto(spec: dict) -> str:
     # The subtitle claims "self-tested" only when the self-test VERIFIED — asserted
     # unconditionally it sits directly above a pill reading "not self-tested", two
     # contradictory claims in one panel. It describes what this page actually knows.
-    sub = ("the command to run, tested against every declared input shape"
+    sub = ("the commands as the steps ran them, with slots where each sample's values were"
+           if verified and derived else
+           "the command to run, tested against every declared input shape"
            if verified else
            "the command as authored — see below for whether it was tested")
     P.append(f'<h2>How to run it <span class="note">{_e(sub)}</span></h2>')
@@ -602,11 +606,9 @@ def _subs_table(subs: dict, output_slots: list, proven: bool) -> str:
     for slot in sorted(subs):
         val = subs[slot]
         if slot in outs:
-            note = ('<span class="note">the fresh scratch directory the self-test '
-                    'created for this trial — already deleted; supply your own '
-                    'output directory</span>' if proven else
-                    '<span class="note">output directory — filled by the self-test '
-                    'at run time</span>')
+            note = ('<span class="note">the directory the steps ran in and wrote into; '
+                    'supply your own output directory</span>' if proven else
+                    '<span class="note">output directory — filled at run time</span>')
             rows.append(f'<tr><td>{{{_e(slot)}}}</td><td><code>{_e(val)}</code></td>'
                         f'<td>{note}</td></tr>')
         else:
@@ -654,9 +656,9 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
     if proven:
         n_ok = sum(1 for t in proven if t.get("ok"))
         n = len(proven)
-        lead = (f'Tested against {n} input shape{"s" if n != 1 else ""}, '
-                f'{n_ok} passing. Each command below is the LITERAL text that was '
-                f'executed, with every placeholder filled in — open a trial to read it.')
+        lead = (f'Run on {n} sample{"s" if n != 1 else ""}, {n_ok} complete. Each command below '
+                f'is the LITERAL text that was executed, with every placeholder filled in — open '
+                f'a sample to read it.')
         P = [f'<p class="note">{_e(lead)}</p>']
         for t in proven:
             ok = bool(t.get("ok"))
@@ -695,7 +697,7 @@ def _render_trials(spec: dict, usage: dict, status: str) -> str:
             prod = [p for p in (t.get("produced_files") or []) if isinstance(p, str)]
             if prod:
                 P.append('<p class="note"><b>Produced</b> '
-                         '<span class="note">(in the scratch directory; each file '
+                         '<span class="note">(under the working directory; each file '
                          'passed its check)</span></p><ul class="foot">')
                 P.extend(f"<li><code>{_e(p)}</code></li>" for p in sorted(prod))
                 P.append("</ul>")
@@ -1085,7 +1087,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
         # contradicts its own page and walks a reader away from a proven artifact.
         # The failed steps stay on the page (and in this headline) as history; they
         # do not masquerade as a judgement of the how-to.
-        pill = ('<span class="pill ok">✓ declared how-to self-tested (I4)</span> '
+        pill = ('<span class="pill ok">✓ how-to proven by the validated steps (I4)</span> '
                 f'<span class="pill bad">{len(failed)} failed iteration step(s) '
                 f'in the record</span>')
     elif failed:
@@ -1134,7 +1136,7 @@ def render_run_dashboard_html(spec: dict, env_record: Optional[dict] = None) -> 
                             + (f' <span class="pill bad">{len(failed)} FAILED</span>'
                                if failed else "")),
         ("Docker image", f'<code>{_e(s.get("env_image","—"))}</code>' if s.get("env_image") else "—"),
-        ("Usage self-tested", _e(usage_label(s))),
+        ("How-to proven", _e(usage_label(s))),
     ]
     if s.get("description"):
         head_rows.insert(0, ("Workflow", _e(s["description"])))

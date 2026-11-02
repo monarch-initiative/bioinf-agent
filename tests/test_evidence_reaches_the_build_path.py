@@ -30,6 +30,7 @@ class _Build:
         return self
 
     def add_tool(self, spec):
+        self.tool_specs = getattr(self, "tool_specs", []) + [spec]
         return self
 
     def run(self):
@@ -78,3 +79,31 @@ def test_authored_evidence_reaches_a_pip_tool_too(monkeypatch):
     eb = _build(monkeypatch, spec, conda_deps=[], primary_tools=["pysam"],
                 evidence={"pysam": "python -c 'import pysam; pysam.AlignmentFile(\"/t.bam\")'"})
     assert dict(eb.pip_verify)["pysam"].startswith("python -c 'import pysam; pysam.AlignmentFile")
+
+
+_JAR_URL = "https://github.com/exomiser/Exomiser/releases/download/15.1.0/exomiser-cli-15.1.0-distribution.zip"
+PIPED = "exomiser --help 2>&1 | grep -i exomiser"
+AUTHORED_JAR = "exomiser --help > /tmp/h.txt 2>&1 && grep -q Exomiser /tmp/h.txt"
+
+
+def _jar_spec() -> dict:
+    return {"install_steps": [{
+        "tool": "install_jar_tool", "subcommand": "", "returncode": 0,
+        "command": f"install_jar_tool --jar-url {_JAR_URL}",
+        "installed_packages": [{"name": "exomiser", "version": "15.1.0", "type": "jar",
+                                "install_method": {"type": "jar", "name": "exomiser", "source": _JAR_URL,
+                                                   "verify_command": PIPED}}]}]}
+
+
+def test_authored_evidence_replaces_a_jar_tools_recorded_verify_command(monkeypatch):
+    """A jar's recorded verify_command was a piped check the shape rule refuses; `evidence=`
+    for the tool changed nothing because it reached only conda and pip tools, and five
+    freezes refused the same command while the caller changed the evidence each time."""
+    orig = env_freeze._map_install
+    monkeypatch.setattr(env_freeze, "_map_install",
+                        lambda x, platform: orig(x, platform, sha256_of_url=lambda _u: {"ok": True, "sha256": "d" * 64}))
+    eb = _build(monkeypatch, _jar_spec(), conda_deps=[], primary_tools=["exomiser"], evidence={"exomiser": AUTHORED_JAR})
+    [spec] = eb.tool_specs
+    assert spec["tool"] == "exomiser" and spec["evidence"] == AUTHORED_JAR
+    eb = _build(monkeypatch, _jar_spec(), conda_deps=[], primary_tools=["exomiser"])
+    assert eb.tool_specs[0]["evidence"] == PIPED, "nothing authored: the recorded check stands"

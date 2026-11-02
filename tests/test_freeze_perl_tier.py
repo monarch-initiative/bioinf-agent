@@ -121,16 +121,12 @@ def test_grid_recipe_evidence_is_a_genuine_run_not_the_import_default():
     assert "->insert(" in ev and "->fetch(" in ev
 
 
-def test_grid_recipe_evidence_depth_is_import_an_honest_underdisclosure():
-    """reports-never-lie anchor + change detector. The depth classifier reads this
-    genuine run as 'import' (perl's `-M` glue is indistinguishable from an import-
-    only load), which UNDER-discloses the real depth — conservative, never an over-
-    claim. Pinned here so a classifier change that promoted it to 'functional' fails
-    this test and gets REVIEWED rather than silently altering the env report."""
+def test_grid_recipe_evidence_runs_the_module():
+    """reports-never-lie anchor: the recipe's evidence constructs a tree and calls its
+    methods, so it reads as a run; a bare `perl -MSet::IntervalTree -e1` only finds it."""
     ev = _ft().tier("perl")["build"]["install_method"]["evidence"]
-    assert env_honesty.evidence_depth(ev, "Set::IntervalTree") == "import"
-    # 'import' is a shallow depth — the report honestly renders it as such, never as a run.
-    assert env_honesty.is_shallow_evidence(ev, "Set::IntervalTree") is True
+    assert env_honesty.evidence_kind(ev, "Set::IntervalTree") == env_honesty.EVIDENCE_RAN
+    assert env_honesty.evidence_kind("perl -MSet::IntervalTree -e1", "Set::IntervalTree") == env_honesty.EVIDENCE_FOUND
 
 
 def test_grid_perl_recipe_is_a_wired_container_native_probe():

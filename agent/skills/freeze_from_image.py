@@ -282,8 +282,7 @@ def _evidence_discriminates(platform: str, evidence: str) -> tuple:
     reading that string. A string rule loses this game by construction: the audit walked
     straight through it with `true || samtools`, `true # samtools`, `[ -n "samtools" ]`
     and `test -f /etc/hosts # samtools` — each references the tool as a word-boundary
-    token, none is a bare echo, all four passed, and `evidence_depth` rated the first
-    one `functional`, the strongest class. Every one of those is caught here without
+    token, none is a bare echo, and all four passed. Every one of those is caught here without
     reading the string at all, because none of them can tell the two images apart.
 
     The shape rule stays as cheap defense-in-depth (it needs no container and it catches
@@ -458,11 +457,10 @@ def freeze_from_image(
                               "tool_aliases": aliases,
                               "passed": res["rc"] == 0, "rc": res["rc"],
                               "out": res["out"],
-                              # DISCLOSURE (not a gate): how deeply this evidence exercises
-                              # the tool. 'version'/'import'/'help' prove presence; only
-                              # 'smoke'/'functional' prove it RUNS. Surfaced so a shallow
-                              # proof can't masquerade as a functional one.
-                              "depth": _eh.evidence_depth(ev, tname),
+                              # DISCLOSURE (not a gate): did this check RUN the tool, or
+                              # only FIND it present. Said so a presence check can never
+                              # read as a run.
+                              "evidence": _eh.evidence_kind(ev, tname, aliases),
                               # ...and whether it distinguishes this image from any image.
                               "control": control, "control_note": control_note,
                               "timeout_s": ev_timeout})
@@ -726,17 +724,15 @@ def freeze_from_image(
         except Exception as e:
             out_paths[label] = f"({label} render failed: {e!r})"
 
-    # SOFT advisory (never a refusal): requested tools whose evidence only proved
-    # presence/loads, not that the tool RUNS. Surfaced so the agent can strengthen the
-    # evidence — the honest nudge against a shallow proof reading as functional.
-    # Read the depth set from the classifier that defines it — a second stale copy of
-    # _SHALLOW_DEPTHS here omitted `presence` and silently under-reported the advisory.
-    shallow = [v["tool"] for v in verifications
-               if v.get("depth") in env_honesty._SHALLOW_DEPTHS or v.get("depth") == "unknown"]
+    # SOFT advisory (never a refusal): requested tools whose evidence only FOUND the tool
+    # present. Said so the agent can strengthen the evidence; the ENV report's headline
+    # says "found present · not exercised" for such an env.
+    shallow = [v["tool"] for v in verifications if v.get("evidence") == env_honesty.EVIDENCE_FOUND]
     advisory = ""
     if shallow:
-        advisory = ("shallow evidence (proves presence, not function) for: "
-                    + ", ".join(shallow) + " — consider evidence that RUNS the tool on an input")
+        advisory = ("the evidence only finds the tool present, it never runs it, for: "
+                    + ", ".join(shallow) + " — evidence that RUNS the tool (its --help, --version, "
+                    "or a command on an input) says more")
     # The contract passed; now say how much of it actually looked at anything. An
     # UNOBSERVED clause makes this `degraded` rather than `proven` — same artifact, same
     # registration, honest tag. Branch written out with literal helpers + literal codes so
